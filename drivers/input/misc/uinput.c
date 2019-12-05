@@ -20,6 +20,7 @@
  */
 #include <uapi/linux/uinput.h>
 #include <linux/poll.h>
+#include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -285,7 +286,7 @@ static int uinput_dev_flush(struct input_dev *dev, struct file *file)
 
 static void uinput_destroy_device(struct uinput_device *udev)
 {
-	const char *name, *phys;
+	const char *name, *phys, *uniq;
 	struct input_dev *dev = udev->dev;
 	enum uinput_state old_state = udev->state;
 
@@ -294,6 +295,7 @@ static void uinput_destroy_device(struct uinput_device *udev)
 	if (dev) {
 		name = dev->name;
 		phys = dev->phys;
+		uniq = dev->uniq;
 		if (old_state == UIST_CREATED) {
 			uinput_flush_requests(udev);
 			input_unregister_device(dev);
@@ -302,6 +304,7 @@ static void uinput_destroy_device(struct uinput_device *udev)
 		}
 		kfree(name);
 		kfree(phys);
+		kfree(uniq);
 		udev->dev = NULL;
 	}
 }
@@ -885,6 +888,24 @@ static int uinput_str_to_user(void __user *dest, const char *str,
 	return ret ? -EFAULT : len;
 }
 
+static int uinput_get_user_str(struct uinput_device *udev, const char **kptr,
+			       const char *uptr, unsigned int size)
+{
+	char *tmp;
+
+	if (udev->state == UIST_CREATED)
+		return -EINVAL;
+
+	tmp = strndup_user(uptr, size);
+	if (IS_ERR(tmp))
+		return PTR_ERR(tmp);
+
+	kfree(*kptr);
+	*kptr = tmp;
+
+	return 0;
+}
+
 static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 				 unsigned long arg, void __user *p)
 {
@@ -893,7 +914,6 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 	struct uinput_ff_upload ff_up;
 	struct uinput_ff_erase  ff_erase;
 	struct uinput_request   *req;
-	char			*phys;
 	const char		*name;
 	unsigned int		size;
 
@@ -970,19 +990,8 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 		goto out;
 
 	case UI_SET_PHYS:
-		if (udev->state == UIST_CREATED) {
-			retval = -EINVAL;
-			goto out;
-		}
-
-		phys = strndup_user(p, 1024);
-		if (IS_ERR(phys)) {
-			retval = PTR_ERR(phys);
-			goto out;
-		}
-
-		kfree(udev->dev->phys);
-		udev->dev->phys = phys;
+		pr_warn_once("uinput: UI_SET_PHYS is deprecated. Use UI_SET_PHYS_STR");
+		retval = uinput_get_user_str(udev, &udev->dev->phys, p, 1024);
 		goto out;
 
 	case UI_BEGIN_FF_UPLOAD:
@@ -1077,6 +1086,15 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 	case UI_ABS_SETUP & ~IOCSIZE_MASK:
 		retval = uinput_abs_setup(udev, p, size);
 		goto out;
+
+	case UI_SET_PHYS_STR(0):
+		retval = uinput_get_user_str(udev, &udev->dev->phys, p, size);
+		goto out;
+
+	case UI_SET_UNIQ_STR(0):
+		retval = uinput_get_user_str(udev, &udev->dev->uniq, p, size);
+		goto out;
+
 	}
 
 	retval = -EINVAL;
