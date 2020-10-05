@@ -128,6 +128,8 @@ struct user_event_mm;
 					 __TASK_TRACED | EXIT_DEAD | EXIT_ZOMBIE | \
 					 TASK_PARKED)
 
+#define IPC_CLASS_UNCLASSIFIED		0
+
 #define task_is_running(task)		(READ_ONCE((task)->__state) == TASK_RUNNING)
 
 #define task_is_traced(task)		((READ_ONCE(task->jobctl) & JOBCTL_TRACED) != 0)
@@ -1529,6 +1531,14 @@ struct task_struct {
 
 #ifdef CONFIG_USER_EVENTS
 	struct user_event_mm		*user_event_mm;
+#endif
+
+#ifdef CONFIG_IPC_CLASSES
+	/*
+	 * A hardware-defined classification of task that reflects but is
+	 * not identical to the number of instructions per cycle.
+	 */
+	unsigned short			ipcc;
 #endif
 
 	/*
