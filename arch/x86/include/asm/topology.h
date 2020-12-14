@@ -235,4 +235,15 @@ void init_freq_invariance_cppc(void);
 #define arch_init_invariance_cppc init_freq_invariance_cppc
 #endif
 
+#ifdef CONFIG_INTEL_HFI_THERMAL
+int intel_hfi_read_classid(u8 *classid);
+#else
+static inline int intel_hfi_read_classid(u8 *classid) { return -ENODEV; }
+#endif
+
+#ifdef CONFIG_IPC_CLASSES
+void intel_update_ipcc(struct task_struct *curr);
+#define arch_update_ipcc intel_update_ipcc
+#endif
+
 #endif /* _ASM_X86_TOPOLOGY_H */
