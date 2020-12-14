@@ -72,6 +72,15 @@ union cpuid6_edx {
 	u32 full;
 };
 
+union hfi_thread_feedback_char_msr {
+	struct {
+		u64	classid : 8;
+		u64	__reserved : 55;
+		u64	valid : 1;
+	} split;
+	u64 full;
+};
+
 /**
  * struct hfi_cpu_data - HFI capabilities per CPU
  * @perf_cap:		Performance capability
@@ -170,6 +179,34 @@ static DEFINE_MUTEX(hfi_instance_lock);
 static struct workqueue_struct *hfi_updates_wq;
 #define HFI_UPDATE_INTERVAL		HZ
 #define HFI_MAX_THERM_NOTIFY_COUNT	16
+
+/**
+ * intel_hfi_read_classid() - Read the currrent classid
+ * @classid:	Variable to which the classid will be written.
+ *
+ * Read the classification that Intel Thread Director has produced when this
+ * function is called. Thread classification must be enabled before calling
+ * this function.
+ *
+ * Return: 0 if the produced classification is valid. Error otherwise.
+ */
+int intel_hfi_read_classid(u8 *classid)
+{
+	union hfi_thread_feedback_char_msr msr;
+
+	/* We should not be here if ITD is not supported. */
+	if (!cpu_feature_enabled(X86_FEATURE_ITD)) {
+		pr_warn_once("task classification requested but not supported!");
+		return -ENODEV;
+	}
+
+	rdmsrl(MSR_IA32_HW_FEEDBACK_CHAR, msr.full);
+	if (!msr.split.valid)
+		return -EINVAL;
+
+	*classid = msr.split.classid;
+	return 0;
+}
 
 static void get_hfi_caps(struct hfi_instance *hfi_instance,
 			 struct thermal_genl_cpu_caps *cpu_caps)
