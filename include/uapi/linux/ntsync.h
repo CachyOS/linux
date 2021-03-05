@@ -46,5 +46,7 @@ struct ntsync_wait_args {
 					      struct ntsync_wait_args)
 #define NTSYNC_IOC_CREATE_MUTEX		_IOWR(NTSYNC_IOC_BASE, 5, \
 					      struct ntsync_mutex_args)
+#define NTSYNC_IOC_PUT_MUTEX		_IOWR(NTSYNC_IOC_BASE, 6, \
+					      struct ntsync_mutex_args)
 
 #endif
