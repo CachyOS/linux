@@ -36,5 +36,7 @@ struct ntsync_wait_args {
 					      struct ntsync_sem_args)
 #define NTSYNC_IOC_WAIT_ANY		_IOWR(NTSYNC_IOC_BASE, 3, \
 					      struct ntsync_wait_args)
+#define NTSYNC_IOC_WAIT_ALL		_IOWR(NTSYNC_IOC_BASE, 4, \
+					      struct ntsync_wait_args)
 
 #endif
