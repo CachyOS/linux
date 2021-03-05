@@ -21,5 +21,7 @@ struct ntsync_sem_args {
 #define NTSYNC_IOC_CREATE_SEM		_IOWR(NTSYNC_IOC_BASE, 0, \
 					      struct ntsync_sem_args)
 #define NTSYNC_IOC_DELETE		_IOW (NTSYNC_IOC_BASE, 1, __u32)
+#define NTSYNC_IOC_PUT_SEM		_IOWR(NTSYNC_IOC_BASE, 2, \
+					      struct ntsync_sem_args)
 
 #endif
