@@ -40,7 +40,7 @@ static const struct file_operations ntsync_fops = {
 };
 
 static struct miscdevice ntsync_misc = {
-	.minor		= MISC_DYNAMIC_MINOR,
+	.minor		= NTSYNC_MINOR,
 	.name		= NTSYNC_NAME,
 	.fops		= &ntsync_fops,
 };
@@ -51,3 +51,4 @@ MODULE_AUTHOR("Elizabeth Figura");
 MODULE_DESCRIPTION("Kernel driver for NT synchronization primitives");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("devname:" NTSYNC_NAME);
+MODULE_ALIAS_MISCDEV(NTSYNC_MINOR);
