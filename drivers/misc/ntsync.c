@@ -549,6 +549,35 @@ static int ntsync_read_sem(struct ntsync_device *dev, void __user *argp)
 	return 0;
 }
 
+static int ntsync_read_mutex(struct ntsync_device *dev, void __user *argp)
+{
+	struct ntsync_mutex_args __user *user_args = argp;
+	struct ntsync_mutex_args args;
+	struct ntsync_obj *mutex;
+	__u32 id;
+	int ret;
+
+	if (get_user(id, &user_args->mutex))
+		return -EFAULT;
+
+	mutex = get_obj_typed(dev, id, NTSYNC_TYPE_MUTEX);
+	if (!mutex)
+		return -EINVAL;
+
+	args.mutex = id;
+	spin_lock(&mutex->lock);
+	args.count = mutex->u.mutex.count;
+	args.owner = mutex->u.mutex.owner;
+	ret = mutex->u.mutex.ownerdead ? -EOWNERDEAD : 0;
+	spin_unlock(&mutex->lock);
+
+	put_obj(mutex);
+
+	if (copy_to_user(user_args, &args, sizeof(args)))
+		return -EFAULT;
+	return ret;
+}
+
 /*
  * Actually change the mutex state to mark its owner as dead.
  */
@@ -910,6 +939,8 @@ static long ntsync_char_ioctl(struct file *file, unsigned int cmd,
 		return ntsync_put_mutex(dev, argp);
 	case NTSYNC_IOC_PUT_SEM:
 		return ntsync_put_sem(dev, argp);
+	case NTSYNC_IOC_READ_MUTEX:
+		return ntsync_read_mutex(dev, argp);
 	case NTSYNC_IOC_READ_SEM:
 		return ntsync_read_sem(dev, argp);
 	case NTSYNC_IOC_WAIT_ALL:

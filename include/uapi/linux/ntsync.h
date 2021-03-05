@@ -51,5 +51,7 @@ struct ntsync_wait_args {
 #define NTSYNC_IOC_KILL_OWNER		_IOW (NTSYNC_IOC_BASE, 7, __u32)
 #define NTSYNC_IOC_READ_SEM		_IOWR(NTSYNC_IOC_BASE, 8, \
 					      struct ntsync_sem_args)
+#define NTSYNC_IOC_READ_MUTEX		_IOWR(NTSYNC_IOC_BASE, 9, \
+					      struct ntsync_mutex_args)
 
 #endif
