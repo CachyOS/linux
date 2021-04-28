@@ -435,8 +435,6 @@ struct amdgpu_mode_info {
 	struct drm_property *regamma_tf_property;
 };
 
-#define AMDGPU_MAX_BL_LEVEL 0xFF
-
 struct amdgpu_backlight_privdata {
 	struct amdgpu_encoder *encoder;
 	uint8_t negative;
