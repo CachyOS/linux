@@ -50,6 +50,9 @@
 #include "amd_shared.h"
 #include "dm_helpers.h"
 
+/* Maximum backlight level. */
+#define AMDGPU_MAX_BL_LEVEL 0xFFFF
+
 void amdgpu_dm_update_backlight_caps(struct amdgpu_display_manager *dm,
 				     int bl_idx)
 {
