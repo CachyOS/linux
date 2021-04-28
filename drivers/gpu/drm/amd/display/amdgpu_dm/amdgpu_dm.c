@@ -161,6 +161,9 @@ MODULE_FIRMWARE(FIRMWARE_DCN_42_DMUB);
 #define FIRMWARE_DCN_42B_DMUB "amdgpu/dcn_4_2_1_dmcub.bin"
 MODULE_FIRMWARE(FIRMWARE_DCN_42B_DMUB);
 
+/* Maximum backlight level. */
+#define AMDGPU_MAX_BL_LEVEL 0xFFFF
+
 /**
  * DOC: overview
  *
