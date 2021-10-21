@@ -2278,14 +2278,15 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 }
 
 /*
- * Obtain a specified number of elements from the buddy allocator, all under
- * a single hold of the lock, for efficiency.  Add them to the supplied list.
- * Returns the number of new pages which were placed at *list.
+ * Obtain a specified number of elements from the buddy allocator, and relax the
+ * zone lock when needed. Add them to the supplied list. Returns the number of
+ * new pages which were placed at *list.
  */
 static int rmqueue_bulk(struct zone *zone, unsigned int order,
 			unsigned long count, struct list_head *list,
 			int migratetype, unsigned int alloc_flags)
 {
+	const bool can_resched = !preempt_count() && !irqs_disabled();
 	unsigned long flags;
 	int i;
 
@@ -2295,6 +2296,15 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 								alloc_flags);
 		if (unlikely(page == NULL))
 			break;
+
+		/* Reschedule and ease the contention on the lock if needed */
+		if (i + 1 < count && ((can_resched && need_resched()) ||
+				      spin_needbreak(&zone->lock))) {
+			spin_unlock_irqrestore(&zone->lock, flags);
+			if (can_resched)
+				cond_resched();
+			spin_lock_irqsave(&zone->lock, flags);
+		}
 
 		/*
 		 * Split buddy pages returned by expand() are received here in
