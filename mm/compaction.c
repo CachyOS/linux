@@ -53,7 +53,7 @@ static inline void count_compact_events(enum vm_event_item item, long delta)
 /*
  * Fragmentation score check interval for proactive compaction purposes.
  */
-static const unsigned int HPAGE_FRAG_CHECK_INTERVAL_MSEC = 500;
+static const unsigned int HPAGE_FRAG_CHECK_INTERVAL_MSEC = 5000;
 
 /*
  * Page order with-respect-to which proactive compaction
