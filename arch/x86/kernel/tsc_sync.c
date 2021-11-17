@@ -34,6 +34,8 @@ struct tsc_adjust {
 static DEFINE_PER_CPU(struct tsc_adjust, tsc_adjust);
 static struct timer_list tsc_sync_check_timer;
 
+extern int tsc_allow_direct_sync;
+
 /*
  * TSC's on different sockets may be reset asynchronously.
  * This may cause the TSC ADJUST value on socket 0 to be NOT 0.
@@ -339,6 +341,8 @@ static cycles_t check_tsc_warp(unsigned int timeout)
  */
 static inline unsigned int loop_timeout(int cpu)
 {
+	if (!boot_cpu_has(X86_FEATURE_TSC_ADJUST))
+		return 30;
 	return (cpumask_weight(topology_core_cpumask(cpu)) > 1) ? 2 : 20;
 }
 
@@ -359,13 +363,16 @@ static void check_tsc_sync_source(void *__cpu)
 
 	/*
 	 * Set the maximum number of test runs to
-	 *  1 if the CPU does not provide the TSC_ADJUST MSR
-	 *  3 if the MSR is available, so the target can try to adjust
+	 *  5 if we can write TSC_ADJUST to compensate
+	 *  1000 if we are allowed to write to the TSC MSR to compensate
+	 *  1 if we cannot write MSRs to synchronize TSCs
 	 */
-	if (!boot_cpu_has(X86_FEATURE_TSC_ADJUST))
-		atomic_set(&test_runs, 1);
-	else
+	if (boot_cpu_has(X86_FEATURE_TSC_ADJUST))
 		atomic_set(&test_runs, 3);
+	else if (tsc_allow_direct_sync)
+		atomic_set(&test_runs, 1000);
+	else
+		atomic_set(&test_runs, 1);
 retry:
 	/* Wait for the target to start. */
 	while (atomic_read(&start_count) != cpus - 1)
@@ -426,6 +433,21 @@ retry:
 		goto retry;
 }
 
+static inline cycles_t write_tsc_adjustment(s64 adjustment)
+{
+	cycles_t adjval, nextval;
+
+	rdmsrq(MSR_IA32_TSC, adjval);
+	adjval += adjustment;
+	wrmsrq(MSR_IA32_TSC, adjval);
+	rdmsrq(MSR_IA32_TSC, nextval);
+
+	/*
+	 * Estimated clock cycle overhead for wrmsr + rdmsr
+	 */
+	return nextval - adjval;
+}
+
 /*
  * Freshly booted CPUs call into this:
  */
@@ -433,7 +455,7 @@ void check_tsc_sync_target(void)
 {
 	struct tsc_adjust *cur = this_cpu_ptr(&tsc_adjust);
 	unsigned int cpu = smp_processor_id();
-	cycles_t cur_max_warp, gbl_max_warp;
+	cycles_t cur_max_warp, gbl_max_warp, est_overhead = 0;
 	int cpus = 2;
 
 	/* Also aborts if there is no TSC. */
@@ -514,12 +536,18 @@ retry:
 	 * value is used. In the worst case the adjustment needs to go
 	 * through a 3rd run for fine tuning.
 	 */
-	cur->adjusted += cur_max_warp;
+	if (boot_cpu_has(X86_FEATURE_TSC_ADJUST)) {
+		cur->adjusted += cur_max_warp + est_overhead;
 
-	pr_warn("TSC ADJUST compensate: CPU%u observed %lld warp. Adjust: %lld\n",
-		cpu, cur_max_warp, cur->adjusted);
+		pr_warn("TSC ADJUST compensate: CPU%u observed %lld warp. Adjust: %lld\n",
+			cpu, cur_max_warp, cur->adjusted);
 
-	wrmsrq(MSR_IA32_TSC_ADJUST, cur->adjusted);
+		wrmsrq(MSR_IA32_TSC_ADJUST, cur->adjusted);
+	} else {
+		pr_debug("TSC direct sync: CPU%u observed %lld warp. Overhead: %lld\n",
+			cpu, cur_max_warp, est_overhead);
+		est_overhead = write_tsc_adjustment(cur_max_warp + est_overhead);
+	}
 	goto retry;
 
 }
