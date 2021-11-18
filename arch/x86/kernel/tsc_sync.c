@@ -399,7 +399,7 @@ retry:
 		pr_debug("TSC synchronization [CPU#%d -> CPU#%u]: passed\n",
 			smp_processor_id(), cpu);
 
-	} else if (atomic_dec_and_test(&test_runs) || random_warps) {
+	} else if (atomic_dec_and_test(&test_runs) || (random_warps && !tsc_allow_direct_sync)) {
 		/* Force it to 0 if random warps brought us here */
 		atomic_set(&test_runs, 0);
 
