@@ -174,6 +174,8 @@ obj-$(CONFIG_AMD_SFH_HID)       += amd-sfh-hid/
 
 obj-$(CONFIG_ASUS_ALLY_HID)  += asus-ally-hid/
 
+obj-$(CONFIG_SPI_HID_APPLE_CORE)	+= spi-hid/
+
 obj-$(CONFIG_SURFACE_HID_CORE)  += surface-hid/
 
 obj-$(CONFIG_INTEL_THC_HID)     += intel-thc-hid/
