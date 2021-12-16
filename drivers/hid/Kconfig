@@ -129,7 +129,7 @@ config HID_APPLE
 	tristate "Apple {i,Power,Mac}Books"
 	depends on LEDS_CLASS
 	depends on NEW_LEDS
-	default !EXPERT
+	default !EXPERT || SPI_HID_APPLE
 	help
 	Support for some Apple devices which less or more break
 	HID specification.
