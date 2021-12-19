@@ -498,6 +498,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		else if (hid->product >= USB_DEVICE_ID_APPLE_WELLSPRING4_ANSI &&
 				hid->product <= USB_DEVICE_ID_APPLE_WELLSPRING4A_JIS)
 			table = macbookair_fn_keys;
+		else if (hid->vendor == SPI_VENDOR_ID_APPLE)
+			table = apple2021_fn_keys;
 		else if (hid->product < 0x21d || hid->product >= 0x300)
 			table = powerbook_fn_keys;
 		else
