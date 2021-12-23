@@ -1022,6 +1022,7 @@ update_stats_curr_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	/*
 	 * We are starting a new run period:
 	 */
+	se->migrated = 0;
 	se->exec_start = rq_clock_task(rq_of(cfs_rq));
 }
 
@@ -6998,7 +6999,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 	p->se.avg.last_update_time = 0;
 
 	/* We have migrated, no longer consider this task hot */
-	p->se.exec_start = 0;
+	p->se.migrated = 1;
 
 	update_scan_period(p, new_cpu);
 }
@@ -7682,6 +7683,9 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 		return 1;
 
 	if (sysctl_sched_migration_cost == 0)
+		return 0;
+
+	if (p->se.migrated)
 		return 0;
 
 	delta = rq_clock_task(env->src_rq) - p->se.exec_start;
