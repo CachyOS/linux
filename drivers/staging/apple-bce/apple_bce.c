@@ -439,5 +439,6 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("MrARM");
 MODULE_DESCRIPTION("Apple BCE Driver");
 MODULE_VERSION("0.01");
+MODULE_ALIAS("pci:v0000106Bd00001801sv*sd*bc*sc*i*");
 module_init(apple_bce_module_init);
 module_exit(apple_bce_module_exit);
