@@ -703,6 +703,49 @@ static int ntsync_kill_owner(struct ntsync_device *dev, void __user *argp)
 	return 0;
 }
 
+static int ntsync_set_event(struct ntsync_device *dev, void __user *argp)
+{
+	struct ntsync_event_args __user *user_args = argp;
+	struct ntsync_event_args args;
+	struct ntsync_obj *event;
+	bool prev_state;
+
+	if (copy_from_user(&args, argp, sizeof(args)))
+		return -EFAULT;
+
+	event = get_obj_typed(dev, args.event, NTSYNC_TYPE_EVENT);
+	if (!event)
+		return -EINVAL;
+
+	if (atomic_read(&event->all_hint) > 0) {
+		spin_lock(&dev->wait_all_lock);
+		spin_lock_nest_lock(&event->lock, &dev->wait_all_lock);
+
+		prev_state = event->u.event.signaled;
+		event->u.event.signaled = true;
+		try_wake_all_obj(dev, event);
+		try_wake_any_event(event);
+
+		spin_unlock(&event->lock);
+		spin_unlock(&dev->wait_all_lock);
+	} else {
+		spin_lock(&event->lock);
+
+		prev_state = event->u.event.signaled;
+		event->u.event.signaled = true;
+		try_wake_any_event(event);
+
+		spin_unlock(&event->lock);
+	}
+
+	put_obj(event);
+
+	if (put_user(prev_state, &user_args->signaled))
+		return -EFAULT;
+
+	return 0;
+}
+
 static int ntsync_schedule(const struct ntsync_q *q, ktime_t *timeout)
 {
 	int ret = 0;
@@ -1008,6 +1051,8 @@ static long ntsync_char_ioctl(struct file *file, unsigned int cmd,
 		return ntsync_read_mutex(dev, argp);
 	case NTSYNC_IOC_READ_SEM:
 		return ntsync_read_sem(dev, argp);
+	case NTSYNC_IOC_SET_EVENT:
+		return ntsync_set_event(dev, argp);
 	case NTSYNC_IOC_WAIT_ALL:
 		return ntsync_wait_all(dev, argp);
 	case NTSYNC_IOC_WAIT_ANY:
