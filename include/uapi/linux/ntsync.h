@@ -67,5 +67,7 @@ struct ntsync_wait_args {
 					      struct ntsync_event_args)
 #define NTSYNC_IOC_PULSE_EVENT		_IOWR(NTSYNC_IOC_BASE, 13, \
 					      struct ntsync_event_args)
+#define NTSYNC_IOC_READ_EVENT		_IOWR(NTSYNC_IOC_BASE, 14, \
+					      struct ntsync_event_args)
 
 #endif
