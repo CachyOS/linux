@@ -22,6 +22,12 @@ struct ntsync_mutex_args {
 	__u32 count;
 };
 
+struct ntsync_event_args {
+	__u32 event;
+	__u32 manual;
+	__u32 signaled;
+};
+
 struct ntsync_wait_args {
 	__u64 timeout;
 	__u64 objs;
@@ -53,5 +59,7 @@ struct ntsync_wait_args {
 					      struct ntsync_sem_args)
 #define NTSYNC_IOC_READ_MUTEX		_IOWR(NTSYNC_IOC_BASE, 9, \
 					      struct ntsync_mutex_args)
+#define NTSYNC_IOC_CREATE_EVENT		_IOWR(NTSYNC_IOC_BASE, 10, \
+					      struct ntsync_event_args)
 
 #endif
