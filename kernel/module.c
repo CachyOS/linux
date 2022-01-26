@@ -57,6 +57,7 @@
 #include <linux/bsearch.h>
 #include <linux/dynamic_debug.h>
 #include <linux/audit.h>
+#include <linux/cfi.h>
 #include <uapi/linux/module.h>
 #include "module-internal.h"
 
@@ -3871,8 +3872,9 @@ static int complete_formation(struct module *mod, struct load_info *info)
 	if (err < 0)
 		goto out;
 
-	/* This relies on module_mutex for list integrity. */
+	/* These rely on module_mutex for list integrity. */
 	module_bug_finalize(info->hdr, info->sechdrs, mod);
+	module_cfi_finalize(info->hdr, info->sechdrs, mod);
 
 	module_enable_ro(mod, false);
 	module_enable_nx(mod);
@@ -3927,8 +3929,6 @@ static int unknown_module_param_cb(char *param, char *val, const char *modname,
 		pr_warn("%s: unknown parameter '%s' ignored\n", modname, param);
 	return 0;
 }
-
-static void cfi_init(struct module *mod);
 
 /*
  * Allocate and load the module: note that size of section 0 is always
@@ -4058,9 +4058,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		goto free_modinfo;
 
 	flush_module_icache(mod);
-
-	/* Setup CFI for the module. */
-	cfi_init(mod);
 
 	/* Now copy in args */
 	mod->args = strndup_user(uargs, ~0UL >> 1);
@@ -4501,31 +4498,6 @@ out:
 }
 #endif /* CONFIG_LIVEPATCH */
 #endif /* CONFIG_KALLSYMS */
-
-static void cfi_init(struct module *mod)
-{
-#ifdef CONFIG_CFI_CLANG
-	initcall_t *init;
-	exitcall_t *exit;
-
-	rcu_read_lock_sched();
-	mod->cfi_check = (cfi_check_fn)
-		find_kallsyms_symbol_value(mod, "__cfi_check");
-	init = (initcall_t *)
-		find_kallsyms_symbol_value(mod, "__cfi_jt_init_module");
-	exit = (exitcall_t *)
-		find_kallsyms_symbol_value(mod, "__cfi_jt_cleanup_module");
-	rcu_read_unlock_sched();
-
-	/* Fix init/exit functions to point to the CFI jump table */
-	if (init)
-		mod->init = *init;
-#ifdef CONFIG_MODULE_UNLOAD
-	if (exit)
-		mod->exit = *exit;
-#endif
-#endif
-}
 
 /* Maximum number of characters written by module_flags() */
 #define MODULE_FLAGS_BUF_SIZE (TAINT_FLAGS_COUNT + 4)
