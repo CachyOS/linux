@@ -4801,10 +4801,14 @@ static void lru_gen_exit_fault(void)
  * The mmap_lock may have been released depending on flags and our
  * return value.  See filemap_fault() and __folio_lock_or_retry().
  */
-vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
-			   unsigned int flags, struct pt_regs *regs)
+vm_fault_t do_handle_mm_fault(struct vm_area_struct *vma,
+		unsigned long address, unsigned int flags,
+		unsigned long seq, struct pt_regs *regs)
 {
 	vm_fault_t ret;
+
+	if (flags & FAULT_FLAG_SPECULATIVE)
+		return VM_FAULT_RETRY;
 
 	__set_current_state(TASK_RUNNING);
 
@@ -4851,7 +4855,7 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(handle_mm_fault);
+EXPORT_SYMBOL_GPL(do_handle_mm_fault);
 
 #ifndef __PAGETABLE_P4D_FOLDED
 /*
