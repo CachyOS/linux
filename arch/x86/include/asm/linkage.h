@@ -25,6 +25,18 @@
 #define RET	ret
 #endif
 
+#ifdef CONFIG_CFI_CLANG
+#define __CFI_TYPE(name)					\
+	.fill 7, 1, 0xCC ASM_NL					\
+	SYM_START(__cfi_##name, SYM_L_LOCAL, SYM_A_NONE)	\
+	int3 ASM_NL						\
+	int3 ASM_NL						\
+	mov __kcfi_typeid_##name, %eax ASM_NL			\
+	int3 ASM_NL						\
+	int3 ASM_NL						\
+	SYM_FUNC_END(__cfi_##name)
+#endif
+
 #else /* __ASSEMBLY__ */
 
 #ifdef CONFIG_SLS

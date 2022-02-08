@@ -40,6 +40,7 @@
 #include <linux/hardirq.h>
 #include <linux/atomic.h>
 #include <linux/ioasid.h>
+#include <linux/cfi.h>
 
 #include <asm/stacktrace.h>
 #include <asm/processor.h>
@@ -295,6 +296,62 @@ static inline void handle_invalid_op(struct pt_regs *regs)
 		      ILL_ILLOPN, error_get_trap_addr(regs));
 }
 
+#ifdef CONFIG_CFI_CLANG
+static void decode_cfi_insn(struct pt_regs *regs, unsigned long *target,
+			    unsigned long *type)
+{
+	char buffer[MAX_INSN_SIZE];
+	struct insn insn;
+	int offset;
+
+	*target = *type = 0;
+
+	/*
+	 * The compiler generates the following instruction sequence
+	 * for indirect call checks:
+	 *
+	 *   cmpl    <id>, -6(%reg)	; 7 bytes
+	 *   je      .Ltmp1		; 2 bytes
+	 *   ud2			; <- addr
+	 *   .Ltmp1:
+	 *
+	 * Both the type and the target address can be decoded from the
+	 * cmpl instruction.
+	 */
+	if (copy_from_kernel_nofault(buffer, (void *)regs->ip - 9, MAX_INSN_SIZE))
+		return;
+	if (insn_decode_kernel(&insn, buffer))
+		return;
+	if (insn.opcode.value != 0x81 || X86_MODRM_REG(insn.modrm.value) != 7)
+		return;
+
+	*type = insn.immediate.value;
+
+	offset = insn_get_modrm_rm_off(&insn, regs);
+	if (offset < 0)
+		return;
+
+	*target = *(unsigned long *)((void *)regs + offset);
+}
+
+static enum bug_trap_type handle_cfi_failure(struct pt_regs *regs)
+{
+	if (is_cfi_trap(regs->ip)) {
+		unsigned long target, type;
+
+		decode_cfi_insn(regs, &target, &type);
+		return report_cfi_failure(regs, regs->ip, target, type);
+	}
+
+	return BUG_TRAP_TYPE_NONE;
+}
+#else
+static inline enum bug_trap_type handle_cfi_failure(struct pt_regs *regs)
+{
+	return BUG_TRAP_TYPE_NONE;
+}
+#endif /* CONFIG_CFI_CLANG */
+
 static noinstr bool handle_bug(struct pt_regs *regs)
 {
 	bool handled = false;
@@ -312,7 +369,8 @@ static noinstr bool handle_bug(struct pt_regs *regs)
 	 */
 	if (regs->flags & X86_EFLAGS_IF)
 		raw_local_irq_enable();
-	if (report_bug(regs->ip, regs) == BUG_TRAP_TYPE_WARN) {
+	if (report_bug(regs->ip, regs) == BUG_TRAP_TYPE_WARN ||
+	    handle_cfi_failure(regs) == BUG_TRAP_TYPE_WARN) {
 		regs->ip += LEN_UD2;
 		handled = true;
 	}
