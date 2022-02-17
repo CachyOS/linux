@@ -13,10 +13,6 @@
 
 struct blk_mq_debugfs_attr;
 
-enum rq_qos_id {
-	RQ_QOS_UNUSED,
-};
-
 struct rq_wait {
 	wait_queue_head_t wait;
 	atomic_t inflight;
@@ -25,7 +21,7 @@ struct rq_wait {
 struct rq_qos {
 	const struct rq_qos_ops *ops;
 	struct request_queue *q;
-	enum rq_qos_id id;
+	int id;
 	refcount_t ref;
 	wait_queue_head_t waitq;
 	bool dying;
@@ -69,17 +65,6 @@ struct rq_depth {
 	unsigned int default_depth;
 };
 
-static inline struct rq_qos *rq_qos_id(struct request_queue *q,
-				       enum rq_qos_id id)
-{
-	struct rq_qos *rqos;
-	for (rqos = q->rq_qos; rqos; rqos = rqos->next) {
-		if (rqos->id == id)
-			break;
-	}
-	return rqos;
-}
-
 static inline struct rq_qos *rq_qos_by_id(struct request_queue *q, int id)
 {
 	struct rq_qos *rqos;
@@ -97,52 +82,6 @@ static inline void rq_wait_init(struct rq_wait *rq_wait)
 {
 	atomic_set(&rq_wait->inflight, 0);
 	init_waitqueue_head(&rq_wait->wait);
-}
-
-static inline void rq_qos_add(struct request_queue *q, struct rq_qos *rqos)
-{
-	/*
-	 * No IO can be in-flight when adding rqos, so freeze queue, which
-	 * is fine since we only support rq_qos for blk-mq queue.
-	 *
-	 * Reuse ->queue_lock for protecting against other concurrent
-	 * rq_qos adding/deleting
-	 */
-	blk_mq_freeze_queue(q);
-
-	spin_lock_irq(&q->queue_lock);
-	rqos->next = q->rq_qos;
-	q->rq_qos = rqos;
-	spin_unlock_irq(&q->queue_lock);
-
-	blk_mq_unfreeze_queue(q);
-
-	if (rqos->ops->debugfs_attrs)
-		blk_mq_debugfs_register_rqos(rqos);
-}
-
-static inline void rq_qos_del(struct request_queue *q, struct rq_qos *rqos)
-{
-	struct rq_qos **cur;
-
-	/*
-	 * See comment in rq_qos_add() about freezing queue & using
-	 * ->queue_lock.
-	 */
-	blk_mq_freeze_queue(q);
-
-	spin_lock_irq(&q->queue_lock);
-	for (cur = &q->rq_qos; *cur; cur = &(*cur)->next) {
-		if (*cur == rqos) {
-			*cur = rqos->next;
-			break;
-		}
-	}
-	spin_unlock_irq(&q->queue_lock);
-
-	blk_mq_unfreeze_queue(q);
-
-	blk_mq_debugfs_unregister_rqos(rqos);
 }
 
 int rq_qos_register(struct rq_qos_ops *ops);
