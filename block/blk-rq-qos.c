@@ -452,7 +452,7 @@ int rq_qos_register(struct rq_qos_ops *ops)
 		goto out;
 	}
 
-	start = RQ_QOS_IOPRIO + 1;
+	start = 1;
 	ret = ida_simple_get(&rq_qos_ida, start, INT_MAX, GFP_KERNEL);
 	if (ret < 0)
 		goto out;
