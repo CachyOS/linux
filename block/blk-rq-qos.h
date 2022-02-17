@@ -14,7 +14,6 @@
 struct blk_mq_debugfs_attr;
 
 enum rq_qos_id {
-	RQ_QOS_WBT,
 	RQ_QOS_LATENCY,
 	RQ_QOS_COST,
 	RQ_QOS_IOPRIO,
@@ -94,11 +93,6 @@ static inline struct rq_qos *rq_qos_by_id(struct request_queue *q, int id)
 			break;
 	}
 	return rqos;
-}
-
-static inline struct rq_qos *wbt_rq_qos(struct request_queue *q)
-{
-	return rq_qos_id(q, RQ_QOS_WBT);
 }
 
 static inline struct rq_qos *blkcg_rq_qos(struct request_queue *q)
