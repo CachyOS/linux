@@ -2422,5 +2422,16 @@ config MFD_UPBOARD_FPGA
 	  To compile this driver as a module, choose M here: the module will be
 	  called upboard-fpga.
 
+config MFD_STEAMDECK
+	tristate "Valve Steam Deck"
+	select MFD_CORE
+	depends on ACPI
+	depends on X86_64 || COMPILE_TEST
+	help
+	  This driver registers various MFD cells that expose aspects
+	  of Steam Deck specific ACPI functionality.
+
+	  Say N here, unless you are running on Steam Deck hardware.
+
 endmenu
 endif
