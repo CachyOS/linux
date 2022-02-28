@@ -193,7 +193,7 @@ static const struct property_entry dwc3_pci_amd_properties[] = {
 static const struct property_entry dwc3_pci_mr_properties[] = {
 	PROPERTY_ENTRY_STRING("dr_mode", "otg"),
 	PROPERTY_ENTRY_BOOL("linux,sysdev_is_parent"),
-	PROPERTY_ENTRY_STRING("linux,extcon-name", "VLV0100:00"),
+	PROPERTY_ENTRY_STRING("linux,extcon-name", "steamdeck-extcon"),
 	{}
 };
 
