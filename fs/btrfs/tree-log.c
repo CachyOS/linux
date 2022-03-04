@@ -7034,6 +7034,17 @@ void btrfs_log_new_name(struct btrfs_trans_handle *trans,
 			goto out;
 		}
 
+		/*
+		 * Other concurrent task might be logging the old directory,
+		 * as it can be triggered when logging other inode that had or
+		 * still has a dentry in the old directory. So take the old
+		 * directory's log_mutex to prevent getting an -EEXIST when
+		 * logging a key to record the deletion, or having that other
+		 * task logging the old directory get an -EEXIST if it attempts
+		 * to log the same key after we just did it. In both cases that
+		 * would result in falling back to a transaction commit.
+		 */
+		mutex_lock(&old_dir->log_mutex);
 		ret = del_logged_dentry(trans, log, path, btrfs_ino(old_dir),
 					old_dentry->d_name.name,
 					old_dentry->d_name.len, old_dir_index);
@@ -7047,6 +7058,7 @@ void btrfs_log_new_name(struct btrfs_trans_handle *trans,
 						 btrfs_ino(old_dir),
 						 old_dir_index, old_dir_index);
 		}
+		mutex_unlock(&old_dir->log_mutex);
 
 		btrfs_free_path(path);
 		if (ret < 0)
