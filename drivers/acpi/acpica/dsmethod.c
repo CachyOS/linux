@@ -306,8 +306,9 @@ acpi_ds_begin_method_execution(struct acpi_namespace_node *method_node,
 	/* Prevent wraparound of thread count */
 
 	if (obj_desc->method.thread_count == ACPI_UINT8_MAX) {
-		ACPI_ERROR((AE_INFO,
-			    "Method reached maximum reentrancy limit (255)"));
+		/* Suppressing this due to firmware bug flooding the logs */
+		/*ACPI_ERROR((AE_INFO,
+			    "Method reached maximum reentrancy limit (255)"));*/
 		return_ACPI_STATUS(AE_AML_METHOD_LIMIT);
 	}
 

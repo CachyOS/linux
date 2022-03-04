@@ -280,6 +280,56 @@ acpi_ut_namespace_error(const char *module_name,
 
 /*******************************************************************************
  *
+ * Limit the error message flood caused by a firmware bug:
+ *
+ * ACPI Error: Method reached maximum reentrancy limit (255) (20210331/dsmethod-309)
+ * ACPI Error: Aborting method \_SB.PCI0.LPC0.EC0.VFCD.PDVL due to previous error (AE_AML_METHOD_LIMIT) (20210331/psparse-529)
+ * [...]
+ * ACPI Error: Aborting method \_SB.PCI0.LPC0.EC0.VFCD.PDVL due to previous error (AE_AML_METHOD_LIMIT) (20210331/psparse-529)
+ *
+ ******************************************************************************/
+
+static bool acpi_disable_msg_flood_detect;
+
+static int __init acpi_no_msg_flood_detect_setup(char *s)
+{
+	acpi_disable_msg_flood_detect = true;
+	pr_info("ACPI error message flood detection disabled\n");
+
+	return 0;
+}
+
+early_param("acpi_no_msg_flood_detect", acpi_no_msg_flood_detect_setup);
+
+static bool acpi_skip_print_node(struct acpi_namespace_node *node)
+{
+	static bool skip_print = false;
+	struct acpi_buffer buffer;
+	acpi_status status;
+
+	if (acpi_disable_msg_flood_detect || !node)
+		return false;
+
+	if (!skip_print) {
+		/* Convert handle to full pathname */
+		buffer.length = ACPI_ALLOCATE_LOCAL_BUFFER;
+
+		status = acpi_ns_handle_to_pathname(node, &buffer, TRUE);
+		if (ACPI_SUCCESS(status)) {
+			skip_print = !strcmp((const char *)buffer.pointer,
+					     "\\_SB.PCI0.LPC0.EC0.VFCD.PDVL");
+			ACPI_FREE(buffer.pointer);
+
+			if (skip_print)
+				return false; /* print once */
+		}
+	}
+
+	return skip_print;
+}
+
+/*******************************************************************************
+ *
  * FUNCTION:    acpi_ut_method_error
  *
  * PARAMETERS:  module_name         - Caller's module name (for error output)
@@ -304,6 +354,9 @@ acpi_ut_method_error(const char *module_name,
 {
 	acpi_status status;
 	struct acpi_namespace_node *node = prefix_node;
+
+	if (acpi_skip_print_node(node))
+		return;
 
 	ACPI_MSG_REDIRECT_BEGIN;
 	acpi_os_printf(ACPI_MSG_ERROR);
