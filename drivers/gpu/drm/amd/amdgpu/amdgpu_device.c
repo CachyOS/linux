@@ -5308,6 +5308,20 @@ int amdgpu_device_reinit_after_reset(struct amdgpu_reset_context *reset_context)
 				if (!test_bit(AMDGPU_SKIP_COREDUMP, &reset_context->flags))
 					amdgpu_coredump(tmp_adev, false, vram_lost, reset_context->job);
 
+				if (reset_context->job && reset_context->job->vm) {
+					tmp_adev->reset_event_info.pid =
+						reset_context->job->vm->task_info->task.pid;
+					memset(tmp_adev->reset_event_info.pname, 0, TASK_COMM_LEN);
+					strcpy(tmp_adev->reset_event_info.pname,
+						reset_context->job->vm->task_info->process_name);
+				} else {
+					tmp_adev->reset_event_info.pid = 0;
+					memset(tmp_adev->reset_event_info.pname, 0, TASK_COMM_LEN);
+				}
+
+				tmp_adev->reset_event_info.flags = vram_lost;
+				schedule_work(&tmp_adev->gpu_reset_event_work);
+
 				if (vram_lost) {
 					dev_info(
 						tmp_adev->dev,
