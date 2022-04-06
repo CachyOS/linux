@@ -6,6 +6,7 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/page-flags.h>
+#include <linux/sched/mm.h>
 #include <linux/spinlock.h>
 #include <linux/blkdev.h>
 #include <linux/swap.h>
@@ -3152,6 +3153,9 @@ int btrfs_alloc_page_array(unsigned int nr_pages, struct page **page_array)
 
 		allocated = alloc_pages_bulk_array(GFP_NOFS, nr_pages, page_array);
 
+		if (allocated == nr_pages)
+			return 0;
+
 		/*
 		 * During this iteration, no page could be allocated, even
 		 * though alloc_pages_bulk_array() falls back to alloc_page()
@@ -3159,6 +3163,8 @@ int btrfs_alloc_page_array(unsigned int nr_pages, struct page **page_array)
 		 */
 		if (allocated == last)
 			return -ENOMEM;
+
+		memalloc_retry_wait(GFP_NOFS);
 	}
 	return 0;
 }
