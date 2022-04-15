@@ -30,6 +30,7 @@
 #include <linux/uio.h>
 #include <linux/mm.h>
 
+#include <asm/cmdline.h>
 #include <asm/microcode_intel.h>
 #include <asm/intel-family.h>
 #include <asm/processor.h>
@@ -38,6 +39,7 @@
 #include <asm/msr.h>
 
 static const char ucode_path[] = "kernel/x86/microcode/GenuineIntel.bin";
+bool force_ucode_load = false;
 
 /* Current microcode patch used in early patching on the APs. */
 static struct microcode_intel *intel_ucode_patch;
@@ -558,9 +560,18 @@ static int apply_microcode_early(struct ucode_cpu_info *uci, bool early)
 	 * already.
 	 */
 	rev = intel_get_microcode_revision();
-	if (rev >= mc->hdr.rev) {
+	if (rev > mc->hdr.rev) {
 		uci->cpu_sig.rev = rev;
 		return UCODE_OK;
+	}
+
+	if (rev == mc->hdr.rev) {
+		if (!force_ucode_load) {
+			printk ("Matching ucode rev, no update\n");
+			return UCODE_OK;
+		} else {
+			printk ("Matching ucode rev.. force updating\n");
+		}
 	}
 
 	/*
@@ -614,6 +625,29 @@ int __init save_microcode_in_initrd_intel(void)
 	return 0;
 }
 
+static bool check_force_ucode_bsp(void)
+{
+	static const char *__force_ucode_str = "force_ucode_load";
+
+#ifdef CONFIG_X86_32
+	const char *cmdline = (const char *)__pa_nodebug(boot_command_line);
+	const char *option  = (const char *)__pa_nodebug(__force_ucode_str);
+	bool *res = (bool *)__pa_nodebug(&force_ucode_load);
+
+#else /* CONFIG_X86_64 */
+	const char *cmdline = boot_command_line;
+	const char *option  = __force_ucode_str;
+	bool *res = &force_ucode_load;
+#endif
+
+	if (cmdline_find_option_bool(cmdline, option)) {
+		printk("cmdline forcing ucode update for same rev\n");
+		*res = true;
+	}
+
+	return *res;
+}
+
 /*
  * @res_patch, output: a pointer to the patch we found.
  */
@@ -647,6 +681,9 @@ void __init load_ucode_intel_bsp(void)
 {
 	struct microcode_intel *patch;
 	struct ucode_cpu_info uci;
+	bool force_bsp;
+
+	force_bsp = check_force_ucode_bsp();
 
 	patch = __load_ucode_intel(&uci);
 	if (!patch)
