@@ -448,8 +448,11 @@ sched_core_dequeue(struct rq *rq, struct task_struct *p, int flags) { }
  * part of the period that we allow rt tasks to run in us.
  * default: 0.95s
  */
+#ifdef CONFIG_CACHY
+int sysctl_sched_rt_runtime = 980000;
+#else
 int sysctl_sched_rt_runtime = 950000;
-
+#endif
 
 /*
  * Serialization rules:
