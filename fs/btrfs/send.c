@@ -138,6 +138,8 @@ struct send_ctx {
 	 */
 	struct inode *cur_inode;
 	struct file_ra_state ra;
+	u64 prev_extent_end;
+	bool clean_page_cache;
 
 	/*
 	 * We process inodes by their increasing order, so if before an
@@ -5235,6 +5237,28 @@ static int send_extent_data(struct send_ctx *sctx,
 		}
 		memset(&sctx->ra, 0, sizeof(struct file_ra_state));
 		file_ra_state_init(&sctx->ra, sctx->cur_inode->i_mapping);
+
+		/*
+		 * It's very likely there are no pages from this inode in the page
+		 * cache, so after reading extents and sending their data, we clean
+		 * the page cache to avoid trashing the page cache (adding pressure
+		 * to the page cache and forcing eviction of other data more useful
+		 * for applications).
+		 *
+		 * We decide if we should clean the page cache simply by checking
+		 * if the inode's mapping nrpages is 0 when we first open it, and
+		 * not by using something like filemap_range_has_page() before
+		 * reading an extent because when we ask the readahead code to
+		 * read a given file range, it may (and almost always does) read
+		 * pages from beyond that range (see the documentation for
+		 * page_cache_sync_readahead()), so it would not be reliable,
+		 * because after reading the first extent future calls to
+		 * filemap_range_has_page() would return true because the readahead
+		 * on the previous extent resulted in reading pages of the current
+		 * extent as well.
+		 */
+		sctx->clean_page_cache = (sctx->cur_inode->i_mapping->nrpages == 0);
+		sctx->prev_extent_end = offset;
 	}
 
 	while (sent < len) {
@@ -5246,6 +5270,33 @@ static int send_extent_data(struct send_ctx *sctx,
 			return ret;
 		sent += size;
 	}
+
+	if (sctx->clean_page_cache) {
+		const u64 end = round_up(offset + len, PAGE_SIZE);
+
+		/*
+		 * Always start from the end offset of the last processed extent.
+		 * This is because the readahead code may (and very often does)
+		 * reads pages beyond the range we request for readahead. So if
+		 * we have an extent layout like this:
+		 *
+		 *            [ extent A ] [ extent B ] [ extent C ]
+		 *
+		 * When we ask page_cache_sync_readahead() to read extent A, it
+		 * may also trigger reads for pages of extent B. If we are doing
+		 * an incremental send and extent B has not changed between the
+		 * parent and send snapshots, some or all of its pages may end
+		 * up being read and placed in the page cache. So when truncating
+		 * the page cache we always start from the end offset of the
+		 * previously processed extent up to the end of the current
+		 * extent.
+		 */
+		truncate_inode_pages_range(&sctx->cur_inode->i_data,
+					   sctx->prev_extent_end,
+					   end - 1);
+		sctx->prev_extent_end = end;
+	}
+
 	return 0;
 }
 
@@ -6281,6 +6332,30 @@ out:
 	return ret;
 }
 
+static void close_current_inode(struct send_ctx *sctx)
+{
+	u64 i_size;
+
+	if (sctx->cur_inode == NULL)
+		return;
+
+	i_size = i_size_read(sctx->cur_inode);
+
+	/*
+	 * If we are doing an incremental send, we may have extents between the
+	 * last processed extent and the i_size that have not been processed
+	 * because they haven't changed but we may have read some of their pages
+	 * through readahead, see the comments at send_extent_data().
+	 */
+	if (sctx->clean_page_cache && sctx->prev_extent_end < i_size)
+		truncate_inode_pages_range(&sctx->cur_inode->i_data,
+					   sctx->prev_extent_end,
+					   round_up(i_size, PAGE_SIZE) - 1);
+
+	iput(sctx->cur_inode);
+	sctx->cur_inode = NULL;
+}
+
 static int changed_inode(struct send_ctx *sctx,
 			 enum btrfs_compare_tree_result result)
 {
@@ -6291,8 +6366,7 @@ static int changed_inode(struct send_ctx *sctx,
 	u64 left_gen = 0;
 	u64 right_gen = 0;
 
-	iput(sctx->cur_inode);
-	sctx->cur_inode = NULL;
+	close_current_inode(sctx);
 
 	sctx->cur_ino = key->objectid;
 	sctx->cur_inode_new_gen = 0;
@@ -7780,7 +7854,7 @@ out:
 
 		name_cache_free(sctx);
 
-		iput(sctx->cur_inode);
+		close_current_inode(sctx);
 
 		kfree(sctx);
 	}
