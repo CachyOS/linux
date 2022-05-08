@@ -67,9 +67,13 @@
  *
  * (default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_latency			= 3000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 4000000ULL;
+#else
 unsigned int sysctl_sched_latency			= 6000000ULL;
 static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
-
+#endif
 /*
  * The initial- and re-scaling of tunables is configurable
  *
@@ -88,8 +92,13 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
  *
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_min_granularity			= 400000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 500000ULL;
+#else
 unsigned int sysctl_sched_min_granularity			= 750000ULL;
 static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
+#endif
 
 /*
  * Minimal preemption granularity for CPU-bound SCHED_IDLE tasks.
@@ -119,8 +128,13 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  *
  * (default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_wakeup_granularity			= 500000UL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 800000UL;
+#else
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
+#endif
 
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 
@@ -173,7 +187,11 @@ int __weak arch_asym_cpu_priority(int cpu)
  *
  * (default: 5 msec, units: microseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_cfs_bandwidth_slice		= 3000UL;
+#else
 unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
+#endif
 #endif
 
 static inline void update_load_add(struct load_weight *lw, unsigned long inc)
@@ -1036,6 +1054,7 @@ update_stats_curr_start(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	/*
 	 * We are starting a new run period:
 	 */
+	se->migrated = 0;
 	se->exec_start = rq_clock_task(rq_of(cfs_rq));
 }
 
@@ -4275,6 +4294,27 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 
+static void place_entity_migrate(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	if (!sched_feat(PLACE_MIGRATE))
+		return;
+
+	if (cfs_rq->nr_running < se->migrated) {
+		/*
+		 * Migrated to a shorter runqueue, go first because
+		 * we were under-served on the old runqueue.
+		 */
+		se->vruntime = cfs_rq->min_vruntime;
+		return;
+	}
+
+	/*
+	 * Migrated to a longer runqueue, go last because
+	 * we got over-served on the old runqueue.
+	 */
+	se->vruntime = cfs_rq->min_vruntime + sched_vslice(cfs_rq, se);
+}
+
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq);
 
 static inline bool cfs_bandwidth_used(void);
@@ -4348,6 +4388,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 	if (flags & ENQUEUE_WAKEUP)
 		place_entity(cfs_rq, se, 0);
+	else if (se->migrated)
+		place_entity_migrate(cfs_rq, se);
 
 	check_schedstat_required();
 	update_stats_enqueue_fair(cfs_rq, se, flags);
@@ -6982,6 +7024,7 @@ static void detach_entity_cfs_rq(struct sched_entity *se);
  */
 static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 {
+	struct sched_entity *se = &p->se;
 	/*
 	 * As blocked tasks retain absolute vruntime the migration needs to
 	 * deal with this by subtracting the old and adding the new
@@ -6989,7 +7032,6 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 	 * the task on the new runqueue.
 	 */
 	if (READ_ONCE(p->__state) == TASK_WAKING) {
-		struct sched_entity *se = &p->se;
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 		u64 min_vruntime;
 
@@ -7014,7 +7056,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 		 * rq->lock and can modify state directly.
 		 */
 		lockdep_assert_rq_held(task_rq(p));
-		detach_entity_cfs_rq(&p->se);
+		detach_entity_cfs_rq(se);
 
 	} else {
 		/*
@@ -7025,14 +7067,15 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 		 * wakee task is less decayed, but giving the wakee more load
 		 * sounds not bad.
 		 */
-		remove_entity_load_avg(&p->se);
+		remove_entity_load_avg(se);
 	}
 
 	/* Tell new CPU we are migrated */
-	p->se.avg.last_update_time = 0;
+	se->avg.last_update_time = 0;
 
 	/* We have migrated, no longer consider this task hot */
-	p->se.exec_start = 0;
+	for_each_sched_entity(se)
+		se->migrated = READ_ONCE(cfs_rq_of(se)->nr_running) + !se->on_rq;
 
 	update_scan_period(p, new_cpu);
 }
@@ -7716,6 +7759,9 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 		return 1;
 
 	if (sysctl_sched_migration_cost == 0)
+		return 0;
+
+	if (p->se.migrated)
 		return 0;
 
 	delta = rq_clock_task(env->src_rq) - p->se.exec_start;
