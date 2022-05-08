@@ -98,6 +98,9 @@
 #if defined(CONFIG_SYSCTL)
 
 /* Constants used for minimum and  maximum */
+static int ten_thousand = 10000;
+extern int hrtimer_granularity_us;
+extern int hrtimeout_min_us;
 
 #ifdef CONFIG_PERF_EVENTS
 static const int six_hundred_forty_kb = 640 * 1024;
@@ -1662,6 +1665,24 @@ int proc_do_static_key(struct ctl_table *table, int write,
 }
 
 static struct ctl_table kern_table[] = {
+	{
+		.procname	= "hrtimer_granularity_us",
+		.data		= &hrtimer_granularity_us,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= &ten_thousand,
+	},
+	{
+		.procname	= "hrtimeout_min_us",
+		.data		= &hrtimeout_min_us,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= &ten_thousand,
+	},
 	{
 		.procname	= "sched_child_runs_first",
 		.data		= &sysctl_sched_child_runs_first,
