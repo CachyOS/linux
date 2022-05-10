@@ -128,12 +128,11 @@ xfs_filestream_pick_ag(
 		if (!pag->pagf_init) {
 			err = xfs_alloc_pagf_init(mp, NULL, ag, trylock);
 			if (err) {
-				if (err != -EAGAIN) {
-					xfs_perag_put(pag);
+				xfs_perag_put(pag);
+				if (err != -EAGAIN)
 					return err;
-				}
 				/* Couldn't lock the AGF, skip this AG. */
-				goto next_ag;
+				continue;
 			}
 		}
 
