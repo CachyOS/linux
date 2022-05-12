@@ -948,6 +948,9 @@ void submit_bio(struct bio *bio)
 		if (bio->bi_opf & REQ_PREFLUSH)
 			current->fsync_count++;
 		}
+
+		if (bio->bi_opf & REQ_PREFLUSH)
+			current->fsync_count++;
 	}
 
 	/*
