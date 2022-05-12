@@ -812,7 +812,7 @@ static void amd_e400_idle(void)
 /*
  * Prefer MWAIT over HALT if MWAIT is supported, MWAIT_CPUID leaf
  * exists and whenever MONITOR/MWAIT extensions are present there is at
- * least 1 C1 substate.
+ * least one C1 substate.
  *
  * Do not prefer MWAIT if MONITOR instruction has a bug or idle=nomwait
  * is passed to kernel commandline parameter.
@@ -833,19 +833,19 @@ static int prefer_mwait_c1_over_halt(const struct cpuinfo_x86 *c)
 	if (boot_cpu_has_bug(X86_BUG_MONITOR))
 		return 0;
 
-	if (c->cpuid_level < CPUID_MWAIT_LEAF)
-		return 0;
-
 	cpuid(CPUID_MWAIT_LEAF, &eax, &ebx, &ecx, &edx);
 
 	/*
-	 * If ECX doesn't have extended info about MWAIT,
-	 * don't need to check substates.
+	 * If MWAIT extensions are not available, it is safe to use MWAIT
+	 * with EAX=0, ECX=0.
 	 */
 	if (!(ecx & CPUID5_ECX_EXTENSIONS_SUPPORTED))
 		return 1;
 
-	/* Check, whether at least 1 MWAIT C1 substate is present */
+	/*
+	 * If MWAIT extensions are available, there should be least one
+	 * MWAIT C1 substate present.
+	 */
 	return (edx & MWAIT_C1_SUBSTATE_MASK);
 }
 
