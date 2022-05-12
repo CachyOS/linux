@@ -609,7 +609,6 @@ static int microcode_reload_late(void)
 	atomic_set(&late_cpus_in,  0);
 	atomic_set(&late_cpus_out, 0);
 
-	printk ("Going to do stop_machine\n");
 	ret = stop_machine_cpuslocked(__reload_late, NULL, cpu_online_mask);
 	if (ret == 0)
 		microcode_check();
@@ -633,7 +632,7 @@ static ssize_t reload_store(struct device *dev,
 	if (ret)
 		return ret;
 
-	if (!val || val > 2)
+	if (val != 1)
 		return size;
 
 	cpus_read_lock();
