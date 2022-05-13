@@ -100,3 +100,14 @@ SCHED_FEAT(LATENCY_WARN, false)
 
 SCHED_FEAT(ALT_PERIOD, true)
 SCHED_FEAT(BASE_SLICE, true)
+
+#ifdef CONFIG_SMP
+/*
+ * SMP migrations in particular can cause the min_vruntime to stall,
+ * leading to starvation issues.
+ */
+SCHED_FEAT(FORCE_MIN_VRUNTIME, false)
+#else
+SCHED_FEAT(FORCE_MIN_VRUNTIME, false)
+#endif
+SCHED_FEAT(PLACE_MIGRATE, true)
