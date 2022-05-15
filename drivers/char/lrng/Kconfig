@@ -101,16 +101,16 @@ config LRNG_KCAPI_IF
 	  is intended to be higher than the existing RNG
 	  implementations.
 
-# config LRNG_HWRAND_IF
-# 	tristate "Interface with Hardware Random Number Generator Framework"
-# 	depends on HW_RANDOM
-# 	select LRNG_DRNG_ATOMIC
-# 	help
-# 	  The LRNG can be registered with the hardware random number
-# 	  generator framework. This offers a random number generator
-# 	  with the name "lrng" that is accessible via the framework.
-# 	  For example it allows pulling data from the LRNG via the
-# 	  /dev/hwrng file.
+config LRNG_HWRAND_IF
+	tristate "Interface with Hardware Random Number Generator Framework"
+	depends on HW_RANDOM
+	select LRNG_DRNG_ATOMIC
+	help
+	  The LRNG can be registered with the hardware random number
+	  generator framework. This offers a random number generator
+	  with the name "lrng" that is accessible via the framework.
+	  For example it allows pulling data from the LRNG via the
+	  /dev/hwrng file.
 
 config LRNG_DEV_IF
 	bool "Character device file interface"
