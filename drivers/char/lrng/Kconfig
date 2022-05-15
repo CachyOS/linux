@@ -633,26 +633,26 @@ config LRNG_DRNG_CHACHA20
 config LRNG_SWITCH
 	bool
 
-# menuconfig LRNG_SWITCH_HASH
-# 	bool "Support conditioning hash runtime switching"
-# 	select LRNG_SWITCH
-# 	help
-# 	  The LRNG uses a default message digest. With this
-# 	  configuration option other message digests can be selected
-# 	  and loaded at runtime.
-#
-# if LRNG_SWITCH_HASH
-#
-# config LRNG_HASH_KCAPI
-# 	tristate "Kernel crypto API hashing support for LRNG"
-# 	select CRYPTO_HASH
-# 	select CRYPTO_SHA512
-# 	help
-# 	  Enable the kernel crypto API support for entropy compression
-# 	  and conditioning functions.
-#
-# endif # LRNG_SWITCH_HASH
-#
+menuconfig LRNG_SWITCH_HASH
+	bool "Support conditioning hash runtime switching"
+	select LRNG_SWITCH
+	help
+	  The LRNG uses a default message digest. With this
+	  configuration option other message digests can be selected
+	  and loaded at runtime.
+
+if LRNG_SWITCH_HASH
+
+config LRNG_HASH_KCAPI
+	tristate "Kernel crypto API hashing support for LRNG"
+	select CRYPTO_HASH
+	select CRYPTO_SHA512
+	help
+	  Enable the kernel crypto API support for entropy compression
+	  and conditioning functions.
+
+endif # LRNG_SWITCH_HASH
+
 # menuconfig LRNG_SWITCH_DRNG
 # 	bool "Support DRNG runtime switching"
 # 	select LRNG_SWITCH

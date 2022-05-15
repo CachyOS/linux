@@ -12,4 +12,5 @@ obj-$(CONFIG_SYSCTL)			+= lrng_proc.o
 obj-$(CONFIG_NUMA)			+= lrng_numa.o
 
 obj-$(CONFIG_LRNG_SWITCH)		+= lrng_switch.o
+obj-$(CONFIG_LRNG_HASH_KCAPI)		+= lrng_hash_kcapi.o
 obj-$(CONFIG_LRNG_DRNG_CHACHA20)	+= lrng_drng_chacha20.o
