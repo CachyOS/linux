@@ -17,3 +17,5 @@ obj-$(CONFIG_LRNG_DRNG_CHACHA20)	+= lrng_drng_chacha20.o
 obj-$(CONFIG_LRNG_DRBG)			+= lrng_drng_drbg.o
 obj-$(CONFIG_LRNG_DRNG_KCAPI)		+= lrng_drng_kcapi.o
 obj-$(CONFIG_LRNG_DRNG_ATOMIC)		+= lrng_drng_atomic.o
+
+obj-$(CONFIG_LRNG_TIMER_COMMON)		+= lrng_es_timer_common.o

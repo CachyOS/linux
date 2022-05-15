@@ -144,9 +144,9 @@ endmenu # "Specific DRNG seeding strategies"
 # config LRNG_SCHED_DFLT_TIMER_ES
 # 	bool
 #
-# config LRNG_TIMER_COMMON
-# 	bool
-#
+config LRNG_TIMER_COMMON
+	bool
+
 # choice
 # 	prompt "Default Timer-based Entropy Source"
 # 	default LRNG_IRQ_DFLT_TIMER_ES
