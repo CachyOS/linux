@@ -124,17 +124,17 @@ endmenu # "Specific DRNG seeding strategies"
 
 menu "Entropy Source Configuration"
 
-# config LRNG_RUNTIME_ES_CONFIG
-# 	bool "Enable runtime configuration of entropy sources"
-# 	help
-# 	  When enabling this option, the LRNG provides the mechanism
-# 	  allowing to alter the entropy rate of each entropy source
-# 	  during boot time and runtime.
-#
-# 	  Each entropy source allows its entropy rate changed with
-# 	  a kernel command line option. When not providing any
-# 	  option, the default specified during kernel compilation
-# 	  is applied.
+config LRNG_RUNTIME_ES_CONFIG
+	bool "Enable runtime configuration of entropy sources"
+	help
+	  When enabling this option, the LRNG provides the mechanism
+	  allowing to alter the entropy rate of each entropy source
+	  during boot time and runtime.
+
+	  Each entropy source allows its entropy rate changed with
+	  a kernel command line option. When not providing any
+	  option, the default specified during kernel compilation
+	  is applied.
 
 comment "Common Timer-based Entropy Source Configuration"
 
