@@ -23,5 +23,6 @@ obj-$(CONFIG_LRNG_IRQ)			+= lrng_es_irq.o
 obj-$(CONFIG_LRNG_KERNEL_RNG)		+= lrng_es_krng.o
 obj-$(CONFIG_LRNG_SCHED)		+= lrng_es_sched.o
 obj-$(CONFIG_LRNG_CPU)			+= lrng_es_cpu.o
+obj-$(CONFIG_LRNG_JENT)			+= lrng_es_jent.o
 
 obj-$(CONFIG_LRNG_HEALTH_TESTS)		+= lrng_health.o
