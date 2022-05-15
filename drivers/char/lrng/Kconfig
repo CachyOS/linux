@@ -111,15 +111,15 @@ config LRNG_KCAPI_IF
 # 	  with the name "lrng" that is accessible via the framework.
 # 	  For example it allows pulling data from the LRNG via the
 # 	  /dev/hwrng file.
-#
-# config LRNG_DEV_IF
-# 	bool "Character device file interface"
-# 	select LRNG_COMMON_DEV_IF
-# 	help
-# 	  The LRNG can create a character device file that operates
-# 	  identically to /dev/random including IOCTL, read and write
-# 	  operations.
-#
+
+config LRNG_DEV_IF
+	bool "Character device file interface"
+	select LRNG_COMMON_DEV_IF
+	help
+	  The LRNG can create a character device file that operates
+	  identically to /dev/random including IOCTL, read and write
+	  operations.
+
 endmenu # "LRNG Interfaces"
 
 menu "Entropy Source Configuration"
