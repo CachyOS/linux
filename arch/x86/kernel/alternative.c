@@ -865,7 +865,9 @@ void __init alternative_instructions(void)
 	 * Then patch alternatives, such that those paravirt calls that are in
 	 * alternatives can be overwritten by their immediate fragments.
 	 */
+	printk("clr: Applying alternatives\n");
 	apply_alternatives(__alt_instructions, __alt_instructions_end);
+	printk("clr: Applying alternatives done\n");
 
 	apply_ibt_endbr(__ibt_endbr_seal, __ibt_endbr_seal_end);
 

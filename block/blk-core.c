@@ -901,6 +901,9 @@ void submit_bio(struct bio *bio)
 		} else {
 			task_io_account_read(bio->bi_iter.bi_size);
 			count_vm_events(PGPGIN, count);
+
+		if (bio->bi_opf & REQ_PREFLUSH)
+			current->fsync_count++;
 		}
 	}
 
