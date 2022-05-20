@@ -314,7 +314,10 @@ void blk_cleanup_queue(struct request_queue *q)
 	 */
 	blk_freeze_queue(q);
 
+	/* New 'hctx->run_work' can't be queued after setting the dead flag */
+	spin_lock_irq(&q->queue_lock);
 	blk_queue_flag_set(QUEUE_FLAG_DEAD, q);
+	spin_unlock_irq(&q->queue_lock);
 
 	blk_sync_queue(q);
 	if (queue_is_mq(q)) {
