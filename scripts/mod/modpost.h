@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -10,6 +11,7 @@
 #include <unistd.h>
 #include <elf.h>
 
+#include "list.h"
 #include "elfconfig.h"
 
 /* On BSD-alike OSes elf.h defines these according to host's word size */
@@ -50,28 +52,6 @@
 #define ELF_R_TYPE  ELF64_R_TYPE
 #endif
 
-/* The 64-bit MIPS ELF ABI uses an unusual reloc format. */
-typedef struct
-{
-	Elf32_Word    r_sym;	/* Symbol index */
-	unsigned char r_ssym;	/* Special symbol for 2nd relocation */
-	unsigned char r_type3;	/* 3rd relocation type */
-	unsigned char r_type2;	/* 2nd relocation type */
-	unsigned char r_type1;	/* 1st relocation type */
-} _Elf64_Mips_R_Info;
-
-typedef union
-{
-	Elf64_Xword		r_info_number;
-	_Elf64_Mips_R_Info	r_info_fields;
-} _Elf64_Mips_R_Info_union;
-
-#define ELF64_MIPS_R_SYM(i) \
-  ((__extension__ (_Elf64_Mips_R_Info_union)(i)).r_info_fields.r_sym)
-
-#define ELF64_MIPS_R_TYPE(i) \
-  ((__extension__ (_Elf64_Mips_R_Info_union)(i)).r_info_fields.r_type1)
-
 #if KERNEL_ELFDATA != HOST_ELFDATA
 
 static inline void __endian(const void *src, void *dest, unsigned int size)
@@ -94,6 +74,7 @@ static inline void __endian(const void *src, void *dest, unsigned int size)
 
 #endif
 
+#define strstarts(str, prefix) (strncmp(str, prefix, strlen(prefix)) == 0)
 #define NOFAIL(ptr)   do_nofail((ptr), #ptr)
 void *do_nofail(void *ptr, const char *expr);
 
@@ -109,26 +90,22 @@ buf_printf(struct buffer *buf, const char *fmt, ...);
 void
 buf_write(struct buffer *buf, const char *s, int len);
 
-struct namespace_list {
-	struct namespace_list *next;
-	char namespace[];
-};
-
 struct module {
-	struct module *next;
-	int gpl_compatible;
-	struct symbol *unres;
-	int from_dump;  /* 1 if module was loaded from *.symvers */
-	int is_vmlinux;
-	int seen;
-	int has_init;
-	int has_cleanup;
+	struct list_head list;
+	struct list_head exported_symbols;
+	struct list_head unresolved_symbols;
+	bool is_gpl_compatible;
+	bool from_dump;		/* true if module was loaded from *.symvers */
+	bool is_vmlinux;
+	bool seen;
+	bool has_init;
+	bool has_cleanup;
 	struct buffer dev_table_buf;
 	char	     srcversion[25];
 	// Missing namespace dependencies
-	struct namespace_list *missing_namespaces;
+	struct list_head missing_namespaces;
 	// Actual imported namespaces
-	struct namespace_list *imported_namespaces;
+	struct list_head imported_namespaces;
 	char name[];
 };
 
@@ -138,8 +115,6 @@ struct elf_info {
 	Elf_Shdr     *sechdrs;
 	Elf_Sym      *symtab_start;
 	Elf_Sym      *symtab_stop;
-	Elf_Section  export_sec;
-	Elf_Section  export_gpl_sec;
 	char         *strtab;
 	char	     *modinfo;
 	unsigned int modinfo_len;
@@ -177,8 +152,11 @@ static inline unsigned int get_secindex(const struct elf_info *info,
 	return info->symtab_shndx_start[sym - info->symtab_start];
 }
 
+/* section-check.c */
+void check_sec_ref(struct module *mod, const char *modname,
+		   struct elf_info *elf);
+
 /* file2alias.c */
-extern unsigned int cross_build;
 void handle_moddevtable(struct module *mod, struct elf_info *info,
 			Elf_Sym *sym, const char *symname);
 void add_moddevtable(struct buffer *buf, struct module *mod);
@@ -187,6 +165,13 @@ void add_moddevtable(struct buffer *buf, struct module *mod);
 void get_src_version(const char *modname, char sum[], unsigned sumlen);
 
 /* from modpost.c */
+extern int sec_mismatch_count;
+
+void *sym_get_data_by_offset(const struct elf_info *info,
+			     unsigned int secindex, unsigned long offset);
+const char *sech_name(const struct elf_info *info, Elf_Shdr *sechdr);
+const char *sec_name(const struct elf_info *info, int secindex);
+
 char *read_text_file(const char *filename);
 char *get_line(char **stringp);
 
