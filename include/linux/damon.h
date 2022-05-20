@@ -87,6 +87,7 @@ struct damon_target {
  * @DAMOS_HUGEPAGE:	Call ``madvise()`` for the region with MADV_HUGEPAGE.
  * @DAMOS_NOHUGEPAGE:	Call ``madvise()`` for the region with MADV_NOHUGEPAGE.
  * @DAMOS_STAT:		Do nothing but count the stat.
+ * @DAMOS_HOT:		Mark the region as hot.
  * @NR_DAMOS_ACTIONS:	Total number of DAMOS actions
  */
 enum damos_action {
@@ -96,6 +97,7 @@ enum damos_action {
 	DAMOS_HUGEPAGE,
 	DAMOS_NOHUGEPAGE,
 	DAMOS_STAT,		/* Do nothing but only record the stat */
+	DAMOS_HOT,
 	NR_DAMOS_ACTIONS,
 };
 
