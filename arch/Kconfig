@@ -712,6 +712,16 @@ config LTO_CLANG_THIN
 	    https://clang.llvm.org/docs/ThinLTO.html
 
 	  If unsure, say Y.
+
+config LTO_CLANG_THIN_CACHEDIR
+	string "Clang ThinLTO cache directory"
+	depends on LTO_CLANG_THIN
+	default "/tmp"
+	help
+	  This option allows users to choose a directory that stores
+	  Clang's ThinLTO cache.
+	  Leave empty for default.
+
 endchoice
 
 config ARCH_SUPPORTS_CFI_CLANG
