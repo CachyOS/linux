@@ -481,9 +481,24 @@ struct vm_area_struct *vm_area_dup(struct vm_area_struct *orig)
 	return new;
 }
 
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+static void __vm_area_free(struct rcu_head *head)
+{
+	struct vm_area_struct *vma = container_of(head, struct vm_area_struct,
+						  vm_rcu);
+	kmem_cache_free(vm_area_cachep, vma);
+}
+#endif
+
 void vm_area_free(struct vm_area_struct *vma)
 {
 	free_anon_vma_name(vma);
+#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
+	if (atomic_read(&vma->vm_mm->mm_users) > 1) {
+		call_rcu(&vma->vm_rcu, __vm_area_free);
+		return;
+	}
+#endif
 	kmem_cache_free(vm_area_cachep, vma);
 }
 
@@ -1126,7 +1141,8 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm_init_owner(mm, p);
 	mm_pasid_init(mm);
 	RCU_INIT_POINTER(mm->exe_file, NULL);
-	mmu_notifier_subscriptions_init(mm);
+	if (!mmu_notifier_subscriptions_init(mm))
+		goto fail_nopgd;
 	init_tlb_flush_pending(mm);
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
 	mm->pmd_huge_pte = NULL;
@@ -1149,6 +1165,7 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		goto fail_nocontext;
 
 	mm->user_ns = get_user_ns(user_ns);
+	lru_gen_init_mm(mm);
 	return mm;
 
 fail_nocontext:
@@ -1191,6 +1208,7 @@ static inline void __mmput(struct mm_struct *mm)
 	}
 	if (mm->binfmt)
 		module_put(mm->binfmt->module);
+	lru_gen_del_mm(mm);
 	mmdrop(mm);
 }
 
@@ -2658,6 +2676,13 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 		p->vfork_done = &vfork;
 		init_completion(&vfork);
 		get_task_struct(p);
+	}
+
+	if (IS_ENABLED(CONFIG_LRU_GEN) && !(clone_flags & CLONE_VM)) {
+		/* lock the task to synchronize with memcg migration */
+		task_lock(p);
+		lru_gen_add_mm(p->mm);
+		task_unlock(p);
 	}
 
 	wake_up_new_task(p);
