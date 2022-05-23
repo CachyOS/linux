@@ -54,6 +54,7 @@
 #include <asm/xen/hypervisor.h>
 #include <asm/vdso.h>
 #include <asm/resctrl.h>
+#include <asm/hreset.h>
 #include <asm/unistd.h>
 #include <asm/fsgsbase.h>
 #ifdef CONFIG_IA32_EMULATION
@@ -660,6 +661,8 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 
 	/* Load the Intel cache allocation PQR MSR. */
 	resctrl_sched_in(next_p);
+
+	reset_hardware_history();
 
 	return prev_p;
 }
