@@ -2485,4 +2485,6 @@ static inline int sched_core_idle_cpu(int cpu) { return idle_cpu(cpu); }
 
 extern void sched_set_stop_task(int cpu, struct task_struct *stop);
 
+extern bool sched_smt_siblings_idle(int cpu);
+
 #endif
