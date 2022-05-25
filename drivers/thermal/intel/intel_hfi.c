@@ -199,6 +199,42 @@ static int alloc_hfi_ipcc_scores(void)
 	return hfi_ipcc_scores ? 0 : -ENOMEM;
 }
 
+unsigned long intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
+{
+	int *scores, score;
+	unsigned long seq;
+
+	scores = per_cpu_ptr(hfi_ipcc_scores, cpu);
+	if (!scores)
+		return -ENODEV;
+
+	if (cpu < 0 || cpu >= nr_cpu_ids)
+		return -EINVAL;
+
+	if (ipcc == IPC_CLASS_UNCLASSIFIED)
+		return -EINVAL;
+
+	/*
+	 * Scheduler IPC classes start at 1. HFI classes start at 0.
+	 * See note intel_hfi_update_ipcc().
+	 */
+	if (ipcc >= hfi_features.nr_classes + 1)
+		return -EINVAL;
+
+	/*
+	 * The seqcount implies load-acquire semantics to order loads with
+	 * lockless stores of the write side in set_hfi_ipcc_score(). It
+	 * also implies a compiler barrier.
+	 */
+	do {
+		seq = read_seqcount_begin(&hfi_ipcc_seqcount);
+		/* @ipcc is never 0. */
+		score = scores[ipcc - 1];
+	} while (read_seqcount_retry(&hfi_ipcc_seqcount, seq));
+
+	return score;
+}
+
 static void set_hfi_ipcc_scores(struct hfi_instance *hfi_instance)
 {
 	int cpu;
@@ -213,8 +249,8 @@ static void set_hfi_ipcc_scores(struct hfi_instance *hfi_instance)
 	raw_spin_lock_irq(&hfi_instance->table_lock);
 	/*
 	 * The seqcount implies store-release semantics to order stores with
-	 * lockless loads from the seqcount read side. It also implies a
-	 * compiler barrier.
+	 * lockless loads from the seqcount read side in
+	 * intel_hfi_get_ipcc_score(). It also implies a compiler barrier.
 	 */
 	write_seqcount_begin(&hfi_ipcc_seqcount);
 	for_each_cpu(cpu, hfi_instance->cpus) {
