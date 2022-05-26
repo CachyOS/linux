@@ -337,6 +337,22 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 			int migratetype, bool only_stealable, bool *can_steal);
 
 /*
+ * Use the bit above the highest-possible buddy page
+ * order (MAX_ORDER-1).
+ */
+#define BUDDY_ZEROED	(1UL << (ilog2(MAX_ORDER-1)+1))
+static inline unsigned int __buddy_order(struct page *page, bool unsafe)
+{
+	unsigned int ret;
+	if (unsafe)
+		ret = READ_ONCE(page_private(page));
+	else
+		ret = page_private(page);
+
+	return ret & ~BUDDY_ZEROED;
+}
+
+/*
  * This function returns the order of a free page in the buddy system. In
  * general, page_zone(page)->lock must be held by the caller to prevent the
  * page from being allocated in parallel and returning garbage as the order.
@@ -347,7 +363,7 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 static inline unsigned int buddy_order(struct page *page)
 {
 	/* PageBuddy() must be checked by the caller */
-	return page_private(page);
+	return __buddy_order(page, false);
 }
 
 /*
@@ -361,7 +377,10 @@ static inline unsigned int buddy_order(struct page *page)
  * times, potentially observing different values in the tests and the actual
  * use of the result.
  */
-#define buddy_order_unsafe(page)	READ_ONCE(page_private(page))
+static inline unsigned int buddy_order_unsafe(struct page *page)
+{
+	return __buddy_order(page, true);
+}
 
 /*
  * These three helpers classifies VMAs for virtual memory accounting.
