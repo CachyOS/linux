@@ -94,8 +94,6 @@
 
 #if defined(CONFIG_SYSCTL)
 
-extern int sysctl_zero_pages;
-
 /* Constants used for minimum and  maximum */
 
 #ifdef CONFIG_PERF_EVENTS
@@ -2521,13 +2519,6 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= drop_caches_sysctl_handler,
 		.extra1		= SYSCTL_ONE,
 		.extra2		= SYSCTL_FOUR,
-	},
-	{
-		.procname	= "zero_pages",
-		.data		= &sysctl_zero_pages,
-		.maxlen		= sizeof(sysctl_zero_pages),
-		.mode		= 0644,
-		.proc_handler	= sysctl_zero_handler,
 	},
 #ifdef CONFIG_COMPACTION
 	{
