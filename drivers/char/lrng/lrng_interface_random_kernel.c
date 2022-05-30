@@ -25,9 +25,12 @@ static unsigned int lrng_ready_chain_used = 0;
 
 /********************************** Helper ***********************************/
 
-int __init rand_initialize(void)
+int __init random_init(const char *command_line)
 {
-	return lrng_rand_initialize();
+	int ret = lrng_rand_initialize();
+
+	lrng_pool_insert_aux(command_line, strlen(command_line), 0);
+	return ret;
 }
 
 bool lrng_ready_chain_has_sleeper(void)
