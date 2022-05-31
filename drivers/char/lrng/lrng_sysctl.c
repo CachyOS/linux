@@ -54,9 +54,7 @@ static int lrng_sysctl_do_entropy(struct ctl_table *table, int write,
 				void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table fake_table;
-	int entropy_count;
-
-	entropy_count = lrng_avail_entropy();
+	int entropy_count = lrng_avail_entropy_aux();
 
 	fake_table.data = &entropy_count;
 	fake_table.maxlen = sizeof(entropy_count);
@@ -68,10 +66,7 @@ static int lrng_sysctl_do_poolsize(struct ctl_table *table, int write,
 				   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table fake_table;
-	u32 i, entropy_count = 0;
-
-	for_each_lrng_es(i)
-		entropy_count += lrng_es[i]->max_entropy();
+	u32 entropy_count = lrng_es[lrng_ext_es_aux]->max_entropy();
 
 	fake_table.data = &entropy_count;
 	fake_table.maxlen = sizeof(entropy_count);

@@ -251,6 +251,13 @@ u32 lrng_avail_entropy(void)
 	return ent;
 }
 
+u32 lrng_avail_entropy_aux(void)
+{
+	u32 ent_thresh = lrng_avail_entropy_thresh();
+
+	return lrng_es[lrng_ext_es_aux]->curr_entropy(ent_thresh);
+}
+
 /*
  * lrng_init_ops() - Set seed stages of LRNG
  *

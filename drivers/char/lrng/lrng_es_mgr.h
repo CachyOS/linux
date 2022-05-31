@@ -31,6 +31,7 @@ bool lrng_state_operational(void);
 extern u32 lrng_write_wakeup_bits;
 void lrng_set_entropy_thresh(u32 new);
 u32 lrng_avail_entropy(void);
+u32 lrng_avail_entropy_aux(void);
 void lrng_reset_state(void);
 
 bool lrng_state_fully_seeded(void);

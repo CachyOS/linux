@@ -232,7 +232,7 @@ long lrng_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case RNDGETENTCNT:
-		ent_count_bits = lrng_avail_entropy();
+		ent_count_bits = lrng_avail_entropy_aux();
 		if (put_user(ent_count_bits, p))
 			return -EFAULT;
 		return 0;

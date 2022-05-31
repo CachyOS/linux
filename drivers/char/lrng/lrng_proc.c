@@ -26,7 +26,7 @@ void lrng_pool_inc_numa_node(void)
 static int lrng_proc_type_show(struct seq_file *m, void *v)
 {
 	struct lrng_drng *lrng_drng_init = lrng_drng_init_instance();
-	unsigned char buf[250];
+	unsigned char buf[270];
 	u32 i;
 
 	mutex_lock(&lrng_drng_init->lock);
@@ -36,13 +36,15 @@ static int lrng_proc_type_show(struct seq_file *m, void *v)
 		 "Number of DRNG instances: %u\n"
 		 "Standards compliance: %s\n"
 		 "LRNG minimally seeded: %s\n"
-		 "LRNG fully seeded: %s\n",
+		 "LRNG fully seeded: %s\n"
+		 "LRNG entropy level: %u\n",
 		 lrng_drng_init->drng_cb->drng_name(),
 		 lrng_security_strength(),
 		 numa_drngs,
 		 lrng_sp80090c_compliant() ? "SP800-90C " : "",
 		 lrng_state_min_seeded() ? "true" : "false",
-		 lrng_state_fully_seeded() ? "true" : "false");
+		 lrng_state_fully_seeded() ? "true" : "false",
+		 lrng_avail_entropy());
 	seq_write(m, buf, strlen(buf));
 
 	for_each_lrng_es(i) {
