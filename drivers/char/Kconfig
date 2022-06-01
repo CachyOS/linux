@@ -452,4 +452,6 @@ config RANDOM_TRUST_BOOTLOADER
 	only mixes the entropy pool. This can also be configured at boot with
 	"random.trust_bootloader=on/off".
 
+source "drivers/char/lrng/Kconfig"
+
 endmenu
