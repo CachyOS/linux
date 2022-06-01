@@ -268,9 +268,10 @@ static void aq_nic_polling_timer_cb(struct timer_list *t)
 	struct aq_vec_s *aq_vec = NULL;
 	unsigned int i = 0U;
 
-	for (i = 0U, aq_vec = self->aq_vec[0];
-		self->aq_vecs > i; ++i, aq_vec = self->aq_vec[i])
+	for (i = 0U; self->aq_vecs > i; ++i) {
+		aq_vec = self->aq_vec[i];
 		aq_vec_isr(i, (void *)aq_vec);
+	}
 
 	mod_timer(&self->polling_timer, jiffies +
 		  AQ_CFG_POLLING_TIMER_INTERVAL);
@@ -928,9 +929,10 @@ u64 *aq_nic_get_stats(struct aq_nic_s *self, u64 *data)
 	data += i;
 
 	for (tc = 0U; tc < self->aq_nic_cfg.tcs; tc++) {
-		for (i = 0U, aq_vec = self->aq_vec[0];
-		     aq_vec && self->aq_vecs > i;
-		     ++i, aq_vec = self->aq_vec[i]) {
+		for (i = 0U; self->aq_vecs > i; ++i) {
+			aq_vec = self->aq_vec[i];
+			if (!aq_vec)
+				break;
 			data += count;
 			count = aq_vec_get_sw_stats(aq_vec, tc, data);
 		}
@@ -1264,9 +1266,10 @@ int aq_nic_stop(struct aq_nic_s *self)
 
 	aq_ptp_irq_free(self);
 
-	for (i = 0U, aq_vec = self->aq_vec[0];
-		self->aq_vecs > i; ++i, aq_vec = self->aq_vec[i])
+	for (i = 0U; self->aq_vecs > i; ++i) {
+		aq_vec = self->aq_vec[i];
 		aq_vec_stop(aq_vec);
+	}
 
 	aq_ptp_ring_stop(self);
 
