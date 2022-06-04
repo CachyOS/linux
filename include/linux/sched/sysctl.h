@@ -16,6 +16,16 @@ enum { sysctl_hung_task_timeout_secs = 0 };
 
 extern unsigned int sysctl_sched_child_runs_first;
 
+#ifdef CONFIG_CACULE_SCHED
+extern unsigned int interactivity_factor;
+extern unsigned int cacule_max_lifetime;
+extern unsigned int cache_factor;
+extern unsigned int cache_divisor;
+extern unsigned int starve_factor;
+extern unsigned int starve_divisor;
+extern int cacule_yield;
+#endif
+
 enum sched_tunable_scaling {
 	SCHED_TUNABLESCALING_NONE,
 	SCHED_TUNABLESCALING_LOG,
