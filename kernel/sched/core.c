@@ -110,6 +110,10 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_update_nr_running_tp);
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
+#ifdef CONFIG_TT_SCHED
+struct rq *grq = NULL;
+#endif
+
 #ifdef CONFIG_SCHED_DEBUG
 /*
  * Debugging: various feature bits
@@ -3092,6 +3096,14 @@ void relax_compatible_cpus_allowed_ptr(struct task_struct *p)
 	kfree(user_mask);
 }
 
+#ifdef CONFIG_TT_SCHED
+inline void dec_nr_lat_sensitive(unsigned int cpu)
+{
+	if (per_cpu(nr_lat_sensitive, cpu))
+		per_cpu(nr_lat_sensitive, cpu)--;
+}
+#endif
+
 void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 {
 #ifdef CONFIG_SCHED_DEBUG
@@ -3137,6 +3149,12 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 	trace_sched_migrate_task(p, new_cpu);
 
 	if (task_cpu(p) != new_cpu) {
+#ifdef CONFIG_TT_SCHED
+		if (task_is_lat_sensitive(p)) {
+			dec_nr_lat_sensitive(task_cpu(p));
+			per_cpu(nr_lat_sensitive, new_cpu)++;
+		}
+#endif
 		if (p->sched_class->migrate_task_rq)
 			p->sched_class->migrate_task_rq(p, new_cpu);
 		p->se.nr_migrations++;
@@ -4585,7 +4603,9 @@ void wake_up_new_task(struct task_struct *p)
 {
 	struct rq_flags rf;
 	struct rq *rq;
-
+#ifdef CONFIG_TT_SCHED
+	int target_cpu = 0;
+#endif
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
 	WRITE_ONCE(p->__state, TASK_RUNNING);
 #ifdef CONFIG_SMP
@@ -4599,12 +4619,25 @@ void wake_up_new_task(struct task_struct *p)
 	 */
 	p->recent_used_cpu = task_cpu(p);
 	rseq_migrate(p);
+#ifdef CONFIG_TT_SCHED
+	target_cpu = select_task_rq(p, task_cpu(p), WF_FORK);
+	__set_task_cpu(p, target_cpu);
+#else
 	__set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));
 #endif
+#endif
 	rq = __task_rq_lock(p, &rf);
+
+#ifdef CONFIG_TT_SCHED
+	if (task_is_lat_sensitive(p))
+		per_cpu(nr_lat_sensitive, target_cpu)++;
+#endif
+
 	update_rq_clock(rq);
 	post_init_entity_util_avg(p);
-
+#ifdef CONFIG_TT_SCHED
+	p->se.tt_node.start_time = sched_clock();
+#endif
 	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	trace_sched_wakeup_new(p);
 	check_preempt_curr(rq, p, WF_FORK);
@@ -5412,7 +5445,9 @@ static void sched_tick_remote(struct work_struct *work)
 	struct rq *rq = cpu_rq(cpu);
 	struct task_struct *curr;
 	struct rq_flags rf;
+#ifndef CONFIG_TT_SCHED
 	u64 delta;
+#endif
 	int os;
 
 	/*
@@ -5431,7 +5466,7 @@ static void sched_tick_remote(struct work_struct *work)
 		goto out_unlock;
 
 	update_rq_clock(rq);
-
+#ifndef CONFIG_TT_SCHED
 	if (!is_idle_task(curr)) {
 		/*
 		 * Make sure the next tick runs within a reasonable
@@ -5440,6 +5475,7 @@ static void sched_tick_remote(struct work_struct *work)
 		delta = rq_clock_task(rq) - curr->se.exec_start;
 		WARN_ON_ONCE(delta > (u64)NSEC_PER_SEC * 3);
 	}
+#endif
 	curr->sched_class->task_tick(rq, curr, 0);
 
 	calc_load_nohz_remote(rq);
@@ -5939,6 +5975,11 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 */
 	for_each_cpu(i, smt_mask) {
 		rq_i = cpu_rq(i);
+
+#ifdef CONFIG_TT_SCHED
+		if (task_is_lat_sensitive(prev))
+			dec_nr_lat_sensitive(prev->cpu);
+#endif
 
 		/*
 		 * An online sibling might have gone offline before a task
@@ -9469,6 +9510,9 @@ static struct kmem_cache *task_group_cache __read_mostly;
 
 DECLARE_PER_CPU(cpumask_var_t, load_balance_mask);
 DECLARE_PER_CPU(cpumask_var_t, select_idle_mask);
+#ifdef CONFIG_TT_SCHED
+DEFINE_PER_CPU(int, nr_lat_sensitive);
+#endif
 
 void __init sched_init(void)
 {
@@ -9484,6 +9528,10 @@ void __init sched_init(void)
 #endif
 
 	wait_bit_init();
+
+#ifdef CONFIG_TT_SCHED
+	printk(KERN_INFO "TT CPU scheduler v5.18 by Hamad Al Marri.");
+#endif
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	ptr += 2 * nr_cpu_ids * sizeof(void **);
@@ -9589,8 +9637,16 @@ void __init sched_init(void)
 		rq->balance_callback = &balance_push_callback;
 		rq->active_balance = 0;
 		rq->next_balance = jiffies;
+		rq->lat_decay = jiffies;
+		rq->grq_next_balance = jiffies;
 		rq->push_cpu = 0;
 		rq->cpu = i;
+#ifdef CONFIG_TT_SCHED
+		if (!grq) {
+			grq = rq;
+			printk(KERN_INFO "Global runqueue is on cpu %d", cpu_of(grq));
+		}
+#endif
 		rq->online = 0;
 		rq->idle_stamp = 0;
 		rq->avg_idle = 2*sysctl_sched_migration_cost;
@@ -9613,6 +9669,9 @@ void __init sched_init(void)
 #endif /* CONFIG_SMP */
 		hrtick_rq_init(rq);
 		atomic_set(&rq->nr_iowait, 0);
+#ifdef CONFIG_TT_SCHED
+		per_cpu(nr_lat_sensitive, i) = 0;
+#endif
 
 #ifdef CONFIG_SCHED_CORE
 		rq->core = rq;

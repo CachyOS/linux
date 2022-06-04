@@ -16,6 +16,13 @@ enum { sysctl_hung_task_timeout_secs = 0 };
 
 extern unsigned int sysctl_sched_child_runs_first;
 
+#ifdef CONFIG_TT_SCHED
+extern unsigned int tt_balancer_opt;
+extern unsigned int tt_grq_balance_ms;
+extern unsigned int tt_max_lifetime;
+extern int tt_rt_prio;
+#endif
+
 enum sched_tunable_scaling {
 	SCHED_TUNABLESCALING_NONE,
 	SCHED_TUNABLESCALING_LOG,

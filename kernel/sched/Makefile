@@ -29,6 +29,10 @@ endif
 # build parallelizes well and finishes roughly at once:
 #
 obj-y += core.o
+ifeq ($(CONFIG_TT_SCHED),y)
+obj-y += bs.o
+else
 obj-y += fair.o
+endif
 obj-y += build_policy.o
 obj-y += build_utility.o

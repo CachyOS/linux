@@ -535,6 +535,23 @@ struct sched_statistics {
 #endif /* CONFIG_SCHEDSTATS */
 } ____cacheline_aligned;
 
+#ifdef CONFIG_TT_SCHED
+struct tt_node {
+	struct tt_node*                 next;
+	struct tt_node*                 prev;
+	unsigned int			task_type;
+	u64				vruntime;
+	u64				start_time;
+
+	u64				prev_wait_time;
+	u64				wait_time;
+	u64				prev_burst;
+	u64				curr_burst;
+	u64				burst;
+	unsigned int			rt_sticky;
+};
+#endif
+
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
@@ -544,8 +561,13 @@ struct sched_entity {
 
 	u64				exec_start;
 	u64				sum_exec_runtime;
-	u64				vruntime;
 	u64				prev_sum_exec_runtime;
+
+#ifdef CONFIG_TT_SCHED
+	struct tt_node                  tt_node;
+#endif
+
+	u64				vruntime;
 
 	u64				nr_migrations;
 
