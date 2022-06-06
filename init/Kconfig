@@ -116,6 +116,10 @@ config THREAD_INFO_IN_TASK
 
 menu "General setup"
 
+config CACHY
+    bool "Some kernel tweaks by CachyOS"
+    default y
+
 config BROKEN
 	bool
 
