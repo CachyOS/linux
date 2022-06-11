@@ -448,6 +448,7 @@ void vma_mas_store(struct vm_area_struct *vma, struct ma_state *mas)
  */
 void vma_mas_remove(struct vm_area_struct *vma, struct ma_state *mas)
 {
+	vma_write_lock(vma);
 	trace_vma_mas_szero(mas->tree, vma->vm_start, vma->vm_end - 1);
 	mas->index = vma->vm_start;
 	mas->last = vma->vm_end - 1;
@@ -2300,6 +2301,7 @@ int split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 static inline int munmap_sidetree(struct vm_area_struct *vma,
 				   struct ma_state *mas_detach)
 {
+	vma_write_lock(vma);
 	mas_set_range(mas_detach, vma->vm_start, vma->vm_end - 1);
 	if (mas_store_gfp(mas_detach, vma, GFP_KERNEL))
 		return -ENOMEM;

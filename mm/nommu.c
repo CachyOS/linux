@@ -552,6 +552,7 @@ void vma_mas_store(struct vm_area_struct *vma, struct ma_state *mas)
 
 void vma_mas_remove(struct vm_area_struct *vma, struct ma_state *mas)
 {
+	vma_write_lock(vma);
 	mas->index = vma->vm_start;
 	mas->last = vma->vm_end - 1;
 	mas_store_prealloc(mas, NULL);
@@ -1551,6 +1552,10 @@ void exit_mmap(struct mm_struct *mm)
 	mmap_write_lock(mm);
 	for_each_vma(vmi, vma) {
 		cleanup_vma_from_mm(vma);
+		/*
+		 * No need to lock VMA because this is the only mm user and no
+		 * page fault handled can race with it.
+		 */
 		delete_vma(mm, vma);
 		cond_resched();
 	}
