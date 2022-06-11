@@ -614,6 +614,12 @@ nomem:
  * The following helper function should be used when such adjustments
  * are necessary.  The "insert" vma (if any) is to be inserted
  * before we drop the necessary locks.
+ * 'expand' vma is always locked before it's passed to __vma_adjust()
+ * from vma_merge() because vma should not change from the moment
+ * can_vma_merge_{before|after} decision is made.
+ * 'insert' vma is used only by __split_vma() and it's always a brand
+ * new vma which is not yet added into mm's vma tree, therefore no need
+ * to lock it.
  */
 int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert,
@@ -632,6 +638,10 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	int remove_next = 0;
 	MA_STATE(mas, &mm->mm_mt, 0, 0);
 	struct vm_area_struct *exporter = NULL, *importer = NULL;
+
+	vma_write_lock(vma);
+	if (next)
+		vma_write_lock(next);
 
 	if (next && !insert) {
 		if (end >= next->vm_end) {
@@ -676,8 +686,11 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 			 * If next doesn't have anon_vma, import from vma after
 			 * next, if the vma overlaps with it.
 			 */
-			if (remove_next == 2 && !next->anon_vma)
+			if (remove_next == 2 && !next->anon_vma) {
 				exporter = next_next;
+				if (exporter)
+					vma_write_lock(exporter);
+			}
 
 		} else if (end > next->vm_start) {
 			/*
@@ -850,6 +863,8 @@ again:
 		if (remove_next == 2) {
 			remove_next = 1;
 			next = next_next;
+			if (next)
+				vma_write_lock(next);
 			goto again;
 		}
 	}
