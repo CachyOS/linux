@@ -115,6 +115,7 @@ EXPORT_SYMBOL(backlight_notify_blank_all);
 static void backlight_generate_event(struct backlight_device *bd,
 				     enum backlight_update_reason reason)
 {
+#if 0 // We don't want to generate udev events for brightness changes on Steam Deck, as some games like Celeste will re-enumerate controller devices in response to this event.
 	char *envp[2];
 
 	switch (reason) {
@@ -130,6 +131,7 @@ static void backlight_generate_event(struct backlight_device *bd,
 	}
 	envp[1] = NULL;
 	kobject_uevent_env(&bd->dev.kobj, KOBJ_CHANGE, envp);
+#endif // 0
 	sysfs_notify(&bd->dev.kobj, NULL, "actual_brightness");
 }
 
