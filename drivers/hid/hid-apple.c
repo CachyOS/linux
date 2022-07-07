@@ -522,9 +522,10 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 				table = macbookair_fn_keys;
 			else if (hid->product < 0x21d || hid->product >= 0x300)
 				table = powerbook_fn_keys;
-			else if (hid->bus == BUS_SPI)
+			else if (hid->bus == BUS_HOST || hid->bus == BUS_SPI)
 				switch (hid->product) {
 				case SPI_DEVICE_ID_APPLE_MACBOOK_PRO13_2020:
+				case HOST_DEVICE_ID_APPLE_MACBOOK_PRO13_2022:
 					table = macbookpro_dedicated_esc_fn_keys;
 					break;
 				default:
@@ -953,7 +954,7 @@ static int apple_probe(struct hid_device *hdev,
 	struct apple_sc *asc;
 	int ret;
 
-	if (id->bus == BUS_SPI && id->vendor == SPI_VENDOR_ID_APPLE &&
+	if ((id->bus == BUS_SPI || id->bus == BUS_HOST) && id->vendor == SPI_VENDOR_ID_APPLE &&
 	    hdev->type != HID_TYPE_SPI_KEYBOARD)
 		return -ENODEV;
 
@@ -1236,6 +1237,8 @@ static const struct hid_device_id apple_devices[] = {
 	{ HID_BLUETOOTH_DEVICE(BT_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_MAGIC_KEYBOARD_NUMPAD_2024),
 		.driver_data = APPLE_HAS_FN | APPLE_ISO_TILDE_QUIRK },
 	{ HID_SPI_DEVICE(SPI_VENDOR_ID_APPLE, HID_ANY_ID),
+		.driver_data = APPLE_HAS_FN | APPLE_ISO_TILDE_QUIRK },
+	{ HID_DEVICE(BUS_HOST, HID_GROUP_ANY, HOST_VENDOR_ID_APPLE, HID_ANY_ID),
 		.driver_data = APPLE_HAS_FN | APPLE_ISO_TILDE_QUIRK },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_TOUCHBAR_BACKLIGHT),
 		.driver_data = APPLE_MAGIC_BACKLIGHT },
