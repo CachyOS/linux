@@ -19,3 +19,4 @@ obj-$(CONFIG_LRNG_DRNG_KCAPI)		+= lrng_drng_kcapi.o
 obj-$(CONFIG_LRNG_DRNG_ATOMIC)		+= lrng_drng_atomic.o
 
 obj-$(CONFIG_LRNG_TIMER_COMMON)		+= lrng_es_timer_common.o
+obj-$(CONFIG_LRNG_IRQ)			+= lrng_es_irq.o
