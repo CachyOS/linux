@@ -182,6 +182,19 @@ static struct workqueue_struct *hfi_updates_wq;
 #define HFI_UPDATE_INTERVAL		HZ
 #define HFI_MAX_THERM_NOTIFY_COUNT	16
 
+/*
+ * A task may be unclassified if it has been recently created, spend most of
+ * its lifetime sleeping, or hardware has not provided a classification.
+ *
+ * Most tasks will be classified as scheduler's IPC class 1 (HFI class 0)
+ * eventually. Meanwhile, the scheduler will place classes of tasks with higher
+ * IPC scores on higher-performance CPUs.
+ *
+ * IPC class 1 is a reasonable choice. It matches the performance capability
+ * of the legacy, classless, HFI table.
+ */
+#define HFI_UNCLASSIFIED_DEFAULT 1
+
 /* A cache of the HFI perf capabilities for lockless access. */
 static int __percpu *hfi_ipcc_scores;
 /* Sequence counter for hfi_ipcc_scores */
@@ -212,7 +225,7 @@ unsigned long intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
 		return -EINVAL;
 
 	if (ipcc == IPC_CLASS_UNCLASSIFIED)
-		return -EINVAL;
+		ipcc = HFI_UNCLASSIFIED_DEFAULT;
 
 	/*
 	 * Scheduler IPC classes start at 1. HFI classes start at 0.
