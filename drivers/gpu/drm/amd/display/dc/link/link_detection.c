@@ -646,7 +646,7 @@ static bool wait_for_entering_dp_alt_mode(struct dc_link *link)
 	 * 500 microseconds * 400 tries us 200 ms
 	 **/
 	unsigned int sleep_time_in_microseconds = 500;
-	unsigned int tries_allowed = 400;
+	unsigned int tries_allowed = 1000;
 	bool is_in_alt_mode;
 	unsigned long long enter_timestamp;
 	unsigned long long finish_timestamp;
