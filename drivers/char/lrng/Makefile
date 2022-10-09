@@ -34,3 +34,4 @@ obj-$(CONFIG_LRNG_COMMON_DEV_IF)	+= lrng_interface_dev_common.o
 obj-$(CONFIG_LRNG_RANDOM_IF)		+= lrng_interface_random_user.o \
 					   lrng_interface_random_kernel.o \
 					   lrng_interface_aux.o
+obj-$(CONFIG_LRNG_KCAPI_IF)		+= lrng_interface_kcapi.o
