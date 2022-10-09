@@ -89,18 +89,18 @@ config LRNG_AIS2031_NTG1_SEEDING_STRATEGY
 
 endmenu # "Specific DRNG seeding strategies"
 
-# menu "LRNG Interfaces"
-#
-# config LRNG_KCAPI_IF
-# 	tristate "Interface with Kernel Crypto API"
-# 	depends on CRYPTO_RNG
-# 	help
-# 	  The LRNG can be registered with the kernel crypto API's
-# 	  random number generator framework. This offers a random
-# 	  number generator with the name "lrng" and a priority that
-# 	  is intended to be higher than the existing RNG
-# 	  implementations.
-#
+menu "LRNG Interfaces"
+
+config LRNG_KCAPI_IF
+	tristate "Interface with Kernel Crypto API"
+	depends on CRYPTO_RNG
+	help
+	  The LRNG can be registered with the kernel crypto API's
+	  random number generator framework. This offers a random
+	  number generator with the name "lrng" and a priority that
+	  is intended to be higher than the existing RNG
+	  implementations.
+
 # config LRNG_HWRAND_IF
 # 	tristate "Interface with Hardware Random Number Generator Framework"
 # 	depends on HW_RANDOM
@@ -120,7 +120,7 @@ endmenu # "Specific DRNG seeding strategies"
 # 	  identically to /dev/random including IOCTL, read and write
 # 	  operations.
 #
-# endmenu # "LRNG Interfaces"
+endmenu # "LRNG Interfaces"
 
 menu "Entropy Source Configuration"
 
