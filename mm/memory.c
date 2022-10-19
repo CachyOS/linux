@@ -5262,6 +5262,10 @@ retry:
 	if (!vma_is_anonymous(vma))
 		goto inval;
 
+	/* find_mergeable_anon_vma uses adjacent vmas which are not locked */
+	if (!vma->anon_vma)
+		goto inval;
+
 	if (!vma_read_trylock(vma))
 		goto inval;
 
