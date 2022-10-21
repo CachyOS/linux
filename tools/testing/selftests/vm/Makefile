@@ -52,6 +52,7 @@ TEST_GEN_FILES += userfaultfd
 TEST_GEN_PROGS += soft-dirty
 TEST_GEN_PROGS += split_huge_page_test
 TEST_GEN_FILES += ksm_tests
+TEST_GEN_PROGS += ksm_functional_tests
 
 ifeq ($(MACHINE),x86_64)
 CAN_BUILD_I386 := $(shell ./../x86/check_cc.sh "$(CC)" ../x86/trivial_32bit_program.c -m32)
@@ -96,6 +97,7 @@ TEST_FILES += va_128TBswitch.sh
 include ../lib.mk
 
 $(OUTPUT)/khugepaged: vm_util.c
+$(OUTPUT)/ksm_functional_tests: vm_util.c
 $(OUTPUT)/madv_populate: vm_util.c
 $(OUTPUT)/soft-dirty: vm_util.c
 $(OUTPUT)/split_huge_page_test: vm_util.c

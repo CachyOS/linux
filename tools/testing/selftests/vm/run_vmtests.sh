@@ -184,6 +184,8 @@ run_test ./ksm_tests -N -m 1
 # KSM test with 2 NUMA nodes and merge_across_nodes = 0
 run_test ./ksm_tests -N -m 0
 
+run_test ./ksm_functional_tests
+
 # protection_keys tests
 if [ -x ./protection_keys_32 ]
 then
