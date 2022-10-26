@@ -701,6 +701,44 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma_init_lock(vma);
 }
 
+/* Use when VMA is not part of the VMA tree and needs no locking */
+static inline
+void init_vm_flags(struct vm_area_struct *vma, unsigned long flags)
+{
+	WRITE_ONCE(vma->vm_flags, flags);
+}
+
+/* Use when VMA is part of the VMA tree and needs appropriate locking */
+static inline
+void reset_vm_flags(struct vm_area_struct *vma, unsigned long flags)
+{
+	vma_write_lock(vma);
+	init_vm_flags(vma, flags);
+}
+
+static inline
+void set_vm_flags(struct vm_area_struct *vma, unsigned long flags)
+{
+	vma_write_lock(vma);
+	vma->vm_flags |= flags;
+}
+
+static inline
+void clear_vm_flags(struct vm_area_struct *vma, unsigned long flags)
+{
+	vma_write_lock(vma);
+	vma->vm_flags &= ~flags;
+}
+
+static inline
+void mod_vm_flags(struct vm_area_struct *vma,
+		  unsigned long set, unsigned long clear)
+{
+	vma_write_lock(vma);
+	vma->vm_flags |= set;
+	vma->vm_flags &= ~clear;
+}
+
 static inline void vma_set_anonymous(struct vm_area_struct *vma)
 {
 	vma->vm_ops = NULL;
