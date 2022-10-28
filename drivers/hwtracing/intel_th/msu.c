@@ -1659,7 +1659,7 @@ out:
 		atomic_dec(&msc->user_count);
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTCOPY;
+	set_vm_flags(vma, VM_DONTEXPAND | VM_DONTCOPY);
 	vma->vm_ops = &msc_mmap_ops;
 	return ret;
 }

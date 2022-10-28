@@ -105,7 +105,7 @@ static int sgx_vepc_mmap(struct file *file, struct vm_area_struct *vma)
 
 	vma->vm_ops = &sgx_vepc_vm_ops;
 	/* Don't copy VMA in fork() */
-	vma->vm_flags |= VM_PFNMAP | VM_IO | VM_DONTDUMP | VM_DONTCOPY;
+	set_vm_flags(vma, VM_PFNMAP | VM_IO | VM_DONTDUMP | VM_DONTCOPY);
 	vma->vm_private_data = vepc;
 
 	return 0;

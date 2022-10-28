@@ -256,7 +256,7 @@ static int amdgpu_gem_object_mmap(struct drm_gem_object *obj, struct vm_area_str
 	 */
 	if (is_cow_mapping(vma->vm_flags) &&
 	    !(vma->vm_flags & VM_ACCESS_FLAGS))
-		vma->vm_flags &= ~VM_MAYWRITE;
+		clear_vm_flags(vma, VM_MAYWRITE);
 
 	return drm_gem_ttm_mmap(obj, vma);
 }

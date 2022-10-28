@@ -1301,7 +1301,7 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 			mas_for_each(&mas, vma, ULONG_MAX) {
 				if (!(vma->vm_flags & VM_SOFTDIRTY))
 					continue;
-				vma->vm_flags &= ~VM_SOFTDIRTY;
+				clear_vm_flags(vma, VM_SOFTDIRTY);
 				vma_set_page_prot(vma);
 			}
 
