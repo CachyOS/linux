@@ -193,8 +193,6 @@ static const struct property_entry dwc3_pci_amd_properties[] = {
 
 static const struct property_entry dwc3_pci_mr_properties[] = {
 	PROPERTY_ENTRY_STRING("dr_mode", "otg"),
-	PROPERTY_ENTRY_BOOL("usb-role-switch"),
-	PROPERTY_ENTRY_STRING("role-switch-default-mode", "host"),
 	PROPERTY_ENTRY_BOOL("linux,sysdev_is_parent"),
 	PROPERTY_ENTRY_STRING("linux,extcon-name", "VLV0100:00"),
 	{}
