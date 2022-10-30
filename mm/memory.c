@@ -5271,6 +5271,13 @@ retry:
 	if (!vma->anon_vma)
 		goto inval;
 
+	/*
+	 * Due to the possibility of userfault handler dropping mmap_lock, avoid
+	 * it for now and fall back to page fault handling under mmap_lock.
+	 */
+	if (userfaultfd_armed(vma))
+		goto inval;
+
 	if (!vma_read_trylock(vma))
 		goto inval;
 
