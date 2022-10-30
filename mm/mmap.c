@@ -2953,13 +2953,13 @@ static int do_brk_flags(struct ma_state *mas, struct vm_area_struct *vma,
 		if (mas_preallocate(mas, vma, GFP_KERNEL))
 			return -ENOMEM;
 
+		set_vm_flags(vma, VM_SOFTDIRTY);
 		vma_adjust_trans_huge(vma, vma->vm_start, addr + len, 0);
 		if (vma->anon_vma) {
 			anon_vma_lock_write(vma->anon_vma);
 			anon_vma_interval_tree_pre_update_vma(vma);
 		}
 		vma->vm_end = addr + len;
-		set_vm_flags(vma, VM_SOFTDIRTY);
 		mas_store_prealloc(mas, vma);
 
 		if (vma->anon_vma) {
