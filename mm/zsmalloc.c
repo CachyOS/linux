@@ -74,13 +74,6 @@
  */
 #define ZS_ALIGN		8
 
-/*
- * A single 'zspage' is composed of up to 2^N discontiguous 0-order (single)
- * pages. ZS_MAX_ZSPAGE_ORDER defines upper limit on N.
- */
-#define ZS_MAX_ZSPAGE_ORDER 2
-#define ZS_MAX_PAGES_PER_ZSPAGE (_AC(1, UL) << ZS_MAX_ZSPAGE_ORDER)
-
 #define ZS_HANDLE_SIZE (sizeof(unsigned long))
 
 /*
@@ -124,10 +117,8 @@
 #define ISOLATED_BITS	3
 #define MAGIC_VAL_BITS	8
 
-#define MAX(a, b) ((a) >= (b) ? (a) : (b))
-/* ZS_MIN_ALLOC_SIZE must be multiple of ZS_ALIGN */
-#define ZS_MIN_ALLOC_SIZE \
-	MAX(32, (ZS_MAX_PAGES_PER_ZSPAGE << PAGE_SHIFT >> OBJ_INDEX_BITS))
+#define ZS_MIN_ALLOC_SIZE	32U
+
 /* each chunk includes extra space to keep handle */
 #define ZS_MAX_ALLOC_SIZE	PAGE_SIZE
 
@@ -141,12 +132,10 @@
  *    determined). NOTE: all those class sizes must be set as multiple of
  *    ZS_ALIGN to make sure link_free itself never has to span 2 pages.
  *
- *  ZS_MIN_ALLOC_SIZE and ZS_SIZE_CLASS_DELTA must be multiple of ZS_ALIGN
- *  (reason above)
+ *  pool->min_alloc_size (ZS_MIN_ALLOC_SIZE) and ZS_SIZE_CLASS_DELTA must
+ *  be multiple of ZS_ALIGN (reason above)
  */
 #define ZS_SIZE_CLASS_DELTA	(PAGE_SIZE >> CLASS_BITS)
-#define ZS_SIZE_CLASSES	(DIV_ROUND_UP(ZS_MAX_ALLOC_SIZE - ZS_MIN_ALLOC_SIZE, \
-				      ZS_SIZE_CLASS_DELTA) + 1)
 
 enum fullness_group {
 	ZS_EMPTY,
@@ -189,7 +178,6 @@ static struct dentry *zs_stat_root;
  * (see: fix_fullness_group())
  */
 static const int fullness_threshold_frac = 4;
-static size_t huge_class_size;
 
 struct size_class {
 	spinlock_t lock;
@@ -230,11 +218,15 @@ struct link_free {
 struct zs_pool {
 	const char *name;
 
-	struct size_class *size_class[ZS_SIZE_CLASSES];
+	struct size_class **size_class;
 	struct kmem_cache *handle_cachep;
 	struct kmem_cache *zspage_cachep;
 
 	atomic_long_t pages_allocated;
+
+	u32 num_size_classes;
+	u32 min_alloc_size;
+	size_t huge_class_size;
 
 	struct zs_pool_stats stats;
 
@@ -374,7 +366,7 @@ static void *zs_zpool_create(const char *name, gfp_t gfp,
 	 * different contexts and its caller must provide a valid
 	 * gfp mask.
 	 */
-	return zs_create_pool(name);
+	return zs_create_pool(name, ZS_DEFAULT_PAGES_PER_ZSPAGE);
 }
 
 static void zs_zpool_destroy(void *pool)
@@ -523,15 +515,15 @@ static void set_zspage_mapping(struct zspage *zspage,
  * classes depending on its size. This function returns index of the
  * size class which has chunk size big enough to hold the given size.
  */
-static int get_size_class_index(int size)
+static int get_size_class_index(struct zs_pool *pool, int size)
 {
 	int idx = 0;
 
-	if (likely(size > ZS_MIN_ALLOC_SIZE))
-		idx = DIV_ROUND_UP(size - ZS_MIN_ALLOC_SIZE,
+	if (likely(size > pool->min_alloc_size))
+		idx = DIV_ROUND_UP(size - pool->min_alloc_size,
 				ZS_SIZE_CLASS_DELTA);
 
-	return min_t(int, ZS_SIZE_CLASSES - 1, idx);
+	return min_t(int, pool->num_size_classes - 1, idx);
 }
 
 /* type can be of enum type class_stat_type or fullness_group */
@@ -591,7 +583,7 @@ static int zs_stats_size_show(struct seq_file *s, void *v)
 			"obj_allocated", "obj_used", "pages_used",
 			"pages_per_zspage", "freeable");
 
-	for (i = 0; i < ZS_SIZE_CLASSES; i++) {
+	for (i = 0; i < pool->num_size_classes; i++) {
 		class = pool->size_class[i];
 
 		if (class->index != i)
@@ -777,13 +769,13 @@ out:
  * link together 3 PAGE_SIZE sized pages to form a zspage
  * since then we can perfectly fit in 8 such objects.
  */
-static int get_pages_per_zspage(int class_size)
+static int get_pages_per_zspage(u32 class_size, u32 num_pages)
 {
 	int i, max_usedpc = 0;
 	/* zspage order which gives maximum used size per KB */
 	int max_usedpc_order = 1;
 
-	for (i = 1; i <= ZS_MAX_PAGES_PER_ZSPAGE; i++) {
+	for (i = 1; i <= num_pages; i++) {
 		int zspage_size;
 		int waste, usedpc;
 
@@ -795,6 +787,9 @@ static int get_pages_per_zspage(int class_size)
 			max_usedpc = usedpc;
 			max_usedpc_order = i;
 		}
+
+		if (usedpc == 100)
+			break;
 	}
 
 	return max_usedpc_order;
@@ -1205,6 +1200,27 @@ static bool zspage_full(struct size_class *class, struct zspage *zspage)
 	return get_zspage_inuse(zspage) == class->objs_per_zspage;
 }
 
+/**
+ * zs_lookup_class_index() - Returns index of the zsmalloc &size_class
+ * that hold objects of the provided size.
+ * @pool: zsmalloc pool to use
+ * @size: object size
+ *
+ * Context: Any context.
+ *
+ * Return: the index of the zsmalloc &size_class that hold objects of the
+ * provided size.
+ */
+unsigned int zs_lookup_class_index(struct zs_pool *pool, unsigned int size)
+{
+	struct size_class *class;
+
+	class = pool->size_class[get_size_class_index(pool, size)];
+
+	return class->index;
+}
+EXPORT_SYMBOL_GPL(zs_lookup_class_index);
+
 unsigned long zs_get_total_pages(struct zs_pool *pool)
 {
 	return atomic_long_read(&pool->pages_allocated);
@@ -1337,7 +1353,7 @@ EXPORT_SYMBOL_GPL(zs_unmap_object);
  */
 size_t zs_huge_class_size(struct zs_pool *pool)
 {
-	return huge_class_size;
+	return pool->huge_class_size;
 }
 EXPORT_SYMBOL_GPL(zs_huge_class_size);
 
@@ -1410,7 +1426,7 @@ unsigned long zs_malloc(struct zs_pool *pool, size_t size, gfp_t gfp)
 
 	/* extra space in chunk to keep the handle */
 	size += ZS_HANDLE_SIZE;
-	class = pool->size_class[get_size_class_index(size)];
+	class = pool->size_class[get_size_class_index(pool, size)];
 
 	/* class->lock effectively protects the zpage migration */
 	spin_lock(&class->lock);
@@ -1959,7 +1975,7 @@ static void async_free_zspage(struct work_struct *work)
 	struct zs_pool *pool = container_of(work, struct zs_pool,
 					free_work);
 
-	for (i = 0; i < ZS_SIZE_CLASSES; i++) {
+	for (i = 0; i < pool->num_size_classes; i++) {
 		class = pool->size_class[i];
 		if (class->index != i)
 			continue;
@@ -2108,7 +2124,7 @@ unsigned long zs_compact(struct zs_pool *pool)
 	struct size_class *class;
 	unsigned long pages_freed = 0;
 
-	for (i = ZS_SIZE_CLASSES - 1; i >= 0; i--) {
+	for (i = pool->num_size_classes - 1; i >= 0; i--) {
 		class = pool->size_class[i];
 		if (class->index != i)
 			continue;
@@ -2152,7 +2168,7 @@ static unsigned long zs_shrinker_count(struct shrinker *shrinker,
 	struct zs_pool *pool = container_of(shrinker, struct zs_pool,
 			shrinker);
 
-	for (i = ZS_SIZE_CLASSES - 1; i >= 0; i--) {
+	for (i = pool->num_size_classes - 1; i >= 0; i--) {
 		class = pool->size_class[i];
 		if (class->index != i)
 			continue;
@@ -2182,6 +2198,7 @@ static int zs_register_shrinker(struct zs_pool *pool)
 /**
  * zs_create_pool - Creates an allocation pool to work from.
  * @name: pool name to be created
+ * @num_pages: maximum number of pages per-zspage
  *
  * This function must be called before anything when using
  * the zsmalloc allocator.
@@ -2189,15 +2206,33 @@ static int zs_register_shrinker(struct zs_pool *pool)
  * On success, a pointer to the newly created pool is returned,
  * otherwise NULL.
  */
-struct zs_pool *zs_create_pool(const char *name)
+struct zs_pool *zs_create_pool(const char *name, unsigned long num_pages)
 {
 	int i;
 	struct zs_pool *pool;
 	struct size_class *prev_class = NULL;
 
+	if (WARN_ON(num_pages < ZS_MIN_PAGES_PER_ZSPAGE ||
+		    num_pages > ZS_MAX_PAGES_PER_ZSPAGE))
+		return NULL;
+
 	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
 	if (!pool)
 		return NULL;
+
+	/* min_alloc_size must be multiple of ZS_ALIGN */
+	pool->min_alloc_size = num_pages << PAGE_SHIFT >> OBJ_INDEX_BITS;
+	pool->min_alloc_size = max(pool->min_alloc_size, ZS_MIN_ALLOC_SIZE);
+
+	pool->num_size_classes =
+		DIV_ROUND_UP(ZS_MAX_ALLOC_SIZE - pool->min_alloc_size,
+			     ZS_SIZE_CLASS_DELTA) + 1;
+
+	pool->size_class = kmalloc_array(pool->num_size_classes,
+					 sizeof(struct size_class *),
+					 GFP_KERNEL | __GFP_ZERO);
+	if (!pool->size_class)
+		goto err;
 
 	init_deferred_free(pool);
 	rwlock_init(&pool->migrate_lock);
@@ -2213,17 +2248,17 @@ struct zs_pool *zs_create_pool(const char *name)
 	 * Iterate reversely, because, size of size_class that we want to use
 	 * for merging should be larger or equal to current size.
 	 */
-	for (i = ZS_SIZE_CLASSES - 1; i >= 0; i--) {
+	for (i = pool->num_size_classes - 1; i >= 0; i--) {
 		int size;
 		int pages_per_zspage;
 		int objs_per_zspage;
 		struct size_class *class;
 		int fullness = 0;
 
-		size = ZS_MIN_ALLOC_SIZE + i * ZS_SIZE_CLASS_DELTA;
+		size = pool->min_alloc_size + i * ZS_SIZE_CLASS_DELTA;
 		if (size > ZS_MAX_ALLOC_SIZE)
 			size = ZS_MAX_ALLOC_SIZE;
-		pages_per_zspage = get_pages_per_zspage(size);
+		pages_per_zspage = get_pages_per_zspage(size, num_pages);
 		objs_per_zspage = pages_per_zspage * PAGE_SIZE / size;
 
 		/*
@@ -2233,8 +2268,8 @@ struct zs_pool *zs_create_pool(const char *name)
 		 * endup in the huge class.
 		 */
 		if (pages_per_zspage != 1 && objs_per_zspage != 1 &&
-				!huge_class_size) {
-			huge_class_size = size;
+				!pool->huge_class_size) {
+			pool->huge_class_size = size;
 			/*
 			 * The object uses ZS_HANDLE_SIZE bytes to store the
 			 * handle. We need to subtract it, because zs_malloc()
@@ -2244,7 +2279,7 @@ struct zs_pool *zs_create_pool(const char *name)
 			 * class because it grows by ZS_HANDLE_SIZE extra bytes
 			 * right before class lookup.
 			 */
-			huge_class_size -= (ZS_HANDLE_SIZE - 1);
+			pool->huge_class_size -= (ZS_HANDLE_SIZE - 1);
 		}
 
 		/*
@@ -2307,7 +2342,7 @@ void zs_destroy_pool(struct zs_pool *pool)
 	zs_flush_migration(pool);
 	zs_pool_stat_destroy(pool);
 
-	for (i = 0; i < ZS_SIZE_CLASSES; i++) {
+	for (i = 0; i < pool->num_size_classes; i++) {
 		int fg;
 		struct size_class *class = pool->size_class[i];
 
@@ -2327,6 +2362,7 @@ void zs_destroy_pool(struct zs_pool *pool)
 	}
 
 	destroy_cache(pool);
+	kfree(pool->size_class);
 	kfree(pool->name);
 	kfree(pool);
 }
