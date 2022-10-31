@@ -50,6 +50,12 @@ static const char *default_comp_algs[ZRAM_MAX_ZCOMPS] = {
 
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
+/*
+ * Pages that compress to sizes equals or greater than this are stored
+ * uncompressed in memory.
+ */
+static size_t huge_class_size;
+
 static const struct block_device_operations zram_devops;
 
 static void zram_free_page(struct zram *zram, size_t index);
@@ -1183,45 +1189,6 @@ static ssize_t mm_stat_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t pages_per_pool_page_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	u32 val;
-	struct zram *zram = dev_to_zram(dev);
-
-	down_read(&zram->init_lock);
-	val = zram->pages_per_pool_page;
-	up_read(&zram->init_lock);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
-}
-
-static ssize_t pages_per_pool_page_store(struct device *dev,
-					 struct device_attribute *attr,
-					 const char *buf, size_t len)
-{
-	struct zram *zram = dev_to_zram(dev);
-	u32 val;
-
-	if (kstrtou32(buf, 10, &val))
-		return -EINVAL;
-
-	if (val < ZS_MIN_PAGES_PER_ZSPAGE || val > ZS_MAX_PAGES_PER_ZSPAGE)
-		return -EINVAL;
-
-	down_read(&zram->init_lock);
-	if (init_done(zram)) {
-		up_read(&zram->init_lock);
-		return -EINVAL;
-	}
-
-	zram->pages_per_pool_page = val;
-	up_read(&zram->init_lock);
-
-	return len;
-}
-
 #ifdef CONFIG_ZRAM_WRITEBACK
 #define FOUR_K(x) ((x) * (1 << (PAGE_SHIFT - 12)))
 static ssize_t bd_stat_show(struct device *dev,
@@ -1289,14 +1256,14 @@ static bool zram_meta_alloc(struct zram *zram, u64 disksize)
 	if (!zram->table)
 		return false;
 
-	zram->mem_pool = zs_create_pool(zram->disk->disk_name,
-					zram->pages_per_pool_page);
+	zram->mem_pool = zs_create_pool(zram->disk->disk_name);
 	if (!zram->mem_pool) {
 		vfree(zram->table);
 		return false;
 	}
 
-	zram->huge_class_size = zs_huge_class_size(zram->mem_pool);
+	if (!huge_class_size)
+		huge_class_size = zs_huge_class_size(zram->mem_pool);
 	return true;
 }
 
@@ -1524,7 +1491,7 @@ compress_again:
 		return ret;
 	}
 
-	if (comp_len >= zram->huge_class_size)
+	if (comp_len >= huge_class_size)
 		comp_len = PAGE_SIZE;
 	/*
 	 * handle allocation has 2 paths:
@@ -1668,8 +1635,6 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 	unsigned long handle_next;
 	unsigned int comp_len_next;
 	unsigned int comp_len_prev;
-	unsigned int class_index_prev;
-	unsigned int class_index_next;
 	struct zcomp_strm *zstrm;
 	void *src, *dst;
 	int ret;
@@ -1694,16 +1659,13 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 	ret = zcomp_compress(zstrm, src, &comp_len_next);
 	kunmap_atomic(src);
 
-	class_index_prev = zs_lookup_class_index(zram->mem_pool, comp_len_prev);
-	class_index_next = zs_lookup_class_index(zram->mem_pool, comp_len_next);
 	/*
 	 * Either a compression error or we failed to compressed the object
 	 * in a way that will save us memory. Mark the object so that we
 	 * don't attempt to re-compress it again (RECOMP_SKIP).
 	 */
-	if (comp_len_next >= zram->huge_class_size ||
+	if (comp_len_next >= huge_class_size ||
 	    comp_len_next >= comp_len_prev ||
-	    class_index_next >= class_index_prev ||
 	    ret) {
 		zram_set_flag(zram, index, ZRAM_RECOMP_SKIP);
 		zram_clear_flag(zram, index, ZRAM_IDLE);
@@ -2216,7 +2178,6 @@ static DEVICE_ATTR_RW(writeback_limit_enable);
 static DEVICE_ATTR_RW(recomp_algorithm);
 static DEVICE_ATTR_WO(recompress);
 #endif
-static DEVICE_ATTR_RW(pages_per_pool_page);
 
 static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_disksize.attr,
@@ -2244,7 +2205,6 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_recomp_algorithm.attr,
 	&dev_attr_recompress.attr,
 #endif
-	&dev_attr_pages_per_pool_page.attr,
 	NULL,
 };
 
@@ -2282,7 +2242,6 @@ static int zram_add(void)
 		goto out_free_idr;
 	}
 
-	zram->pages_per_pool_page = ZS_DEFAULT_PAGES_PER_ZSPAGE;
 	zram->disk->major = zram_major;
 	zram->disk->first_minor = device_id;
 	zram->disk->minors = 1;
