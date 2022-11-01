@@ -2230,6 +2230,27 @@ void vm_unmap_ram(const void *mem, unsigned int count)
 }
 EXPORT_SYMBOL(vm_unmap_ram);
 
+static void *vmap_alloc(size_t size, int node)
+{
+	void *mem;
+
+	if (likely(size <= (VMAP_MAX_ALLOC * PAGE_SIZE))) {
+		mem = vb_alloc(size, GFP_KERNEL);
+		if (IS_ERR(mem))
+			mem = NULL;
+	} else {
+		struct vmap_area *va;
+		va = alloc_vmap_area(size, PAGE_SIZE,
+				VMALLOC_START, VMALLOC_END, node, GFP_KERNEL);
+		if (IS_ERR(va))
+			mem = NULL;
+		else
+			mem = (void *)va->va_start;
+	}
+
+	return mem;
+}
+
 /**
  * vm_map_ram - map pages linearly into kernel virtual address (vmalloc space)
  * @pages: an array of pointers to the pages to be mapped
@@ -2247,24 +2268,8 @@ EXPORT_SYMBOL(vm_unmap_ram);
 void *vm_map_ram(struct page **pages, unsigned int count, int node)
 {
 	unsigned long size = (unsigned long)count << PAGE_SHIFT;
-	unsigned long addr;
-	void *mem;
-
-	if (likely(count <= VMAP_MAX_ALLOC)) {
-		mem = vb_alloc(size, GFP_KERNEL);
-		if (IS_ERR(mem))
-			return NULL;
-		addr = (unsigned long)mem;
-	} else {
-		struct vmap_area *va;
-		va = alloc_vmap_area(size, PAGE_SIZE,
-				VMALLOC_START, VMALLOC_END, node, GFP_KERNEL);
-		if (IS_ERR(va))
-			return NULL;
-
-		addr = va->va_start;
-		mem = (void *)addr;
-	}
+	void *mem = vmap_alloc(size, node);
+	unsigned long addr = (unsigned long)mem;
 
 	if (vmap_pages_range(addr, addr + size, PAGE_KERNEL,
 				pages, PAGE_SHIFT) < 0) {
@@ -2282,6 +2287,38 @@ void *vm_map_ram(struct page **pages, unsigned int count, int node)
 	return mem;
 }
 EXPORT_SYMBOL(vm_map_ram);
+
+#ifdef CONFIG_HIGHMEM
+/**
+ * vm_map_folio() - Map an entire folio into virtually contiguous space.
+ * @folio: The folio to map.
+ *
+ * Maps all pages in @folio into contiguous kernel virtual space.  This
+ * function is only available in HIGHMEM builds; for !HIGHMEM, use
+ * folio_address().  The pages are mapped with PAGE_KERNEL permissions.
+ *
+ * Return: The address of the area or %NULL on failure
+ */
+void *vm_map_folio(struct folio *folio)
+{
+	size_t size = folio_size(folio);
+	void *mem = vmap_alloc(size, NUMA_NO_NODE);
+	unsigned long addr = (unsigned long)mem;
+
+	if (vmap_range_noflush(addr, addr + size,
+				folio_pfn(folio) << PAGE_SHIFT,
+				PAGE_KERNEL, folio_shift(folio))) {
+		vm_unmap_ram(mem, folio_nr_pages(folio));
+		return NULL;
+	}
+	flush_cache_vmap(addr, addr + size);
+
+	mem = kasan_unpoison_vmalloc(mem, size, KASAN_VMALLOC_PROT_NORMAL);
+
+	return mem;
+}
+EXPORT_SYMBOL(vm_map_folio);
+#endif
 
 static struct vm_struct *vmlist __initdata;
 

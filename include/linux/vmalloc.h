@@ -13,6 +13,7 @@
 #include <asm/vmalloc.h>
 
 struct vm_area_struct;		/* vma defining user mapping in mm_types.h */
+struct folio;			/* also mm_types.h */
 struct notifier_block;		/* in notifier.h */
 
 /* bits in flags of vmalloc's vm_struct below */
@@ -163,8 +164,9 @@ extern void *vcalloc(size_t n, size_t size) __alloc_size(1, 2);
 extern void vfree(const void *addr);
 extern void vfree_atomic(const void *addr);
 
-extern void *vmap(struct page **pages, unsigned int count,
-			unsigned long flags, pgprot_t prot);
+void *vmap(struct page **pages, unsigned int count, unsigned long flags,
+		pgprot_t prot);
+void *vm_map_folio(struct folio *folio);
 void *vmap_pfn(unsigned long *pfns, unsigned int count, pgprot_t prot);
 extern void vunmap(const void *addr);
 
