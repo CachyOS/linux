@@ -10,7 +10,6 @@
 #include <linux/mm.h>
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
-#include <linux/vmalloc.h>
 
 #include "highmem-internal.h"
 
@@ -132,44 +131,6 @@ static inline void *kmap_local_page(struct page *page);
  * Return: The virtual address of @offset.
  */
 static inline void *kmap_local_folio(struct folio *folio, size_t offset);
-
-/**
- * folio_map_local - Map an entire folio.
- * @folio: The folio to map.
- *
- * Unlike kmap_local_folio(), map an entire folio.  This should be undone
- * with folio_unmap_local().  The address returned should be treated as
- * stack-based, and local to this CPU, like kmap_local_folio().
- *
- * Context: May allocate memory using GFP_KERNEL if it takes the vmap path.
- * Return: A kernel virtual address which can be used to access the folio,
- * or NULL if the mapping fails.
- */
-static inline __must_check void *folio_map_local(struct folio *folio)
-{
-	might_alloc(GFP_KERNEL);
-
-	if (!IS_ENABLED(CONFIG_HIGHMEM))
-		return folio_address(folio);
-	if (folio_test_large(folio))
-		return vm_map_folio(folio);
-	return kmap_local_page(&folio->page);
-}
-
-/**
- * folio_unmap_local - Unmap an entire folio.
- * @addr: Address returned from folio_map_local()
- *
- * Undo the result of a previous call to folio_map_local().
- */
-static inline void folio_unmap_local(const void *addr)
-{
-	if (!IS_ENABLED(CONFIG_HIGHMEM))
-		return;
-	if (is_vmalloc_addr(addr))
-		vunmap(addr);
-	kunmap_local(addr);
-}
 
 /**
  * kmap_atomic - Atomically map a page for temporary usage - Deprecated!
@@ -465,4 +426,5 @@ static inline void folio_zero_range(struct folio *folio,
 {
 	zero_user_segments(&folio->page, start, start + length, 0, 0);
 }
+
 #endif /* _LINUX_HIGHMEM_H */
