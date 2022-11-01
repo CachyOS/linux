@@ -2283,56 +2283,6 @@ void *vm_map_ram(struct page **pages, unsigned int count, int node)
 }
 EXPORT_SYMBOL(vm_map_ram);
 
-#ifdef CONFIG_HIGHMEM
-/**
- * vm_map_folio() - Map an entire folio into virtually contiguous space.
- * @folio: The folio to map.
- *
- * Maps all pages in @folio into contiguous kernel virtual space.  This
- * function is only available in HIGHMEM builds; for !HIGHMEM, use
- * folio_address().  The pages are mapped with PAGE_KERNEL permissions.
- *
- * Return: The address of the area or %NULL on failure
- */
-void *vm_map_folio(struct folio *folio)
-{
-	size_t size = folio_size(folio);
-	unsigned long addr;
-	void *mem;
-
-	might_sleep();
-
-	if (likely(folio_nr_pages(folio) <= VMAP_MAX_ALLOC)) {
-		mem = vb_alloc(size, GFP_KERNEL);
-		if (IS_ERR(mem))
-			return NULL;
-		addr = (unsigned long)mem;
-	} else {
-		struct vmap_area *va;
-		va = alloc_vmap_area(size, PAGE_SIZE, VMALLOC_START,
-				VMALLOC_END, NUMA_NO_NODE, GFP_KERNEL);
-		if (IS_ERR(va))
-			return NULL;
-
-		addr = va->va_start;
-		mem = (void *)addr;
-	}
-
-	if (vmap_range_noflush(addr, addr + size,
-				folio_pfn(folio) << PAGE_SHIFT,
-				PAGE_KERNEL, folio_shift(folio))) {
-		vm_unmap_ram(mem, folio_nr_pages(folio));
-		return NULL;
-	}
-	flush_cache_vmap(addr, addr + size);
-
-	mem = kasan_unpoison_vmalloc(mem, size, KASAN_VMALLOC_PROT_NORMAL);
-
-	return mem;
-}
-EXPORT_SYMBOL(vm_map_folio);
-#endif
-
 static struct vm_struct *vmlist __initdata;
 
 static inline unsigned int vm_area_page_order(struct vm_struct *vm)
