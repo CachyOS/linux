@@ -503,30 +503,28 @@ static void __filemap_fdatawait_range(struct address_space *mapping,
 {
 	pgoff_t index = start_byte >> PAGE_SHIFT;
 	pgoff_t end = end_byte >> PAGE_SHIFT;
-	struct folio_batch fbatch;
-	unsigned nr_folios;
+	struct pagevec pvec;
+	int nr_pages;
 
 	if (end_byte < start_byte)
 		return;
 
-	folio_batch_init(&fbatch);
-
+	pagevec_init(&pvec);
 	while (index <= end) {
 		unsigned i;
 
-		nr_folios = filemap_get_folios_tag(mapping, &index, end,
-				PAGECACHE_TAG_WRITEBACK, &fbatch);
-
-		if (!nr_folios)
+		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index,
+				end, PAGECACHE_TAG_WRITEBACK);
+		if (!nr_pages)
 			break;
 
-		for (i = 0; i < nr_folios; i++) {
-			struct folio *folio = fbatch.folios[i];
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pvec.pages[i];
 
-			folio_wait_writeback(folio);
-			folio_clear_error(folio);
+			wait_on_page_writeback(page);
+			ClearPageError(page);
 		}
-		folio_batch_release(&fbatch);
+		pagevec_release(&pvec);
 		cond_resched();
 	}
 }
@@ -2263,57 +2261,64 @@ out:
 EXPORT_SYMBOL(filemap_get_folios_contig);
 
 /**
- * filemap_get_folios_tag - Get a batch of folios matching @tag.
- * @mapping:    The address_space to search
- * @start:      The starting page index
- * @end:        The final page index (inclusive)
- * @tag:        The tag index
- * @fbatch:     The batch to fill
+ * find_get_pages_range_tag - Find and return head pages matching @tag.
+ * @mapping:	the address_space to search
+ * @index:	the starting page index
+ * @end:	The final page index (inclusive)
+ * @tag:	the tag index
+ * @nr_pages:	the maximum number of pages
+ * @pages:	where the resulting pages are placed
  *
- * Same as filemap_get_folios, but only returning folios tagged with @tag
+ * Like find_get_pages_range(), except we only return head pages which are
+ * tagged with @tag.  @index is updated to the index immediately after the
+ * last page we return, ready for the next iteration.
  *
- * Return: The number of folios found
- * Also update @start to index the next folio for traversal
+ * Return: the number of pages which were found.
  */
-unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
-			pgoff_t end, xa_mark_t tag, struct folio_batch *fbatch)
+unsigned find_get_pages_range_tag(struct address_space *mapping, pgoff_t *index,
+			pgoff_t end, xa_mark_t tag, unsigned int nr_pages,
+			struct page **pages)
 {
-	XA_STATE(xas, &mapping->i_pages, *start);
+	XA_STATE(xas, &mapping->i_pages, *index);
 	struct folio *folio;
+	unsigned ret = 0;
+
+	if (unlikely(!nr_pages))
+		return 0;
 
 	rcu_read_lock();
-	while ((folio = find_get_entry(&xas, end, tag)) != NULL) {
-		/* Shadow entries should never be tagged, but this iteration
+	while ((folio = find_get_entry(&xas, end, tag))) {
+		/*
+		 * Shadow entries should never be tagged, but this iteration
 		 * is lockless so there is a window for page reclaim to evict
-		 * a page we saw tagged. Skip over it.
+		 * a page we saw tagged.  Skip over it.
 		 */
 		if (xa_is_value(folio))
 			continue;
-		if (!folio_batch_add(fbatch, folio)) {
-			unsigned long nr = folio_nr_pages(folio);
 
-			if (folio_test_hugetlb(folio))
-				nr = 1;
-			*start = folio->index + nr;
+		pages[ret] = &folio->page;
+		if (++ret == nr_pages) {
+			*index = folio->index + folio_nr_pages(folio);
 			goto out;
 		}
 	}
+
 	/*
-	 * We come here when there is no page beyond @end. We take care to not
-	 * overflow the index @start as it confuses some of the callers. This
-	 * breaks the iteration when there is a page at index -1 but that is
-	 * already broke anyway.
+	 * We come here when we got to @end. We take care to not overflow the
+	 * index @index as it confuses some of the callers. This breaks the
+	 * iteration when there is a page at index -1 but that is already
+	 * broken anyway.
 	 */
 	if (end == (pgoff_t)-1)
-		*start = (pgoff_t)-1;
+		*index = (pgoff_t)-1;
 	else
-		*start = end + 1;
+		*index = end + 1;
 out:
 	rcu_read_unlock();
 
-	return folio_batch_count(fbatch);
+	return ret;
 }
-EXPORT_SYMBOL(filemap_get_folios_tag);
+EXPORT_SYMBOL(find_get_pages_range_tag);
 
 /*
  * CD/DVDs are error prone. When a medium error occurs, the driver may fail
