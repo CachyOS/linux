@@ -50,4 +50,6 @@ source "drivers/staging/vme_user/Kconfig"
 
 source "drivers/staging/gpib/Kconfig"
 
+source "drivers/staging/apple-bce/Kconfig"
+
 endif # STAGING
