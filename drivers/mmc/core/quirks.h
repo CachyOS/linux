@@ -264,4 +264,6 @@ static inline void mmc_fixup_device(struct mmc_card *card,
 		dev_dbg(&card->dev, "calling %ps\n", f->vendor_fixup);
 		f->vendor_fixup(card, f->data);
 	}
+
+	card->safe_trim_quirk_version = 1;
 }
