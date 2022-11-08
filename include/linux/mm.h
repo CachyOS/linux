@@ -743,6 +743,14 @@ void clear_vm_flags(struct vm_area_struct *vma, unsigned long flags)
 }
 
 static inline
+void mod_vm_flags_nolock(struct vm_area_struct *vma,
+		  unsigned long set, unsigned long clear)
+{
+	vma->vm_flags |= set;
+	vma->vm_flags &= ~clear;
+}
+
+static inline
 void mod_vm_flags(struct vm_area_struct *vma,
 		  unsigned long set, unsigned long clear)
 {
