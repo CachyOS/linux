@@ -437,7 +437,7 @@ enum maple_type mte_parent_enum(struct maple_enode *p_enode,
 		return 0; /* Validated in the caller. */
 
 	p_type &= MAPLE_NODE_MASK;
-	p_type = p_type & ~(MAPLE_PARENT_ROOT | mte_parent_slot_mask(p_type));
+	p_type = p_type & ~mte_parent_slot_mask(p_type);
 
 	switch (p_type) {
 	case MAPLE_PARENT_RANGE64: /* or MAPLE_PARENT_ARANGE64 */
