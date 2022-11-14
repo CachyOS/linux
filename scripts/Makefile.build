@@ -154,7 +154,7 @@ is-single-obj-m = $(and $(part-of-module),$(filter $@, $(obj-m)),y)
 # When a module consists of a single object, there is no reason to keep LLVM IR.
 # Make $(LD) covert LLVM IR to ELF here.
 ifdef CONFIG_LTO
-cmd_ld_single_m = $(if $(is-single-obj-m), ; $(LD) $(ld_flags) -r -o $(tmp-target) $@; mv $(tmp-target) $@)
+cmd_ld_single_m = $(if $(is-single-obj-m), ; $(LDFINAL) $(ld_flags) -r -o $(tmp-target) $@; mv $(tmp-target) $@)
 endif
 
 quiet_cmd_cc_o_c = CC $(quiet_modtag)  $@
@@ -265,7 +265,8 @@ $(obj)/%.usyms: $(obj)/%.o FORCE
 	$(call if_changed,undefined_syms)
 
 quiet_cmd_cc_lst_c = MKLST   $@
-      cmd_cc_lst_c = $(CC) $(c_flags) -g -c -o $*.o $< && \
+      cmd_cc_lst_c = $(if $(CONFIG_LTO),$(warning Listing in LTO mode does not match final binary)) \
+		     $(CC) $(c_flags) -g -c -o $*.o $< && \
 		     $(CONFIG_SHELL) $(srctree)/scripts/makelst $*.o \
 				     System.map $(OBJDUMP) > $@
 
@@ -446,8 +447,8 @@ $(obj)/modules.order: $(obj-m) FORCE
 $(obj)/lib.a: $(lib-y) FORCE
 	$(call if_changed,ar)
 
-quiet_cmd_ld_multi_m = LD [M]  $@
-      cmd_ld_multi_m = $(LD) $(ld_flags) -r -o $@ @$(patsubst %.o,%.mod,$@) $(cmd_objtool)
+quiet_cmd_ld_multi_m = LDFINAL [M] $@
+      cmd_ld_multi_m = $(LDFINAL) $(ld_flags) -r -o $@ @$(patsubst %.o,%.mod,$@) $(cmd_objtool)
 
 define rule_ld_multi_m
 	$(call cmd_and_savecmd,ld_multi_m)
