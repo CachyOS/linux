@@ -153,7 +153,7 @@ is-single-obj-m = $(and $(part-of-module),$(filter $@, $(obj-m)),y)
 
 # When a module consists of a single object, there is no reason to keep LLVM IR.
 # Make $(LD) covert LLVM IR to ELF here.
-ifdef CONFIG_LTO_CLANG
+ifdef CONFIG_LTO
 cmd_ld_single_m = $(if $(is-single-obj-m), ; $(LD) $(ld_flags) -r -o $(tmp-target) $@; mv $(tmp-target) $@)
 endif
 
