@@ -29,9 +29,11 @@
 #include <linux/kernel.h>
 #include <linux/math.h>
 #include <linux/mutex.h>
+#include <linux/percpu.h>
 #include <linux/percpu-defs.h>
 #include <linux/printk.h>
 #include <linux/processor.h>
+#include <linux/seqlock.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
@@ -180,6 +182,62 @@ static struct workqueue_struct *hfi_updates_wq;
 #define HFI_UPDATE_INTERVAL		HZ
 #define HFI_MAX_THERM_NOTIFY_COUNT	16
 
+/* A cache of the HFI perf capabilities for lockless access. */
+static int __percpu *hfi_ipcc_scores;
+/* Sequence counter for hfi_ipcc_scores */
+static seqcount_t hfi_ipcc_seqcount = SEQCNT_ZERO(hfi_ipcc_seqcount);
+
+static int alloc_hfi_ipcc_scores(void)
+{
+	if (!cpu_feature_enabled(X86_FEATURE_ITD))
+		return 0;
+
+	hfi_ipcc_scores = __alloc_percpu(sizeof(*hfi_ipcc_scores) *
+					 hfi_features.nr_classes,
+					 sizeof(*hfi_ipcc_scores));
+
+	return hfi_ipcc_scores ? 0 : -ENOMEM;
+}
+
+static void set_hfi_ipcc_scores(struct hfi_instance *hfi_instance)
+{
+	int cpu;
+
+	if (!cpu_feature_enabled(X86_FEATURE_ITD))
+		return;
+
+	/*
+	 * Serialize with writes to the HFI table. It also protects the write
+	 * loop against seqcount readers running in interrupt context.
+	 */
+	raw_spin_lock_irq(&hfi_instance->table_lock);
+	/*
+	 * The seqcount implies store-release semantics to order stores with
+	 * lockless loads from the seqcount read side. It also implies a
+	 * compiler barrier.
+	 */
+	write_seqcount_begin(&hfi_ipcc_seqcount);
+	for_each_cpu(cpu, hfi_instance->cpus) {
+		int c, *scores;
+		s16 index;
+
+		index = per_cpu(hfi_cpu_info, cpu).index;
+		scores = per_cpu_ptr(hfi_ipcc_scores, cpu);
+
+		for (c = 0;  c < hfi_features.nr_classes; c++) {
+			struct hfi_cpu_data *caps;
+
+			caps = hfi_instance->data +
+			       index * hfi_features.cpu_stride +
+			       c * hfi_features.class_stride;
+			scores[c] = caps->perf_cap;
+		}
+	}
+
+	write_seqcount_end(&hfi_ipcc_seqcount);
+	raw_spin_unlock_irq(&hfi_instance->table_lock);
+}
+
 /**
  * intel_hfi_read_classid() - Read the currrent classid
  * @classid:	Variable to which the classid will be written.
@@ -275,6 +333,8 @@ last_cmd:
 		thermal_genl_cpu_capability_event(cpu_count, &cpu_caps[i]);
 
 	kfree(cpu_caps);
+
+	set_hfi_ipcc_scores(hfi_instance);
 out:
 	mutex_unlock(&hfi_instance_lock);
 }
@@ -618,7 +678,13 @@ void __init intel_hfi_init(void)
 	if (!hfi_updates_wq)
 		goto err_nomem;
 
+	if (alloc_hfi_ipcc_scores())
+		goto err_ipcc;
+
 	return;
+
+err_ipcc:
+	destroy_workqueue(hfi_updates_wq);
 
 err_nomem:
 	for (j = 0; j < i; ++j) {
