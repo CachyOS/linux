@@ -572,6 +572,7 @@ void ceph_evict_inode(struct inode *inode)
 	truncate_inode_pages_final(&inode->i_data);
 	if (inode->i_state & I_PINNING_FSCACHE_WB)
 		ceph_fscache_unuse_cookie(inode, true);
+	mapping_clear_release_always(inode->i_mapping);
 	clear_inode(inode);
 
 	ceph_fscache_unregister_inode_cookie(ci);

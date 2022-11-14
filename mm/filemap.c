@@ -3935,6 +3935,10 @@ bool filemap_release_folio(struct folio *folio, gfp_t gfp)
 	struct address_space * const mapping = folio->mapping;
 
 	BUG_ON(!folio_test_locked(folio));
+	if ((!mapping || !mapping_release_always(mapping))
+	    && !folio_test_private(folio) &&
+	    !folio_test_private_2(folio))
+		return true;
 	if (folio_test_writeback(folio))
 		return false;
 
