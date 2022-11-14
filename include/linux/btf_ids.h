@@ -37,7 +37,7 @@ struct btf_id_set8 {
 #define ____BTF_ID(symbol, word)			\
 asm(							\
 ".pushsection " BTF_IDS_SECTION ",\"a\";       \n"	\
-".local " #symbol " ;                          \n"	\
+"." __global_on_lto " " #symbol " ;            \n"	\
 ".type  " #symbol ", STT_OBJECT;               \n"	\
 ".size  " #symbol ", 4;                        \n"	\
 #symbol ":                                     \n"	\
@@ -88,7 +88,7 @@ asm(							\
 ".popsection;                                  \n");
 
 #define BTF_ID_LIST(name)				\
-__BTF_ID_LIST(name, "local")				\
+__BTF_ID_LIST(name, __global_on_lto)			\
 extern u32 name[];
 
 #define BTF_ID_LIST_GLOBAL(name, n)			\
@@ -148,8 +148,8 @@ asm(							\
 ".popsection;                                  \n");
 
 #define BTF_SET_START(name)				\
-__BTF_ID_LIST(name, "local")				\
-__BTF_SET_START(name, "local")
+__BTF_ID_LIST(name, __global_on_lto)			\
+__BTF_SET_START(name, __global_on_lto)
 
 #define BTF_SET_START_GLOBAL(name)			\
 __BTF_ID_LIST(name, "globl")				\
@@ -192,8 +192,8 @@ asm(							\
 ".popsection;                                  \n");
 
 #define BTF_SET8_START(name)				\
-__BTF_ID_LIST(name, "local")				\
-__BTF_SET8_START(name, "local")
+__BTF_ID_LIST(name, __global_on_lto)			\
+__BTF_SET8_START(name, __global_on_lto)
 
 #define BTF_SET8_END(name)				\
 asm(							\
