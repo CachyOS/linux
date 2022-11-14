@@ -379,4 +379,14 @@
  */
 #define __fix_address noinline __noclone
 
+/*
+ * https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#Common-Function-Attributes
+ */
+
+#if __has_attribute(__no_reorder__)
+#define __noreorder			__attribute__((no_reorder))
+#else
+#define __noreorder
+#endif
+
 #endif /* __LINUX_COMPILER_ATTRIBUTES_H */
