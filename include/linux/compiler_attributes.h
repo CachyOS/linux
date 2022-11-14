@@ -229,7 +229,12 @@
  * gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#Common-Function-Attributes
  * clang: https://clang.llvm.org/docs/AttributeReference.html#flatten
  */
+#ifndef CONFIG_LTO_GCC
 # define __flatten			__attribute__((flatten))
+#else
+/* Causes very large memory use with gcc in LTO mode */
+# define __flatten
+#endif
 
 /*
  * Note the missing underscores.
