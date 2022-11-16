@@ -805,7 +805,6 @@ void afs_evict_inode(struct inode *inode)
 
 	afs_set_cache_aux(vnode, &aux);
 	fscache_clear_inode_writeback(afs_vnode_cache(vnode), inode, &aux);
-	mapping_clear_release_always(inode->i_mapping);
 	clear_inode(inode);
 
 	while (!list_empty(&vnode->wb_keys)) {
