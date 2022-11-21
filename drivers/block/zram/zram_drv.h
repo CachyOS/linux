@@ -56,6 +56,7 @@ enum zram_pageflags {
 
 	ZRAM_COMP_PRIORITY_BIT1, /* First bit of comp priority index */
 	ZRAM_COMP_PRIORITY_BIT2, /* Second bit of comp priority index */
+	ZRAM_MERGED,	/* page was merged */
 
 	__NR_ZRAM_PAGEFLAGS,
 };
@@ -89,6 +90,7 @@ struct zram_stats {
 	atomic_long_t max_used_pages;	/* no. of maximum pages stored */
 	atomic64_t writestall;		/* no. of write slow paths */
 	atomic64_t miss_free;		/* no. of missed free */
+	atomic64_t pages_merged;	/* no. of pages, which merged into single one */
 #ifdef	CONFIG_ZRAM_WRITEBACK
 	atomic64_t bd_count;		/* no. of pages in backing device */
 	atomic64_t bd_reads;		/* no. of reads from backing device */
@@ -142,5 +144,10 @@ struct zram {
 #ifdef CONFIG_ZRAM_MEMORY_TRACKING
 	struct dentry *debugfs_dir;
 #endif
+	/*
+	 * This is same pages handle's rb tree, where the key is a handle
+	 * to same pages and the value is a link counter
+	 */
+	struct rb_root sph_rbtree;
 };
 #endif

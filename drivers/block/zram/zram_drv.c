@@ -33,12 +33,15 @@
 #include <linux/debugfs.h>
 #include <linux/cpuhotplug.h>
 #include <linux/part_stat.h>
+#include <linux/hashtable.h>
+#include <linux/xxhash.h>
 
 #include "zram_drv.h"
 
 static DEFINE_IDR(zram_index_idr);
 /* idr index must be protected */
 static DEFINE_MUTEX(zram_index_mutex);
+static DEFINE_MUTEX(zram_rbtree_mutex);
 
 static int zram_major;
 static const char *default_compressor = CONFIG_ZRAM_DEF_COMP;
@@ -57,6 +60,16 @@ static void zram_free_page(struct zram *zram, size_t index);
 static int zram_bvec_read(struct zram *zram, struct bio_vec *bvec,
 				u32 index, int offset, struct bio *bio);
 
+struct zram_rbtree_node {
+	struct rb_node node;
+	unsigned long key;
+	unsigned long cnt;
+};
+
+struct zram_hash_node {
+	unsigned long index;
+	struct hlist_node next;
+};
 
 static int zram_slot_trylock(struct zram *zram, u32 index)
 {
@@ -1187,6 +1200,30 @@ static ssize_t compact_store(struct device *dev,
 	return len;
 }
 
+static int zram_do_scan(struct zram *zram);
+
+static ssize_t merge_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	struct zram *zram = dev_to_zram(dev);
+	int ret;
+
+	down_read(&zram->init_lock);
+	if (!init_done(zram)) {
+		up_read(&zram->init_lock);
+		return -EINVAL;
+	}
+
+	ret = zram_do_scan(zram);
+	if (ret != 0) {
+		up_read(&zram->init_lock);
+		return -ENOMEM;
+	}
+
+	up_read(&zram->init_lock);
+	return len;
+}
+
 static ssize_t io_stat_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -1226,7 +1263,7 @@ static ssize_t mm_stat_show(struct device *dev,
 	max_used = atomic_long_read(&zram->stats.max_used_pages);
 
 	ret = scnprintf(buf, PAGE_SIZE,
-			"%8llu %8llu %8llu %8lu %8ld %8llu %8lu %8llu %8llu\n",
+			"%8llu %8llu %8llu %8lu %8ld %8llu %8lu %8llu %8llu %8llu\n",
 			orig_size << PAGE_SHIFT,
 			(u64)atomic64_read(&zram->stats.compr_data_size),
 			mem_used << PAGE_SHIFT,
@@ -1235,7 +1272,8 @@ static ssize_t mm_stat_show(struct device *dev,
 			(u64)atomic64_read(&zram->stats.same_pages),
 			atomic_long_read(&pool_stats.pages_compacted),
 			(u64)atomic64_read(&zram->stats.huge_pages),
-			(u64)atomic64_read(&zram->stats.huge_pages_since));
+			(u64)atomic64_read(&zram->stats.huge_pages_since),
+			(u64)atomic64_read(&zram->stats.pages_merged));
 	up_read(&zram->init_lock);
 
 	return ret;
@@ -1286,6 +1324,248 @@ static DEVICE_ATTR_RO(bd_stat);
 #endif
 static DEVICE_ATTR_RO(debug_stat);
 
+static bool zram_rbtree_insert(struct rb_root *root, struct zram_rbtree_node *data)
+{
+	struct rb_node **new = &(root->rb_node), *parent = NULL;
+	struct zram_rbtree_node *this;
+
+	while (*new) {
+		this = rb_entry(*new, struct zram_rbtree_node, node);
+		parent = *new;
+		if (data->key < this->key)
+			new = &((*new)->rb_left);
+		else if (data->key > this->key)
+			new = &((*new)->rb_right);
+		else
+			return false;
+	}
+
+	rb_link_node(&data->node, parent, new);
+	rb_insert_color(&data->node, root);
+	return true;
+}
+
+static struct zram_rbtree_node *zram_rbtree_search(struct rb_root *root,
+		unsigned long key)
+{
+	struct rb_node *node = root->rb_node;
+	struct zram_rbtree_node *data;
+
+	while (node) {
+		data = rb_entry(node, struct zram_rbtree_node, node);
+		if (key < data->key)
+			node = node->rb_left;
+		else if (key > data->key)
+			node = node->rb_right;
+		else
+			return data;
+	}
+
+	return NULL;
+}
+
+static unsigned long zram_calc_hash(void *src, size_t len)
+{
+	return xxhash(src, len, 0);
+}
+
+static int zram_cmp_obj_and_merge(struct zram *zram, struct hlist_head *htable,
+		size_t htable_size, size_t index)
+{
+	struct zram_rbtree_node *rb_node;
+	struct zram_hash_node *node;
+	unsigned long handle, cur_handle;
+	size_t obj_size;
+	char *src, *buf;
+	unsigned long hash;
+	int ret = 0;
+
+	handle = zram_get_handle(zram, index);
+	if (!handle)
+		return ret;
+
+	obj_size = zram_get_obj_size(zram, index);
+	buf = kmalloc(obj_size, GFP_KERNEL);
+	if (!buf) {
+		pr_err("Failed to allocate zs_map_object buffer\n");
+		return -ENOMEM;
+	}
+
+	src = zs_map_object(zram->mem_pool, handle, ZS_MM_RO);
+	memcpy(buf, src, obj_size);
+	zs_unmap_object(zram->mem_pool, handle);
+	hash = zram_calc_hash(buf, obj_size);
+
+	mutex_lock(&zram_rbtree_mutex);
+	hlist_for_each_entry(node, &htable[hash % htable_size], next) {
+		int cmp;
+
+		zram_slot_lock(zram, node->index);
+
+		/*
+		 * Page may change as the hash table is being formed,
+		 * so the checks below are necessary.
+		 */
+		cur_handle = zram_get_handle(zram, node->index);
+		if (handle == cur_handle ||
+			obj_size != zram_get_obj_size(zram, node->index)) {
+			zram_slot_unlock(zram, node->index);
+			continue;
+		}
+
+		src = zs_map_object(zram->mem_pool, cur_handle, ZS_MM_RO);
+		cmp = memcmp(buf, src, obj_size);
+		zs_unmap_object(zram->mem_pool, cur_handle);
+
+		if (!cmp) {
+			rb_node = zram_rbtree_search(&zram->sph_rbtree, handle);
+
+			/*
+			 * This check is necessary in order not to zs_free an object
+			 * that someone already refers to. This situation is possible
+			 * when with repeated calls to zram_do_scan(). For example:
+			 *
+			 * [slot0] [slot1] [slot2] [slot3] [slot4]
+			 * [obj0]  [obj1]  [obj2]  [obj3]  [obj4]
+			 *
+			 * Let's imagine that obj2 and obj3 are equal, and we called
+			 * zram_do_scan() function:
+			 *
+			 * [slot0] [slot1] [slot2] [slot3] [slot4]
+			 * [obj0]  [obj1]  [obj2]  [obj2]  [obj4]
+			 *
+			 * Now, slot2 and slot3 refers to obj2 zsmalloc object.
+			 * Time passed, now slot0 refres to obj0_n, which is equal
+			 * to obj2:
+			 *
+			 * [slot0]  [slot1] [slot2] [slot3] [slot4]
+			 * [obj0_n] [obj1]  [obj2]  [obj2]  [obj4]
+			 *
+			 * Now we call zram_do_scan() function again. We get to slot2,
+			 * and we understand that obj2 and obj0_n hashes are the same. We
+			 * try to zs_free(obj2), but slot3 also already refers to it.
+			 *
+			 * This is not correct!
+			 */
+			if (unlikely(rb_node))
+				if (rb_node->cnt > 1) {
+					zram_slot_unlock(zram, node->index);
+					continue;
+				}
+
+			zram_set_handle(zram, index, cur_handle);
+			zs_free(zram->mem_pool, handle);
+
+			rb_node = zram_rbtree_search(&zram->sph_rbtree, cur_handle);
+
+			if (!rb_node) {
+				rb_node = kzalloc(sizeof(struct zram_rbtree_node),
+								GFP_KERNEL);
+				if (!rb_node) {
+					pr_err("Failed to allocate rb_node\n");
+					ret = -ENOMEM;
+					zram_slot_unlock(zram, node->index);
+					mutex_unlock(&zram_rbtree_mutex);
+					goto merged_or_err;
+				}
+
+				rb_node->key = cur_handle;
+				/* Two slots refers to an zsmalloc object with cur_handle key */
+				rb_node->cnt = 2;
+				zram_rbtree_insert(&zram->sph_rbtree, rb_node);
+			} else {
+				rb_node->cnt++;
+			}
+
+			atomic64_inc(&zram->stats.pages_merged);
+			atomic64_sub(obj_size, &zram->stats.compr_data_size);
+			zram_set_flag(zram, index, ZRAM_MERGED);
+			zram_set_flag(zram, node->index, ZRAM_MERGED);
+
+			zram_slot_unlock(zram, node->index);
+			mutex_unlock(&zram_rbtree_mutex);
+			goto merged_or_err;
+		}
+
+		zram_slot_unlock(zram, node->index);
+	}
+
+	mutex_unlock(&zram_rbtree_mutex);
+
+	node = kmalloc(sizeof(struct zram_hash_node), GFP_KERNEL);
+	if (!node) {
+		ret = -ENOMEM;
+		goto merged_or_err;
+	}
+
+	node->index = index;
+	hlist_add_head(&node->next, &htable[hash % htable_size]);
+
+merged_or_err:
+	kfree(buf);
+	return ret;
+}
+
+static void zram_free_htable_entries(struct hlist_head *htable,
+		size_t htable_size)
+{
+	struct hlist_node *n;
+	struct zram_hash_node *node;
+
+	hlist_for_each_entry_safe(node, n, htable, next) {
+		hlist_del(&node->next);
+		kfree(node);
+	}
+}
+
+static int zram_do_scan(struct zram *zram)
+{
+	size_t num_pages = zram->disksize >> PAGE_SHIFT;
+	size_t htable_size = num_pages;
+	size_t index;
+	struct hlist_head *htable;
+	int i, ret = 0;
+
+	htable = vzalloc(htable_size * sizeof(struct hlist_head));
+	if (!htable) {
+		pr_err("Failed to allocate hash table\n");
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < htable_size; i++)
+		INIT_HLIST_HEAD(&htable[i]);
+
+	for (index = 0; index < num_pages; index++) {
+		zram_slot_lock(zram, index);
+
+		if (!zram_allocated(zram, index)) {
+			zram_slot_unlock(zram, index);
+			continue;
+		}
+
+		if (zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
+			zram_test_flag(zram, index, ZRAM_WB) ||
+			zram_test_flag(zram, index, ZRAM_SAME)) {
+			zram_slot_unlock(zram, index);
+			continue;
+		}
+
+		/* Ignore pages that have been recompressed */
+		if (zram_get_priority(zram, index) != 0)
+			continue;
+
+		ret = zram_cmp_obj_and_merge(zram, htable, htable_size, index);
+		zram_slot_unlock(zram, index);
+		if (ret != 0)
+			goto out;
+	}
+
+out:
+	zram_free_htable_entries(htable, htable_size);
+	vfree(htable);
+	return ret;
+}
+
 static void zram_meta_free(struct zram *zram, u64 disksize)
 {
 	size_t num_pages = disksize >> PAGE_SHIFT;
@@ -1327,6 +1607,7 @@ static bool zram_meta_alloc(struct zram *zram, u64 disksize)
 static void zram_free_page(struct zram *zram, size_t index)
 {
 	unsigned long handle;
+	struct zram_rbtree_node *node;
 
 #ifdef CONFIG_ZRAM_MEMORY_TRACKING
 	zram->table[index].ac_time = 0;
@@ -1364,7 +1645,28 @@ static void zram_free_page(struct zram *zram, size_t index)
 	if (!handle)
 		return;
 
-	zs_free(zram->mem_pool, handle);
+	if (zram_test_flag(zram, index, ZRAM_MERGED)) {
+		zram_clear_flag(zram, index, ZRAM_MERGED);
+		mutex_lock(&zram_rbtree_mutex);
+
+		node = zram_rbtree_search(&zram->sph_rbtree, handle);
+		BUG_ON(!node);
+
+		node->cnt--;
+		if (node->cnt == 0) {
+			rb_erase(&node->node, &zram->sph_rbtree);
+			mutex_unlock(&zram_rbtree_mutex);
+
+			zs_free(zram->mem_pool, handle);
+			kfree(node);
+		} else {
+			mutex_unlock(&zram_rbtree_mutex);
+		}
+
+		atomic64_dec(&zram->stats.pages_merged);
+	} else {
+		zs_free(zram->mem_pool, handle);
+	}
 
 	atomic64_sub(zram_get_obj_size(zram, index),
 			&zram->stats.compr_data_size);
@@ -1913,7 +2215,8 @@ static ssize_t recompress_store(struct device *dev,
 		if (zram_test_flag(zram, index, ZRAM_WB) ||
 		    zram_test_flag(zram, index, ZRAM_UNDER_WB) ||
 		    zram_test_flag(zram, index, ZRAM_SAME) ||
-		    zram_test_flag(zram, index, ZRAM_INCOMPRESSIBLE))
+		    zram_test_flag(zram, index, ZRAM_INCOMPRESSIBLE) ||
+		    zram_test_flag(zram, index, ZRAM_MERGED))
 			goto next;
 
 		err = zram_recompress(zram, index, page, threshold,
@@ -2301,6 +2604,7 @@ static const struct block_device_operations zram_devops = {
 };
 
 static DEVICE_ATTR_WO(compact);
+static DEVICE_ATTR_WO(merge);
 static DEVICE_ATTR_RW(disksize);
 static DEVICE_ATTR_RO(initstate);
 static DEVICE_ATTR_WO(reset);
@@ -2341,6 +2645,7 @@ static struct attribute *zram_disk_attrs[] = {
 #ifdef CONFIG_ZRAM_WRITEBACK
 	&dev_attr_bd_stat.attr,
 #endif
+	&dev_attr_merge.attr,
 	&dev_attr_debug_stat.attr,
 #ifdef CONFIG_ZRAM_MULTI_COMP
 	&dev_attr_recomp_algorithm.attr,
@@ -2426,6 +2731,8 @@ static int zram_add(void)
 		goto out_cleanup_disk;
 
 	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
+
+	zram->sph_rbtree = RB_ROOT;
 
 	zram_debugfs_register(zram);
 	pr_info("Added device: %s\n", zram->disk->disk_name);

@@ -209,6 +209,7 @@ compact           	WO	trigger memory compaction
 debug_stat        	RO	this file is used for zram debugging purposes
 backing_dev	  	RW	set up backend storage for zram to write out
 idle		  	WO	mark allocated slot as idle
+merge           	WO	trigger merge identical pages
 ======================  ======  ===============================================
 
 
@@ -267,6 +268,7 @@ line of text and contains the following stats separated by whitespace:
  pages_compacted  the number of pages freed during compaction
  huge_pages	  the number of incompressible pages
  huge_pages_since the number of incompressible pages since zram set up
+ pages_merged	  the number of identical pages merged into single one
  ================ =============================================================
 
 File /sys/block/zram<id>/bd_stat
