@@ -41,12 +41,4 @@
 #define MAP_HUGE_2GB	HUGETLB_FLAG_ENCODE_2GB
 #define MAP_HUGE_16GB	HUGETLB_FLAG_ENCODE_16GB
 
-struct cachestat {
-	unsigned long nr_cache;
-	unsigned long nr_dirty;
-	unsigned long nr_writeback;
-	unsigned long nr_evicted;
-	unsigned long nr_recently_evicted;
-};
-
 #endif /* _UAPI_LINUX_MMAN_H */
