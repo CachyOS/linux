@@ -1354,11 +1354,15 @@ static inline struct maple_enode *mas_start(struct ma_state *mas)
 		mas->depth = 0;
 		mas->offset = 0;
 
+retry:
 		root = mas_root(mas);
 		/* Tree with nodes */
 		if (likely(xa_is_node(root))) {
 			mas->depth = 1;
 			mas->node = mte_safe_root(root);
+			if (mte_dead_node(mas->node))
+				goto retry;
+
 			return NULL;
 		}
 
