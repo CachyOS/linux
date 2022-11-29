@@ -5148,6 +5148,12 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
 				color_space = COLOR_SPACE_YCBCR601;
 		}
 		break;
+	case DRM_MODE_COLORIMETRY_BT601_YCC:
+		if (dc_crtc_timing->flags.Y_ONLY)
+			color_space = COLOR_SPACE_YCBCR601_LIMITED;
+		else
+			color_space = COLOR_SPACE_YCBCR601;
+		break;
 	case DRM_MODE_COLORIMETRY_BT709_YCC:
 		if (dc_crtc_timing->flags.Y_ONLY)
 			color_space = COLOR_SPACE_YCBCR709_LIMITED;
