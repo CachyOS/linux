@@ -375,7 +375,6 @@ enum drm_privacy_screen_status {
 /* For Default case, driver will set the colorspace */
 #define DRM_MODE_COLORIMETRY_DEFAULT			0
 /* CEA 861 Normal Colorimetry options */
-#define DRM_MODE_COLORIMETRY_NO_DATA			0
 #define DRM_MODE_COLORIMETRY_SMPTE_170M_YCC		1
 #define DRM_MODE_COLORIMETRY_BT709_YCC			2
 /* CEA 861 Extended Colorimetry Options */
