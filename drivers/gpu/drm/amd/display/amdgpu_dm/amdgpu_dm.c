@@ -5126,28 +5126,6 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
 	enum dc_color_space color_space = COLOR_SPACE_SRGB;
 
 	switch (connector_state->colorspace) {
-	case DRM_MODE_COLORIMETRY_DEFAULT: // ITU601
-		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB) {
-			color_space = COLOR_SPACE_SRGB;
-		/*
-		 * 27030khz is the separation point between HDTV and SDTV
-		 * according to HDMI spec, we use YCbCr709 and YCbCr601
-		 * respectively
-		 */
-		} else if (dc_crtc_timing->pix_clk_100hz > 270300) {
-			if (dc_crtc_timing->flags.Y_ONLY)
-				color_space =
-					COLOR_SPACE_YCBCR709_LIMITED;
-			else
-				color_space = COLOR_SPACE_YCBCR709;
-		} else {
-			if (dc_crtc_timing->flags.Y_ONLY)
-				color_space =
-					COLOR_SPACE_YCBCR601_LIMITED;
-			else
-				color_space = COLOR_SPACE_YCBCR601;
-		}
-		break;
 	case DRM_MODE_COLORIMETRY_BT601_YCC:
 		if (dc_crtc_timing->flags.Y_ONLY)
 			color_space = COLOR_SPACE_YCBCR601_LIMITED;
@@ -5168,6 +5146,29 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_YCC:
 		color_space = COLOR_SPACE_2020_YCBCR;
+		break;
+	case DRM_MODE_COLORIMETRY_DEFAULT: // ITU601
+	default:
+		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB) {
+			color_space = COLOR_SPACE_SRGB;
+		/*
+		 * 27030khz is the separation point between HDTV and SDTV
+		 * according to HDMI spec, we use YCbCr709 and YCbCr601
+		 * respectively
+		 */
+		} else if (dc_crtc_timing->pix_clk_100hz > 270300) {
+			if (dc_crtc_timing->flags.Y_ONLY)
+				color_space =
+					COLOR_SPACE_YCBCR709_LIMITED;
+			else
+				color_space = COLOR_SPACE_YCBCR709;
+		} else {
+			if (dc_crtc_timing->flags.Y_ONLY)
+				color_space =
+					COLOR_SPACE_YCBCR601_LIMITED;
+			else
+				color_space = COLOR_SPACE_YCBCR601;
+		}
 		break;
 	}
 
