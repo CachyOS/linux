@@ -115,6 +115,10 @@ struct spihid_apple {
 
 	/* state tracking flags */
 	bool status_booted;
+
+#ifdef IRQ_WAKE_SUPPORT
+	bool irq_wake_enabled;
+#endif
 };
 
 /**
@@ -1037,6 +1041,91 @@ void spihid_apple_core_shutdown(struct spi_device *spi)
 	spihid->ops->power_off(spihid->ops);
 }
 EXPORT_SYMBOL_GPL(spihid_apple_core_shutdown);
+
+#ifdef CONFIG_PM_SLEEP
+static int spihid_apple_core_suspend(struct device *dev)
+{
+	int ret;
+#ifdef IRQ_WAKE_SUPPORT
+	int wake_status;
+#endif
+	struct spihid_apple *spihid = spi_get_drvdata(to_spi_device(dev));
+
+	if (spihid->tp.hid) {
+		ret = hid_driver_suspend(spihid->tp.hid, PMSG_SUSPEND);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (spihid->kbd.hid) {
+		ret = hid_driver_suspend(spihid->kbd.hid, PMSG_SUSPEND);
+		if (ret < 0) {
+			if (spihid->tp.hid)
+				hid_driver_resume(spihid->tp.hid);
+			return ret;
+		}
+	}
+
+	/* Save some power */
+	spihid->ops->disable_irq(spihid->ops);
+
+#ifdef IRQ_WAKE_SUPPORT
+	if (device_may_wakeup(dev)) {
+		wake_status = spihid->ops->enable_irq_wake(spihid->ops);
+		if (!wake_status)
+			spihid->irq_wake_enabled = true;
+		else
+			dev_warn(dev, "Failed to enable irq wake: %d\n",
+				wake_status);
+	} else {
+		spihid->ops->power_off(spihid->ops);
+	}
+#else
+	spihid->ops->power_off(spihid->ops);
+#endif
+
+	return 0;
+}
+
+static int spihid_apple_core_resume(struct device *dev)
+{
+	int ret_tp = 0, ret_kbd = 0;
+	struct spihid_apple *spihid = spi_get_drvdata(to_spi_device(dev));
+#ifdef IRQ_WAKE_SUPPORT
+	int wake_status;
+
+	if (!device_may_wakeup(dev)) {
+		spihid->ops->power_on(spihid->ops);
+	} else if (spihid->irq_wake_enabled) {
+		wake_status = spihid->ops->disable_irq_wake(spihid->ops);
+		if (!wake_status)
+			spihid->irq_wake_enabled = false;
+		else
+			dev_warn(dev, "Failed to disable irq wake: %d\n",
+				wake_status);
+	}
+#endif
+
+	spihid->ops->enable_irq(spihid->ops);
+	spihid->ops->power_on(spihid->ops);
+
+	if (spihid->tp.hid)
+		ret_tp = hid_driver_reset_resume(spihid->tp.hid);
+	if (spihid->kbd.hid)
+		ret_kbd = hid_driver_reset_resume(spihid->kbd.hid);
+
+	if (ret_tp < 0)
+		return ret_tp;
+
+	return ret_kbd;
+}
+#endif
+
+const struct dev_pm_ops spihid_apple_core_pm = {
+	SET_SYSTEM_SLEEP_PM_OPS(spihid_apple_core_suspend,
+				spihid_apple_core_resume)
+};
+EXPORT_SYMBOL_GPL(spihid_apple_core_pm);
 
 MODULE_DESCRIPTION("Apple SPI HID transport driver");
 MODULE_AUTHOR("Janne Grunau <j@jannau.net>");
