@@ -248,7 +248,17 @@ static int spihid_apple_request(struct spihid_apple *spihid, u8 target, u8 unk0,
 	pkt->crc16 = cpu_to_le16(crc16(0, spihid->tx_buf,
 				 offsetof(struct spihid_transfer_packet, crc16)));
 
+	memset(spihid->status_buf, 0, sizeof(spi_hid_apple_status_ok));
+
 	err = spi_sync(spihid->spidev, &spihid->tx_msg);
+
+	if (memcmp(spihid->status_buf, spi_hid_apple_status_ok,
+		   sizeof(spi_hid_apple_status_ok))) {
+		u8 *b = spihid->status_buf;
+		dev_warn_ratelimited(&spihid->spidev->dev, "status message "
+				     "mismatch: %02x %02x %02x %02x\n",
+				     b[0], b[1], b[2], b[3]);
+	}
 	mutex_unlock(&spihid->tx_lock);
 	if (err < 0)
 		return err;
