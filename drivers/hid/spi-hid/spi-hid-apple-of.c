@@ -65,6 +65,20 @@ static int spihid_apple_of_disable_irq(struct spihid_apple_ops *ops)
 	return 0;
 }
 
+static int spihid_apple_of_enable_irq_wake(struct spihid_apple_ops *ops)
+{
+	struct spihid_apple_of *sh_of = container_of(ops, struct spihid_apple_of, ops);
+
+	return enable_irq_wake(sh_of->irq);
+}
+
+static int spihid_apple_of_disable_irq_wake(struct spihid_apple_ops *ops)
+{
+	struct spihid_apple_of *sh_of = container_of(ops, struct spihid_apple_of, ops);
+
+	return disable_irq_wake(sh_of->irq);
+}
+
 static int spihid_apple_of_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
@@ -79,6 +93,8 @@ static int spihid_apple_of_probe(struct spi_device *spi)
 	spihid_of->ops.power_off = spihid_apple_of_power_off;
 	spihid_of->ops.enable_irq = spihid_apple_of_enable_irq;
 	spihid_of->ops.disable_irq = spihid_apple_of_disable_irq;
+	spihid_of->ops.enable_irq_wake = spihid_apple_of_enable_irq_wake;
+	spihid_of->ops.disable_irq_wake = spihid_apple_of_disable_irq_wake;
 
 	spihid_of->enable_gpio = devm_gpiod_get_index(dev, "spien", 0, 0);
 	if (IS_ERR(spihid_of->enable_gpio)) {
@@ -120,8 +136,7 @@ MODULE_DEVICE_TABLE(spi, spihid_apple_of_id);
 static struct spi_driver spihid_apple_of_driver = {
 	.driver = {
 		.name	= "spi-hid-apple-of",
-		//.pm	= &spi_hid_apple_of_pm,
-		.owner = THIS_MODULE,
+		.pm	= &spihid_apple_core_pm,
 		.of_match_table = of_match_ptr(spihid_apple_of_match),
 	},
 
