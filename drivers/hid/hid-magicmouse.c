@@ -1303,6 +1303,16 @@ static const struct hid_device_id magic_mice[] = {
 };
 MODULE_DEVICE_TABLE(hid, magic_mice);
 
+#ifdef CONFIG_PM
+static int magicmouse_reset_resume(struct hid_device *hdev)
+{
+	if (hdev->bus == BUS_SPI)
+		return magicmouse_enable_multitouch(hdev);
+
+	return 0;
+}
+#endif
+
 static struct hid_driver magicmouse_driver = {
 	.name = "magicmouse",
 	.id_table = magic_mice,
@@ -1313,6 +1323,10 @@ static struct hid_driver magicmouse_driver = {
 	.event = magicmouse_event,
 	.input_mapping = magicmouse_input_mapping,
 	.input_configured = magicmouse_input_configured,
+#ifdef CONFIG_PM
+        .reset_resume = magicmouse_reset_resume,
+#endif
+
 };
 module_hid_driver(magicmouse_driver);
 
