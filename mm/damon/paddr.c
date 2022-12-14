@@ -33,15 +33,17 @@ static bool __damon_pa_mkold(struct folio *folio, struct vm_area_struct *vma,
 
 static void damon_pa_mkold(unsigned long paddr)
 {
-	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+	struct folio *folio;
+	struct page *page = damon_get_page(PHYS_PFN(paddr));
 	struct rmap_walk_control rwc = {
 		.rmap_one = __damon_pa_mkold,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	bool need_lock;
 
-	if (!folio)
+	if (!page)
 		return;
+	folio = page_folio(page);
 
 	if (!folio_mapped(folio) || !folio_raw_mapping(folio)) {
 		folio_set_idle(folio);
@@ -91,7 +93,7 @@ static bool __damon_pa_young(struct folio *folio, struct vm_area_struct *vma,
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, addr, 0);
 
 	result->accessed = false;
-	result->page_sz = PAGE_SIZE * folio_nr_pages(folio);
+	result->page_sz = PAGE_SIZE;
 	while (page_vma_mapped_walk(&pvmw)) {
 		addr = pvmw.address;
 		if (pvmw.pte) {
@@ -120,7 +122,8 @@ static bool __damon_pa_young(struct folio *folio, struct vm_area_struct *vma,
 
 static bool damon_pa_young(unsigned long paddr, unsigned long *page_sz)
 {
-	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+	struct folio *folio;
+	struct page *page = damon_get_page(PHYS_PFN(paddr));
 	struct damon_pa_access_chk_result result = {
 		.page_sz = PAGE_SIZE,
 		.accessed = false,
@@ -132,8 +135,9 @@ static bool damon_pa_young(unsigned long paddr, unsigned long *page_sz)
 	};
 	bool need_lock;
 
-	if (!folio)
+	if (!page)
 		return false;
+	folio = page_folio(page);
 
 	if (!folio_mapped(folio) || !folio_raw_mapping(folio)) {
 		if (folio_test_idle(folio))
@@ -201,28 +205,28 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
 static unsigned long damon_pa_pageout(struct damon_region *r)
 {
 	unsigned long addr, applied;
-	LIST_HEAD(folio_list);
+	LIST_HEAD(page_list);
 
 	for (addr = r->ar.start; addr < r->ar.end; addr += PAGE_SIZE) {
-		struct folio *folio = damon_get_folio(PHYS_PFN(addr));
+		struct page *page = damon_get_page(PHYS_PFN(addr));
 
-		if (!folio)
+		if (!page)
 			continue;
 
-		folio_clear_referenced(folio);
-		folio_test_clear_young(folio);
-		if (folio_isolate_lru(folio)) {
-			folio_put(folio);
+		ClearPageReferenced(page);
+		test_and_clear_page_young(page);
+		if (isolate_lru_page(page)) {
+			put_page(page);
 			continue;
 		}
-		if (folio_test_unevictable(folio)) {
-			folio_putback_lru(folio);
+		if (PageUnevictable(page)) {
+			putback_lru_page(page);
 		} else {
-			list_add(&folio->lru, &folio_list);
-			folio_put(folio);
+			list_add(&page->lru, &page_list);
+			put_page(page);
 		}
 	}
-	applied = reclaim_pages(&folio_list);
+	applied = reclaim_pages(&page_list);
 	cond_resched();
 	return applied * PAGE_SIZE;
 }
@@ -233,10 +237,12 @@ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
 	unsigned long addr, applied = 0;
 
 	for (addr = r->ar.start; addr < r->ar.end; addr += PAGE_SIZE) {
-		struct folio *folio = damon_get_folio(PHYS_PFN(addr));
+		struct page *page = damon_get_page(PHYS_PFN(addr));
+		struct folio *folio;
 
-		if (!folio)
+		if (!page)
 			continue;
+		folio = page_folio(page);
 
 		if (mark_accessed)
 			folio_mark_accessed(folio);
