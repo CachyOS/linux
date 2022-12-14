@@ -2914,7 +2914,7 @@ static struct shrinker deferred_split_shrinker = {
 static void split_huge_pages_all(void)
 {
 	struct zone *zone;
-	struct folio *folio;
+	struct page *page;
 	unsigned long pfn, max_zone_pfn;
 	unsigned long total = 0, split = 0;
 
@@ -2926,27 +2926,25 @@ static void split_huge_pages_all(void)
 		for (pfn = zone->zone_start_pfn; pfn < max_zone_pfn; pfn++) {
 			int nr_pages;
 
-			folio = pfn_to_online_folio(pfn);
-			if (!folio || !folio_try_get(folio))
+			page = pfn_to_online_page(pfn);
+			if (!page || !get_page_unless_zero(page))
 				continue;
 
-			if (zone != folio_zone(folio))
+			if (zone != page_zone(page))
 				goto next;
 
-			if (!folio_test_large(folio)
-				|| folio_test_hugetlb(folio)
-				|| !folio_test_lru(folio))
+			if (!PageHead(page) || PageHuge(page) || !PageLRU(page))
 				goto next;
 
 			total++;
-			folio_lock(folio);
-			nr_pages = folio_nr_pages(folio);
-			if (!split_folio(folio))
+			lock_page(page);
+			nr_pages = thp_nr_pages(page);
+			if (!split_huge_page(page))
 				split++;
 			pfn += nr_pages - 1;
-			folio_unlock(folio);
+			unlock_page(page);
 next:
-			folio_put(folio);
+			put_page(page);
 			cond_resched();
 		}
 	}

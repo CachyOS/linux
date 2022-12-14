@@ -19,33 +19,34 @@
 #define BITMAP_CHUNK_BITS	(BITMAP_CHUNK_SIZE * BITS_PER_BYTE)
 
 /*
- * Idle folio tracking only considers user memory folios, for other types of
- * folios the idle flag is always unset and an attempt to set it is silently
+ * Idle page tracking only considers user memory pages, for other types of
+ * pages the idle flag is always unset and an attempt to set it is silently
  * ignored.
  *
- * We treat a folio as a user memory folio if it is on an LRU list, because it is
- * always safe to pass such a folio to rmap_walk(), which is essential for idle
- * folio tracking. With such an indicator of user folios we can skip isolated
- * folios, but since there are not usually many of them, it will hardly affect
+ * We treat a page as a user memory page if it is on an LRU list, because it is
+ * always safe to pass such a page to rmap_walk(), which is essential for idle
+ * page tracking. With such an indicator of user pages we can skip isolated
+ * pages, but since there are not usually many of them, it will hardly affect
  * the overall result.
  *
- * This function tries to get a user memory folio by pfn as described above.
+ * This function tries to get a user memory page by pfn as described above.
  */
-static struct folio *folio_idle_get_folio(unsigned long pfn)
+static struct page *page_idle_get_page(unsigned long pfn)
 {
-	struct folio *folio = pfn_to_online_folio(pfn);
+	struct page *page = pfn_to_online_page(pfn);
 
-	if (!folio || !folio_test_lru(folio) || !folio_try_get(folio))
+	if (!page || !PageLRU(page) ||
+	    !get_page_unless_zero(page))
 		return NULL;
 
-	if (unlikely(!folio_test_lru(folio))) {
-		folio_put(folio);
-		folio = NULL;
+	if (unlikely(!PageLRU(page))) {
+		put_page(page);
+		page = NULL;
 	}
-	return folio;
+	return page;
 }
 
-static bool folio_idle_clear_pte_refs_one(struct folio *folio,
+static bool page_idle_clear_pte_refs_one(struct folio *folio,
 					struct vm_area_struct *vma,
 					unsigned long addr, void *arg)
 {
@@ -73,8 +74,8 @@ static bool folio_idle_clear_pte_refs_one(struct folio *folio,
 	if (referenced) {
 		folio_clear_idle(folio);
 		/*
-		 * We cleared the referenced bit in a mapping to this folio. To
-		 * avoid interference with folio reclaim, mark it young so that
+		 * We cleared the referenced bit in a mapping to this page. To
+		 * avoid interference with page reclaim, mark it young so that
 		 * folio_referenced() will return > 0.
 		 */
 		folio_set_young(folio);
@@ -82,14 +83,16 @@ static bool folio_idle_clear_pte_refs_one(struct folio *folio,
 	return true;
 }
 
-static void folio_idle_clear_pte_refs(struct folio *folio)
+static void page_idle_clear_pte_refs(struct page *page)
 {
+	struct folio *folio = page_folio(page);
+
 	/*
 	 * Since rwc.try_lock is unused, rwc is effectively immutable, so we
 	 * can make it static to save some cycles and stack.
 	 */
 	static struct rmap_walk_control rwc = {
-		.rmap_one = folio_idle_clear_pte_refs_one,
+		.rmap_one = page_idle_clear_pte_refs_one,
 		.anon_lock = folio_lock_anon_vma_read,
 	};
 	bool need_lock;
@@ -107,12 +110,12 @@ static void folio_idle_clear_pte_refs(struct folio *folio)
 		folio_unlock(folio);
 }
 
-static ssize_t folio_idle_bitmap_read(struct file *file, struct kobject *kobj,
+static ssize_t page_idle_bitmap_read(struct file *file, struct kobject *kobj,
 				     struct bin_attribute *attr, char *buf,
 				     loff_t pos, size_t count)
 {
 	u64 *out = (u64 *)buf;
-	struct folio *folio;
+	struct page *page;
 	unsigned long pfn, end_pfn;
 	int bit;
 
@@ -131,19 +134,19 @@ static ssize_t folio_idle_bitmap_read(struct file *file, struct kobject *kobj,
 		bit = pfn % BITMAP_CHUNK_BITS;
 		if (!bit)
 			*out = 0ULL;
-		folio = folio_idle_get_folio(pfn);
-		if (folio) {
-			if (folio_test_idle(folio)) {
+		page = page_idle_get_page(pfn);
+		if (page) {
+			if (page_is_idle(page)) {
 				/*
-				 * The folio might have been referenced via a
+				 * The page might have been referenced via a
 				 * pte, in which case it is not idle. Clear
 				 * refs and recheck.
 				 */
-				folio_idle_clear_pte_refs(folio);
-				if (folio_test_idle(folio))
+				page_idle_clear_pte_refs(page);
+				if (page_is_idle(page))
 					*out |= 1ULL << bit;
 			}
-			folio_put(folio);
+			put_page(page);
 		}
 		if (bit == BITMAP_CHUNK_BITS - 1)
 			out++;
@@ -152,12 +155,12 @@ static ssize_t folio_idle_bitmap_read(struct file *file, struct kobject *kobj,
 	return (char *)out - buf;
 }
 
-static ssize_t folio_idle_bitmap_write(struct file *file, struct kobject *kobj,
+static ssize_t page_idle_bitmap_write(struct file *file, struct kobject *kobj,
 				      struct bin_attribute *attr, char *buf,
 				      loff_t pos, size_t count)
 {
 	const u64 *in = (u64 *)buf;
-	struct folio *folio;
+	struct page *page;
 	unsigned long pfn, end_pfn;
 	int bit;
 
@@ -175,11 +178,11 @@ static ssize_t folio_idle_bitmap_write(struct file *file, struct kobject *kobj,
 	for (; pfn < end_pfn; pfn++) {
 		bit = pfn % BITMAP_CHUNK_BITS;
 		if ((*in >> bit) & 1) {
-			folio = folio_idle_get_folio(pfn);
-			if (folio) {
-				folio_idle_clear_pte_refs(folio);
-				folio_set_idle(folio);
-				folio_put(folio);
+			page = page_idle_get_page(pfn);
+			if (page) {
+				page_idle_clear_pte_refs(page);
+				set_page_idle(page);
+				put_page(page);
 			}
 		}
 		if (bit == BITMAP_CHUNK_BITS - 1)
@@ -189,29 +192,29 @@ static ssize_t folio_idle_bitmap_write(struct file *file, struct kobject *kobj,
 	return (char *)in - buf;
 }
 
-static struct bin_attribute folio_idle_bitmap_attr =
+static struct bin_attribute page_idle_bitmap_attr =
 		__BIN_ATTR(bitmap, 0600,
-			   folio_idle_bitmap_read, folio_idle_bitmap_write, 0);
+			   page_idle_bitmap_read, page_idle_bitmap_write, 0);
 
-static struct bin_attribute *folio_idle_bin_attrs[] = {
-	&folio_idle_bitmap_attr,
+static struct bin_attribute *page_idle_bin_attrs[] = {
+	&page_idle_bitmap_attr,
 	NULL,
 };
 
-static const struct attribute_group folio_idle_attr_group = {
-	.bin_attrs = folio_idle_bin_attrs,
+static const struct attribute_group page_idle_attr_group = {
+	.bin_attrs = page_idle_bin_attrs,
 	.name = "page_idle",
 };
 
-static int __init folio_idle_init(void)
+static int __init page_idle_init(void)
 {
 	int err;
 
-	err = sysfs_create_group(mm_kobj, &folio_idle_attr_group);
+	err = sysfs_create_group(mm_kobj, &page_idle_attr_group);
 	if (err) {
 		pr_err("page_idle: register sysfs failed\n");
 		return err;
 	}
 	return 0;
 }
-subsys_initcall(folio_idle_init);
+subsys_initcall(page_idle_init);

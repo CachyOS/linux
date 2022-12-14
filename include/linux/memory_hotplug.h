@@ -265,13 +265,6 @@ static inline void pgdat_kswapd_unlock(pg_data_t *pgdat) {}
 static inline void pgdat_kswapd_lock_init(pg_data_t *pgdat) {}
 #endif /* ! CONFIG_MEMORY_HOTPLUG */
 
-static inline struct folio *pfn_to_online_folio(unsigned long pfn)
-{
-	struct page *page = pfn_to_online_page(pfn);
-
-	return page ? page_folio(page) : NULL;
-}
-
 /*
  * Keep this declaration outside CONFIG_MEMORY_HOTPLUG as some
  * platforms might override and use arch_get_mappable_range()
