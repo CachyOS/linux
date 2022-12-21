@@ -1277,7 +1277,6 @@ nomem_one:
 	if (mas->alloc && !(((unsigned long)mas->alloc & 0x1)))
 		mas->alloc->total = success;
 	mas_set_err(mas, -ENOMEM);
-	return;
 }
 
 /*
@@ -4713,8 +4712,6 @@ retry:
 	mas_state_walk(mas);
 	if (mas_is_start(mas))
 		goto retry;
-
-	return;
 }
 
 /*
