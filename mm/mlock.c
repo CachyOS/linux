@@ -28,12 +28,12 @@
 
 #include "internal.h"
 
-struct mlock_fbatch {
+struct mlock_pvec {
 	local_lock_t lock;
-	struct folio_batch fbatch;
+	struct pagevec vec;
 };
 
-static DEFINE_PER_CPU(struct mlock_fbatch, mlock_fbatch) = {
+static DEFINE_PER_CPU(struct mlock_pvec, mlock_pvec) = {
 	.lock = INIT_LOCAL_LOCK(lock),
 };
 
@@ -48,192 +48,192 @@ bool can_do_mlock(void)
 EXPORT_SYMBOL(can_do_mlock);
 
 /*
- * Mlocked folios are marked with the PG_mlocked flag for efficient testing
+ * Mlocked pages are marked with PageMlocked() flag for efficient testing
  * in vmscan and, possibly, the fault path; and to support semi-accurate
  * statistics.
  *
- * An mlocked folio [folio_test_mlocked(folio)] is unevictable.  As such, it
- * will be ostensibly placed on the LRU "unevictable" list (actually no such
- * list exists), rather than the [in]active lists. PG_unevictable is set to
- * indicate the unevictable state.
+ * An mlocked page [PageMlocked(page)] is unevictable.  As such, it will
+ * be placed on the LRU "unevictable" list, rather than the [in]active lists.
+ * The unevictable list is an LRU sibling list to the [in]active lists.
+ * PageUnevictable is set to indicate the unevictable state.
  */
 
-static struct lruvec *__mlock_folio(struct folio *folio, struct lruvec *lruvec)
+static struct lruvec *__mlock_page(struct page *page, struct lruvec *lruvec)
 {
 	/* There is nothing more we can do while it's off LRU */
-	if (!folio_test_clear_lru(folio))
+	if (!TestClearPageLRU(page))
 		return lruvec;
 
-	lruvec = folio_lruvec_relock_irq(folio, lruvec);
+	lruvec = folio_lruvec_relock_irq(page_folio(page), lruvec);
 
-	if (unlikely(folio_evictable(folio))) {
+	if (unlikely(page_evictable(page))) {
 		/*
-		 * This is a little surprising, but quite possible: PG_mlocked
-		 * must have got cleared already by another CPU.  Could this
-		 * folio be unevictable?  I'm not sure, but move it now if so.
+		 * This is a little surprising, but quite possible:
+		 * PageMlocked must have got cleared already by another CPU.
+		 * Could this page be on the Unevictable LRU?  I'm not sure,
+		 * but move it now if so.
 		 */
-		if (folio_test_unevictable(folio)) {
-			lruvec_del_folio(lruvec, folio);
-			folio_clear_unevictable(folio);
-			lruvec_add_folio(lruvec, folio);
-
+		if (PageUnevictable(page)) {
+			del_page_from_lru_list(page, lruvec);
+			ClearPageUnevictable(page);
+			add_page_to_lru_list(page, lruvec);
 			__count_vm_events(UNEVICTABLE_PGRESCUED,
-					  folio_nr_pages(folio));
+					  thp_nr_pages(page));
 		}
 		goto out;
 	}
 
-	if (folio_test_unevictable(folio)) {
-		if (folio_test_mlocked(folio))
-			folio->mlock_count++;
+	if (PageUnevictable(page)) {
+		if (PageMlocked(page))
+			page->mlock_count++;
 		goto out;
 	}
 
-	lruvec_del_folio(lruvec, folio);
-	folio_clear_active(folio);
-	folio_set_unevictable(folio);
-	folio->mlock_count = !!folio_test_mlocked(folio);
-	lruvec_add_folio(lruvec, folio);
-	__count_vm_events(UNEVICTABLE_PGCULLED, folio_nr_pages(folio));
+	del_page_from_lru_list(page, lruvec);
+	ClearPageActive(page);
+	SetPageUnevictable(page);
+	page->mlock_count = !!PageMlocked(page);
+	add_page_to_lru_list(page, lruvec);
+	__count_vm_events(UNEVICTABLE_PGCULLED, thp_nr_pages(page));
 out:
-	folio_set_lru(folio);
+	SetPageLRU(page);
 	return lruvec;
 }
 
-static struct lruvec *__mlock_new_folio(struct folio *folio, struct lruvec *lruvec)
+static struct lruvec *__mlock_new_page(struct page *page, struct lruvec *lruvec)
 {
-	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
+	VM_BUG_ON_PAGE(PageLRU(page), page);
 
-	lruvec = folio_lruvec_relock_irq(folio, lruvec);
+	lruvec = folio_lruvec_relock_irq(page_folio(page), lruvec);
 
 	/* As above, this is a little surprising, but possible */
-	if (unlikely(folio_evictable(folio)))
+	if (unlikely(page_evictable(page)))
 		goto out;
 
-	folio_set_unevictable(folio);
-	folio->mlock_count = !!folio_test_mlocked(folio);
-	__count_vm_events(UNEVICTABLE_PGCULLED, folio_nr_pages(folio));
+	SetPageUnevictable(page);
+	page->mlock_count = !!PageMlocked(page);
+	__count_vm_events(UNEVICTABLE_PGCULLED, thp_nr_pages(page));
 out:
-	lruvec_add_folio(lruvec, folio);
-	folio_set_lru(folio);
+	add_page_to_lru_list(page, lruvec);
+	SetPageLRU(page);
 	return lruvec;
 }
 
-static struct lruvec *__munlock_folio(struct folio *folio, struct lruvec *lruvec)
+static struct lruvec *__munlock_page(struct page *page, struct lruvec *lruvec)
 {
-	int nr_pages = folio_nr_pages(folio);
+	int nr_pages = thp_nr_pages(page);
 	bool isolated = false;
 
-	if (!folio_test_clear_lru(folio))
+	if (!TestClearPageLRU(page))
 		goto munlock;
 
 	isolated = true;
-	lruvec = folio_lruvec_relock_irq(folio, lruvec);
+	lruvec = folio_lruvec_relock_irq(page_folio(page), lruvec);
 
-	if (folio_test_unevictable(folio)) {
+	if (PageUnevictable(page)) {
 		/* Then mlock_count is maintained, but might undercount */
-		if (folio->mlock_count)
-			folio->mlock_count--;
-		if (folio->mlock_count)
+		if (page->mlock_count)
+			page->mlock_count--;
+		if (page->mlock_count)
 			goto out;
 	}
 	/* else assume that was the last mlock: reclaim will fix it if not */
 
 munlock:
-	if (folio_test_clear_mlocked(folio)) {
-		zone_stat_mod_folio(folio, NR_MLOCK, -nr_pages);
-		if (isolated || !folio_test_unevictable(folio))
+	if (TestClearPageMlocked(page)) {
+		__mod_zone_page_state(page_zone(page), NR_MLOCK, -nr_pages);
+		if (isolated || !PageUnevictable(page))
 			__count_vm_events(UNEVICTABLE_PGMUNLOCKED, nr_pages);
 		else
 			__count_vm_events(UNEVICTABLE_PGSTRANDED, nr_pages);
 	}
 
-	/* folio_evictable() has to be checked *after* clearing Mlocked */
-	if (isolated && folio_test_unevictable(folio) && folio_evictable(folio)) {
-		lruvec_del_folio(lruvec, folio);
-		folio_clear_unevictable(folio);
-		lruvec_add_folio(lruvec, folio);
+	/* page_evictable() has to be checked *after* clearing Mlocked */
+	if (isolated && PageUnevictable(page) && page_evictable(page)) {
+		del_page_from_lru_list(page, lruvec);
+		ClearPageUnevictable(page);
+		add_page_to_lru_list(page, lruvec);
 		__count_vm_events(UNEVICTABLE_PGRESCUED, nr_pages);
 	}
 out:
 	if (isolated)
-		folio_set_lru(folio);
+		SetPageLRU(page);
 	return lruvec;
 }
 
 /*
- * Flags held in the low bits of a struct folio pointer on the mlock_fbatch.
+ * Flags held in the low bits of a struct page pointer on the mlock_pvec.
  */
 #define LRU_PAGE 0x1
 #define NEW_PAGE 0x2
-static inline struct folio *mlock_lru(struct folio *folio)
+static inline struct page *mlock_lru(struct page *page)
 {
-	return (struct folio *)((unsigned long)folio + LRU_PAGE);
+	return (struct page *)((unsigned long)page + LRU_PAGE);
 }
 
-static inline struct folio *mlock_new(struct folio *folio)
+static inline struct page *mlock_new(struct page *page)
 {
-	return (struct folio *)((unsigned long)folio + NEW_PAGE);
+	return (struct page *)((unsigned long)page + NEW_PAGE);
 }
 
 /*
- * mlock_folio_batch() is derived from folio_batch_move_lru(): perhaps that can
- * make use of such page pointer flags in future, but for now just keep it for
- * mlock.  We could use three separate folio batches instead, but one feels
- * better (munlocking a full folio batch does not need to drain mlocking folio
- * batches first).
+ * mlock_pagevec() is derived from pagevec_lru_move_fn():
+ * perhaps that can make use of such page pointer flags in future,
+ * but for now just keep it for mlock.  We could use three separate
+ * pagevecs instead, but one feels better (munlocking a full pagevec
+ * does not need to drain mlocking pagevecs first).
  */
-static void mlock_folio_batch(struct folio_batch *fbatch)
+static void mlock_pagevec(struct pagevec *pvec)
 {
 	struct lruvec *lruvec = NULL;
 	unsigned long mlock;
-	struct folio *folio;
+	struct page *page;
 	int i;
 
-	for (i = 0; i < folio_batch_count(fbatch); i++) {
-		folio = fbatch->folios[i];
-		mlock = (unsigned long)folio & (LRU_PAGE | NEW_PAGE);
-		folio = (struct folio *)((unsigned long)folio - mlock);
-		fbatch->folios[i] = folio;
+	for (i = 0; i < pagevec_count(pvec); i++) {
+		page = pvec->pages[i];
+		mlock = (unsigned long)page & (LRU_PAGE | NEW_PAGE);
+		page = (struct page *)((unsigned long)page - mlock);
+		pvec->pages[i] = page;
 
 		if (mlock & LRU_PAGE)
-			lruvec = __mlock_folio(folio, lruvec);
+			lruvec = __mlock_page(page, lruvec);
 		else if (mlock & NEW_PAGE)
-			lruvec = __mlock_new_folio(folio, lruvec);
+			lruvec = __mlock_new_page(page, lruvec);
 		else
-			lruvec = __munlock_folio(folio, lruvec);
+			lruvec = __munlock_page(page, lruvec);
 	}
 
 	if (lruvec)
 		unlock_page_lruvec_irq(lruvec);
-	release_pages(fbatch->folios, fbatch->nr);
-	folio_batch_reinit(fbatch);
+	release_pages(pvec->pages, pvec->nr);
+	pagevec_reinit(pvec);
 }
 
 void mlock_page_drain_local(void)
 {
-	struct folio_batch *fbatch;
+	struct pagevec *pvec;
 
-	local_lock(&mlock_fbatch.lock);
-	fbatch = this_cpu_ptr(&mlock_fbatch.fbatch);
-	if (folio_batch_count(fbatch))
-		mlock_folio_batch(fbatch);
-	local_unlock(&mlock_fbatch.lock);
+	local_lock(&mlock_pvec.lock);
+	pvec = this_cpu_ptr(&mlock_pvec.vec);
+	if (pagevec_count(pvec))
+		mlock_pagevec(pvec);
+	local_unlock(&mlock_pvec.lock);
 }
 
 void mlock_page_drain_remote(int cpu)
 {
-	struct folio_batch *fbatch;
+	struct pagevec *pvec;
 
 	WARN_ON_ONCE(cpu_online(cpu));
-	fbatch = &per_cpu(mlock_fbatch.fbatch, cpu);
-	if (folio_batch_count(fbatch))
-		mlock_folio_batch(fbatch);
+	pvec = &per_cpu(mlock_pvec.vec, cpu);
+	if (pagevec_count(pvec))
+		mlock_pagevec(pvec);
 }
 
 bool need_mlock_page_drain(int cpu)
 {
-	return folio_batch_count(&per_cpu(mlock_fbatch.fbatch, cpu));
+	return pagevec_count(&per_cpu(mlock_pvec.vec, cpu));
 }
 
 /**
@@ -242,10 +242,10 @@ bool need_mlock_page_drain(int cpu)
  */
 void mlock_folio(struct folio *folio)
 {
-	struct folio_batch *fbatch;
+	struct pagevec *pvec;
 
-	local_lock(&mlock_fbatch.lock);
-	fbatch = this_cpu_ptr(&mlock_fbatch.fbatch);
+	local_lock(&mlock_pvec.lock);
+	pvec = this_cpu_ptr(&mlock_pvec.vec);
 
 	if (!folio_test_set_mlocked(folio)) {
 		int nr_pages = folio_nr_pages(folio);
@@ -255,54 +255,54 @@ void mlock_folio(struct folio *folio)
 	}
 
 	folio_get(folio);
-	if (!folio_batch_add(fbatch, mlock_lru(folio)) ||
+	if (!pagevec_add(pvec, mlock_lru(&folio->page)) ||
 	    folio_test_large(folio) || lru_cache_disabled())
-		mlock_folio_batch(fbatch);
-	local_unlock(&mlock_fbatch.lock);
+		mlock_pagevec(pvec);
+	local_unlock(&mlock_pvec.lock);
 }
 
 /**
- * mlock_new_folio - mlock a newly allocated folio not yet on LRU
- * @folio: folio to be mlocked, either normal or a THP head.
+ * mlock_new_page - mlock a newly allocated page not yet on LRU
+ * @page: page to be mlocked, either a normal page or a THP head.
  */
-void mlock_new_folio(struct folio *folio)
+void mlock_new_page(struct page *page)
 {
-	struct folio_batch *fbatch;
-	int nr_pages = folio_nr_pages(folio);
+	struct pagevec *pvec;
+	int nr_pages = thp_nr_pages(page);
 
-	local_lock(&mlock_fbatch.lock);
-	fbatch = this_cpu_ptr(&mlock_fbatch.fbatch);
-	folio_set_mlocked(folio);
-
-	zone_stat_mod_folio(folio, NR_MLOCK, nr_pages);
+	local_lock(&mlock_pvec.lock);
+	pvec = this_cpu_ptr(&mlock_pvec.vec);
+	SetPageMlocked(page);
+	mod_zone_page_state(page_zone(page), NR_MLOCK, nr_pages);
 	__count_vm_events(UNEVICTABLE_PGMLOCKED, nr_pages);
 
-	folio_get(folio);
-	if (!folio_batch_add(fbatch, mlock_new(folio)) ||
-	    folio_test_large(folio) || lru_cache_disabled())
-		mlock_folio_batch(fbatch);
-	local_unlock(&mlock_fbatch.lock);
+	get_page(page);
+	if (!pagevec_add(pvec, mlock_new(page)) ||
+	    PageHead(page) || lru_cache_disabled())
+		mlock_pagevec(pvec);
+	local_unlock(&mlock_pvec.lock);
 }
 
 /**
- * munlock_folio - munlock a folio
- * @folio: folio to be munlocked, either normal or a THP head.
+ * munlock_page - munlock a page
+ * @page: page to be munlocked, either a normal page or a THP head.
  */
-void munlock_folio(struct folio *folio)
+void munlock_page(struct page *page)
 {
-	struct folio_batch *fbatch;
+	struct pagevec *pvec;
 
-	local_lock(&mlock_fbatch.lock);
-	fbatch = this_cpu_ptr(&mlock_fbatch.fbatch);
+	local_lock(&mlock_pvec.lock);
+	pvec = this_cpu_ptr(&mlock_pvec.vec);
 	/*
-	 * folio_test_clear_mlocked(folio) must be left to __munlock_folio(),
-	 * which will check whether the folio is multiply mlocked.
+	 * TestClearPageMlocked(page) must be left to __munlock_page(),
+	 * which will check whether the page is multiply mlocked.
 	 */
-	folio_get(folio);
-	if (!folio_batch_add(fbatch, folio) ||
-	    folio_test_large(folio) || lru_cache_disabled())
-		mlock_folio_batch(fbatch);
-	local_unlock(&mlock_fbatch.lock);
+
+	get_page(page);
+	if (!pagevec_add(pvec, page) ||
+	    PageHead(page) || lru_cache_disabled())
+		mlock_pagevec(pvec);
+	local_unlock(&mlock_pvec.lock);
 }
 
 static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
@@ -312,7 +312,7 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 	struct vm_area_struct *vma = walk->vma;
 	spinlock_t *ptl;
 	pte_t *start_pte, *pte;
-	struct folio *folio;
+	struct page *page;
 
 	ptl = pmd_trans_huge_lock(pmd, vma);
 	if (ptl) {
@@ -320,11 +320,11 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 			goto out;
 		if (is_huge_zero_pmd(*pmd))
 			goto out;
-		folio = page_folio(pmd_page(*pmd));
+		page = pmd_page(*pmd);
 		if (vma->vm_flags & VM_LOCKED)
-			mlock_folio(folio);
+			mlock_folio(page_folio(page));
 		else
-			munlock_folio(folio);
+			munlock_page(page);
 		goto out;
 	}
 
@@ -332,15 +332,15 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 	for (pte = start_pte; addr != end; pte++, addr += PAGE_SIZE) {
 		if (!pte_present(*pte))
 			continue;
-		folio = vm_normal_folio(vma, addr, *pte);
-		if (!folio || folio_is_zone_device(folio))
+		page = vm_normal_page(vma, addr, *pte);
+		if (!page || is_zone_device_page(page))
 			continue;
-		if (folio_test_large(folio))
+		if (PageTransCompound(page))
 			continue;
 		if (vma->vm_flags & VM_LOCKED)
-			mlock_folio(folio);
+			mlock_folio(page_folio(page));
 		else
-			munlock_folio(folio);
+			munlock_page(page);
 	}
 	pte_unmap(start_pte);
 out:

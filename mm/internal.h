@@ -496,9 +496,10 @@ extern int mlock_future_check(struct mm_struct *mm, unsigned long flags,
  * should be called with vma's mmap_lock held for read or write,
  * under page table lock for the pte/pmd being added or removed.
  *
- * mlock is usually called at the end of page_add_*_rmap(), munlock at
- * the end of page_remove_rmap(); but new anon folios are managed by
- * folio_add_lru_vma() calling mlock_new_folio().
+ * mlock is usually called at the end of page_add_*_rmap(),
+ * munlock at the end of page_remove_rmap(); but new anon
+ * pages are managed by lru_cache_add_inactive_or_unevictable()
+ * calling mlock_new_page().
  *
  * @compound is used to include pmd mappings of THPs, but filter out
  * pte mappings of THPs, which cannot be consistently counted: a pte
@@ -527,22 +528,15 @@ static inline void mlock_vma_page(struct page *page,
 	mlock_vma_folio(page_folio(page), vma, compound);
 }
 
-void munlock_folio(struct folio *folio);
-
-static inline void munlock_vma_folio(struct folio *folio,
-			struct vm_area_struct *vma, bool compound)
-{
-	if (unlikely(vma->vm_flags & VM_LOCKED) &&
-	    (compound || !folio_test_large(folio)))
-		munlock_folio(folio);
-}
-
+void munlock_page(struct page *page);
 static inline void munlock_vma_page(struct page *page,
 			struct vm_area_struct *vma, bool compound)
 {
-	munlock_vma_folio(page_folio(page), vma, compound);
+	if (unlikely(vma->vm_flags & VM_LOCKED) &&
+	    (compound || !PageTransCompound(page)))
+		munlock_page(page);
 }
-void mlock_new_folio(struct folio *folio);
+void mlock_new_page(struct page *page);
 bool need_mlock_page_drain(int cpu);
 void mlock_page_drain_local(void);
 void mlock_page_drain_remote(int cpu);
@@ -634,7 +628,7 @@ static inline void mlock_vma_page(struct page *page,
 			struct vm_area_struct *vma, bool compound) { }
 static inline void munlock_vma_page(struct page *page,
 			struct vm_area_struct *vma, bool compound) { }
-static inline void mlock_new_folio(struct folio *folio) { }
+static inline void mlock_new_page(struct page *page) { }
 static inline bool need_mlock_page_drain(int cpu) { return false; }
 static inline void mlock_page_drain_local(void) { }
 static inline void mlock_page_drain_remote(int cpu) { }

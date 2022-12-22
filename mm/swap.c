@@ -549,7 +549,7 @@ void folio_add_lru_vma(struct folio *folio, struct vm_area_struct *vma)
 	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
 
 	if (unlikely((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) == VM_LOCKED))
-		mlock_new_folio(folio);
+		mlock_new_page(&folio->page);
 	else
 		folio_add_lru(folio);
 }
