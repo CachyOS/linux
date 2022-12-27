@@ -639,10 +639,12 @@ choice
 		select LRNG_DRNG_CHACHA20
 
 	config LRNG_DFLT_DRNG_DRBG
+		depends on RANDOM_DEFAULT_IMPL
 		bool "SP800-90A DRBG"
 		select LRNG_DRBG
 
 	config LRNG_DFLT_DRNG_KCAPI
+		depends on RANDOM_DEFAULT_IMPL
 		bool "Kernel Crypto API DRNG"
 		select LRNG_DRNG_KCAPI
 endchoice
