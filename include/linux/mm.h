@@ -626,12 +626,16 @@ static inline void vma_write_lock(struct vm_area_struct *vma)
 	 * mm->mm_lock_seq can't be concurrently modified.
 	 */
 	mm_lock_seq = READ_ONCE(vma->vm_mm->mm_lock_seq);
-	if (vma->vm_lock_seq == mm_lock_seq)
+	if (vma->vm_lock->lock_seq == mm_lock_seq)
 		return;
 
-	down_write(&vma->vm_lock->lock);
-	vma->vm_lock_seq = mm_lock_seq;
-	up_write(&vma->vm_lock->lock);
+	if (atomic_cmpxchg(&vma->vm_lock->count, 0, -1))
+		wait_event(vma->vm_mm->vma_writer_wait,
+			   atomic_cmpxchg(&vma->vm_lock->count, 0, -1) == 0);
+	vma->vm_lock->lock_seq = mm_lock_seq;
+	/* Write barrier to ensure lock_seq change is visible before count */
+	smp_wmb();
+	atomic_set(&vma->vm_lock->count, 0);
 }
 
 /*
@@ -642,11 +646,18 @@ static inline void vma_write_lock(struct vm_area_struct *vma)
 static inline bool vma_read_trylock(struct vm_area_struct *vma)
 {
 	/* Check before locking. A race might cause false locked result. */
-	if (vma->vm_lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))
+	if (vma->vm_lock->lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))
 		return false;
 
-	if (unlikely(down_read_trylock(&vma->vm_lock->lock) == 0))
+	if (unlikely(!atomic_inc_unless_negative(&vma->vm_lock->count)))
 		return false;
+
+	/* If atomic_t overflows, restore and fail to lock. */
+	if (unlikely(atomic_read(&vma->vm_lock->count) < 0)) {
+		if (atomic_dec_and_test(&vma->vm_lock->count))
+			wake_up(&vma->vm_mm->vma_writer_wait);
+		return false;
+	}
 
 	/*
 	 * Overflow might produce false locked result.
@@ -654,8 +665,9 @@ static inline bool vma_read_trylock(struct vm_area_struct *vma)
 	 * vma->vm_lock_seq under vma->vm_lock protection and mm->mm_lock_seq
 	 * modification invalidates all existing locks.
 	 */
-	if (unlikely(vma->vm_lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))) {
-		up_read(&vma->vm_lock->lock);
+	if (unlikely(vma->vm_lock->lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))) {
+		if (atomic_dec_and_test(&vma->vm_lock->count))
+			wake_up(&vma->vm_mm->vma_writer_wait);
 		return false;
 	}
 	return true;
@@ -663,7 +675,8 @@ static inline bool vma_read_trylock(struct vm_area_struct *vma)
 
 static inline void vma_read_unlock(struct vm_area_struct *vma)
 {
-	up_read(&vma->vm_lock->lock);
+	if (atomic_dec_and_test(&vma->vm_lock->count))
+		wake_up(&vma->vm_mm->vma_writer_wait);
 }
 
 static inline void vma_assert_write_locked(struct vm_area_struct *vma)
@@ -673,13 +686,13 @@ static inline void vma_assert_write_locked(struct vm_area_struct *vma)
 	 * current task is holding mmap_write_lock, both vma->vm_lock_seq and
 	 * mm->mm_lock_seq can't be concurrently modified.
 	 */
-	VM_BUG_ON_VMA(vma->vm_lock_seq != READ_ONCE(vma->vm_mm->mm_lock_seq), vma);
+	VM_BUG_ON_VMA(vma->vm_lock->lock_seq != READ_ONCE(vma->vm_mm->mm_lock_seq), vma);
 }
 
 static inline void vma_assert_no_reader(struct vm_area_struct *vma)
 {
-	VM_BUG_ON_VMA(rwsem_is_locked(&vma->vm_lock->lock) &&
-		      vma->vm_lock_seq != READ_ONCE(vma->vm_mm->mm_lock_seq),
+	VM_BUG_ON_VMA(atomic_read(&vma->vm_lock->count) > 0 &&
+		      vma->vm_lock->lock_seq != READ_ONCE(vma->vm_mm->mm_lock_seq),
 		      vma);
 }
 
