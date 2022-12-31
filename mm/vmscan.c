@@ -3737,10 +3737,7 @@ static int should_skip_vma(unsigned long start, unsigned long end, struct mm_wal
 	if (is_vm_hugetlb_page(vma))
 		return true;
 
-	if (!vma_has_locality(vma))
-		return true;
-
-	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL))
+	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL | VM_SEQ_READ | VM_RAND_READ))
 		return true;
 
 	if (vma == get_gate_vma(vma->vm_mm))
