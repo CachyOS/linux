@@ -2938,7 +2938,7 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 {
 	int ret = 0;
 	int done = 0, retry = 0;
-	struct folio_batch fbatch;
+	struct page *pages[F2FS_ONSTACK_PAGES];
 	struct f2fs_sb_info *sbi = F2FS_M_SB(mapping);
 	struct bio *bio = NULL;
 	sector_t last_block;
@@ -2959,7 +2959,7 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 		.private = NULL,
 	};
 #endif
-	int nr_folios;
+	int nr_pages;
 	pgoff_t index;
 	pgoff_t end;		/* Inclusive */
 	pgoff_t done_index;
@@ -2968,8 +2968,6 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 	int nwritten = 0;
 	int submitted = 0;
 	int i;
-
-	folio_batch_init(&fbatch);
 
 	if (get_dirty_pages(mapping->host) <=
 				SM_I(F2FS_M_SB(mapping))->min_hot_blocks)
@@ -2996,13 +2994,13 @@ retry:
 		tag_pages_for_writeback(mapping, index, end);
 	done_index = index;
 	while (!done && !retry && (index <= end)) {
-		nr_folios = filemap_get_folios_tag(mapping, &index, end,
-				tag, &fbatch);
-		if (nr_folios == 0)
+		nr_pages = find_get_pages_range_tag(mapping, &index, end,
+				tag, F2FS_ONSTACK_PAGES, pages);
+		if (nr_pages == 0)
 			break;
 
-		for (i = 0; i < nr_folios; i++) {
-			struct folio *folio = fbatch.folios[i];
+		for (i = 0; i < nr_pages; i++) {
+			struct page *page = pages[i];
 			bool need_readd;
 readd:
 			need_readd = false;
@@ -3019,7 +3017,7 @@ readd:
 				}
 
 				if (!f2fs_cluster_can_merge_page(&cc,
-								folio->index)) {
+								page->index)) {
 					ret = f2fs_write_multi_pages(&cc,
 						&submitted, wbc, io_type);
 					if (!ret)
@@ -3028,28 +3026,27 @@ readd:
 				}
 
 				if (unlikely(f2fs_cp_error(sbi)))
-					goto lock_folio;
+					goto lock_page;
 
 				if (!f2fs_cluster_is_empty(&cc))
-					goto lock_folio;
+					goto lock_page;
 
 				if (f2fs_all_cluster_page_ready(&cc,
-					&fbatch, i, nr_folios, true))
-					goto lock_folio;
+					pages, i, nr_pages, true))
+					goto lock_page;
 
 				ret2 = f2fs_prepare_compress_overwrite(
 							inode, &pagep,
-							folio->index, &fsdata);
+							page->index, &fsdata);
 				if (ret2 < 0) {
 					ret = ret2;
 					done = 1;
 					break;
 				} else if (ret2 &&
 					(!f2fs_compress_write_end(inode,
-						fsdata, folio->index, 1) ||
+						fsdata, page->index, 1) ||
 					 !f2fs_all_cluster_page_ready(&cc,
-						&fbatch, i, nr_folios,
-						false))) {
+						pages, i, nr_pages, false))) {
 					retry = 1;
 					break;
 				}
@@ -3062,47 +3059,46 @@ readd:
 				break;
 			}
 #ifdef CONFIG_F2FS_FS_COMPRESSION
-lock_folio:
+lock_page:
 #endif
-			done_index = folio->index;
+			done_index = page->index;
 retry_write:
-			folio_lock(folio);
+			lock_page(page);
 
-			if (unlikely(folio->mapping != mapping)) {
+			if (unlikely(page->mapping != mapping)) {
 continue_unlock:
-				folio_unlock(folio);
+				unlock_page(page);
 				continue;
 			}
 
-			if (!folio_test_dirty(folio)) {
+			if (!PageDirty(page)) {
 				/* someone wrote it for us */
 				goto continue_unlock;
 			}
 
-			if (folio_test_writeback(folio)) {
+			if (PageWriteback(page)) {
 				if (wbc->sync_mode != WB_SYNC_NONE)
-					f2fs_wait_on_page_writeback(
-							&folio->page,
+					f2fs_wait_on_page_writeback(page,
 							DATA, true, true);
 				else
 					goto continue_unlock;
 			}
 
-			if (!folio_clear_dirty_for_io(folio))
+			if (!clear_page_dirty_for_io(page))
 				goto continue_unlock;
 
 #ifdef CONFIG_F2FS_FS_COMPRESSION
 			if (f2fs_compressed_file(inode)) {
-				folio_get(folio);
-				f2fs_compress_ctx_add_page(&cc, &folio->page);
+				get_page(page);
+				f2fs_compress_ctx_add_page(&cc, page);
 				continue;
 			}
 #endif
-			ret = f2fs_write_single_data_page(&folio->page,
-					&submitted, &bio, &last_block,
-					wbc, io_type, 0, true);
+			ret = f2fs_write_single_data_page(page, &submitted,
+					&bio, &last_block, wbc, io_type,
+					0, true);
 			if (ret == AOP_WRITEPAGE_ACTIVATE)
-				folio_unlock(folio);
+				unlock_page(page);
 #ifdef CONFIG_F2FS_FS_COMPRESSION
 result:
 #endif
@@ -3126,8 +3122,7 @@ result:
 					}
 					goto next;
 				}
-				done_index = folio->index +
-					folio_nr_pages(folio);
+				done_index = page->index + 1;
 				done = 1;
 				break;
 			}
@@ -3141,7 +3136,7 @@ next:
 			if (need_readd)
 				goto readd;
 		}
-		folio_batch_release(&fbatch);
+		release_pages(pages, nr_pages);
 		cond_resched();
 	}
 #ifdef CONFIG_F2FS_FS_COMPRESSION
