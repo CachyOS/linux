@@ -1463,7 +1463,6 @@ static bool z3fold_page_isolate(struct page *page, isolate_mode_t mode)
 	struct z3fold_header *zhdr;
 	struct z3fold_pool *pool;
 
-	VM_BUG_ON_PAGE(!PageMovable(page), page);
 	VM_BUG_ON_PAGE(PageIsolated(page), page);
 
 	if (test_bit(PAGE_HEADLESS, &page->private))
@@ -1503,7 +1502,6 @@ static int z3fold_page_migrate(struct page *newpage, struct page *page,
 	struct z3fold_header *zhdr, *new_zhdr;
 	struct z3fold_pool *pool;
 
-	VM_BUG_ON_PAGE(!PageMovable(page), page);
 	VM_BUG_ON_PAGE(!PageIsolated(page), page);
 	VM_BUG_ON_PAGE(!test_bit(PAGE_CLAIMED, &page->private), page);
 	VM_BUG_ON_PAGE(!PageLocked(newpage), newpage);
