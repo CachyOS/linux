@@ -56,7 +56,7 @@ void __init random_init(void)
  * @entropy_bits: amount of entropy in buffer (value is in bits)
  */
 void add_hwgenerator_randomness(const void *buffer, size_t count,
-				size_t entropy_bits)
+				size_t entropy_bits, bool sleep_after)
 {
 	/*
 	 * Suspend writing if we are fully loaded with entropy or if caller
@@ -67,6 +67,7 @@ void add_hwgenerator_randomness(const void *buffer, size_t count,
 	wait_event_interruptible(lrng_write_wait,
 				(lrng_need_entropy() && entropy_bits) ||
 				lrng_state_exseed_allow(lrng_noise_source_hw) ||
+				!sleep_after ||
 				kthread_should_stop());
 	lrng_state_exseed_set(lrng_noise_source_hw, false);
 	lrng_pool_insert_aux(buffer, count, entropy_bits);
