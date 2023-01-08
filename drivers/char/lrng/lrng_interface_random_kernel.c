@@ -19,6 +19,8 @@
 #include "lrng_interface_dev_common.h"
 #include "lrng_interface_random_kernel.h"
 
+static ATOMIC_NOTIFIER_HEAD(random_ready_notifier);
+
 /********************************** Helper ***********************************/
 
 static bool lrng_trust_bootloader __initdata =
@@ -39,6 +41,33 @@ void __init random_init_early(const char *command_line)
 void __init random_init(void)
 {
 	lrng_rand_initialize();
+}
+
+/*
+ * Add a callback function that will be invoked when the LRNG is initialised,
+ * or immediately if it already has been. Only use this is you are absolutely
+ * sure it is required. Most users should instead be able to test
+ * `rng_is_initialized()` on demand, or make use of `get_random_bytes_wait()`.
+ */
+int __cold execute_with_initialized_rng(struct notifier_block *nb)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&random_ready_notifier.lock, flags);
+	if (rng_is_initialized())
+		nb->notifier_call(nb, 0, NULL);
+	else
+		ret = raw_notifier_chain_register(
+			(struct raw_notifier_head *)&random_ready_notifier.head,
+			nb);
+	spin_unlock_irqrestore(&random_ready_notifier.lock, flags);
+	return ret;
+}
+
+void lrng_kick_random_ready(void)
+{
+	atomic_notifier_call_chain(&random_ready_notifier, 0, NULL);
 }
 
 /************************ LRNG kernel input interfaces ************************/
