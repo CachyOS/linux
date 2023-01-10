@@ -2781,8 +2781,11 @@ static void set_avi_info_frame(
 		break;
 	case COLOR_SPACE_2020_RGB_FULLRANGE:
 	case COLOR_SPACE_2020_RGB_LIMITEDRANGE:
-	case COLOR_SPACE_2020_YCBCR:
 		hdmi_info.bits.EC0_EC2 = COLORIMETRYEX_BT2020RGBYCBCR;
+		hdmi_info.bits.C0_C1   = COLORIMETRY_EXTENDED;
+		break;
+	case COLOR_SPACE_2020_YCBCR:
+		hdmi_info.bits.EC0_EC2 = COLORIMETRYEX_BT2020YCC;
 		hdmi_info.bits.C0_C1   = COLORIMETRY_EXTENDED;
 		break;
 	case COLOR_SPACE_ADOBERGB:
