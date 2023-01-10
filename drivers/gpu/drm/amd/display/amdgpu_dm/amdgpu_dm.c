@@ -5142,7 +5142,10 @@ get_output_color_space(const struct dc_crtc_timing *dc_crtc_timing,
 		color_space = COLOR_SPACE_ADOBERGB;
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_RGB:
-		color_space = COLOR_SPACE_2020_RGB_FULLRANGE;
+		if (dc_crtc_timing->pixel_encoding == PIXEL_ENCODING_RGB)
+			color_space = COLOR_SPACE_2020_RGB_FULLRANGE;
+		else
+			color_space = COLOR_SPACE_2020_YCBCR;
 		break;
 	case DRM_MODE_COLORIMETRY_BT2020_YCC:
 		color_space = COLOR_SPACE_2020_YCBCR;
