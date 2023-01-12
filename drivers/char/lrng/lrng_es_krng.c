@@ -39,7 +39,7 @@ static int lrng_krng_adjust_entropy(void)
 		 entropylevel);
 	lrng_drng_force_reseed();
 	if (entropylevel)
-		lrng_es_add_entropy();
+		lrng_force_fully_seeded();
 	return 0;
 }
 
