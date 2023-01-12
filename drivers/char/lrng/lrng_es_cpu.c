@@ -43,12 +43,12 @@ static int __init lrng_parse_trust_cpu(char *arg)
 	if (ret)
 		return ret;
 
-	if (trust_cpu) {
+	if (trust_cpu)
 		cpu_entropy = LRNG_ARCHRANDOM_TRUST_CPU_STRENGTH;
-		lrng_es_add_entropy();
-	} else {
+	else
 		cpu_entropy = LRNG_ARCHRANDOM_DEFAULT_STRENGTH;
-	}
+
+	lrng_force_fully_seeded();
 
 	return 0;
 }

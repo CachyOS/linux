@@ -69,6 +69,7 @@ int lrng_drng_sleep_while_non_min_seeded(void);
 int lrng_drng_get_sleep(u8 *outbuf, u32 outbuflen, bool pr);
 void lrng_drng_seed_work(struct work_struct *dummy);
 void lrng_drng_force_reseed(void);
+void lrng_force_fully_seeded(void);
 
 static inline u32 lrng_compress_osr(void)
 {

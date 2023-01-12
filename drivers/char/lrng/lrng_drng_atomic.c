@@ -34,6 +34,11 @@ static struct lrng_drng lrng_drng_atomic = {
 	.spin_lock	= __SPIN_LOCK_UNLOCKED(lrng_drng_atomic.spin_lock)
 };
 
+struct lrng_drng *lrng_get_atomic(void)
+{
+	return &lrng_drng_atomic;
+}
+
 void lrng_drng_atomic_reset(void)
 {
 	unsigned long flags;
@@ -85,53 +90,6 @@ void lrng_drng_atomic_seed_drng(struct lrng_drng *regular_drng)
 				 regular_drng->fully_seeded, "atomic");
 		spin_unlock_irqrestore(&lrng_drng_atomic.spin_lock, flags);
 	}
-	memzero_explicit(&seedbuf, sizeof(seedbuf));
-}
-
-void lrng_drng_atomic_seed_es(void)
-{
-	struct entropy_buf seedbuf __aligned(LRNG_KCAPI_ALIGN);
-	struct lrng_drng *drng = &lrng_drng_atomic;
-	unsigned long flags;
-	u32 requested_bits = LRNG_MIN_SEED_ENTROPY_BITS;
-
-	if (lrng_drng_atomic.fully_seeded)
-		return;
-
-	/*
-	 * When the LRNG reached the minimally seeded level, leave 256 bits of
-	 * entropy for the regular DRNG. In addition ensure that additional
-	 * 256 bits are available for the atomic DRNG to get to the fully
-	 * seeded stage of the LRNG.
-	 */
-	if (lrng_state_min_seeded()) {
-		u32 avail_bits = lrng_avail_entropy();
-
-		requested_bits =
-			(avail_bits >= 2 * LRNG_FULL_SEED_ENTROPY_BITS) ?
-			LRNG_FULL_SEED_ENTROPY_BITS : 0;
-
-		if (!requested_bits)
-			return;
-	}
-
-	pr_debug("atomic DRNG seeding attempt to pull %u bits of entropy directly from entropy sources\n",
-		 requested_bits);
-
-	lrng_fill_seed_buffer(&seedbuf, requested_bits, false);
-	spin_lock_irqsave(&drng->spin_lock, flags);
-	lrng_drng_inject(&lrng_drng_atomic, (u8 *)&seedbuf, sizeof(seedbuf),
-			 lrng_fully_seeded(drng->fully_seeded,
-					   lrng_entropy_rate_eb(&seedbuf),
-					   &seedbuf),
-			 "atomic");
-	spin_unlock_irqrestore(&drng->spin_lock, flags);
-	lrng_init_ops(&seedbuf);
-
-	/*
-	 * Do not call lrng_init_ops(seedbuf) here as the atomic DRNG does not
-	 * serve common users.
-	 */
 	memzero_explicit(&seedbuf, sizeof(seedbuf));
 }
 
