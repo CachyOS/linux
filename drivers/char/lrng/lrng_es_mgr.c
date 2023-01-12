@@ -13,6 +13,7 @@
 #include <linux/utsname.h>
 #include <linux/workqueue.h>
 
+#include "lrng_drng_atomic.h"
 #include "lrng_drng_mgr.h"
 #include "lrng_es_aux.h"
 #include "lrng_es_cpu.h"
@@ -102,11 +103,12 @@ void lrng_debug_report_seedlevel(const char *name)
 #ifdef CONFIG_WARN_ALL_UNSEEDED_RANDOM
 	static void *previous = NULL;
 	void *caller = (void *) _RET_IP_;
+	struct lrng_drng *atomic = lrng_get_atomic();
 
 	if (READ_ONCE(previous) == caller)
 		return;
 
-	if (!lrng_state_min_seeded())
+	if (atomic && !atomic->fully_seeded)
 		pr_notice("%pS %s called without reaching minimally seeded level (available entropy %u)\n",
 			  caller, name, lrng_avail_entropy());
 
@@ -394,6 +396,8 @@ void __init lrng_rand_initialize_early(void)
 
 	lrng_pool_insert_aux((u8 *)&seed, sizeof(seed), 0);
 	memzero_explicit(&seed, sizeof(seed));
+
+	lrng_force_fully_seeded();
 }
 
 void __init lrng_rand_initialize(void)

@@ -11,13 +11,13 @@
 #ifdef CONFIG_LRNG_DRNG_ATOMIC
 void lrng_drng_atomic_reset(void);
 void lrng_drng_atomic_seed_drng(struct lrng_drng *drng);
-void lrng_drng_atomic_seed_es(void);
 void lrng_drng_atomic_force_reseed(void);
+struct lrng_drng *lrng_get_atomic(void);
 #else /* CONFIG_LRNG_DRNG_ATOMIC */
 static inline void lrng_drng_atomic_reset(void) { }
 static inline void lrng_drng_atomic_seed_drng(struct lrng_drng *drng) { }
-static inline void lrng_drng_atomic_seed_es(void) { }
 static inline void lrng_drng_atomic_force_reseed(void) { }
+static inline struct lrng_drng *lrng_get_atomic(void) { return NULL }
 #endif /* CONFIG_LRNG_DRNG_ATOMIC */
 
 #endif /* _LRNG_DRNG_ATOMIC_H */
