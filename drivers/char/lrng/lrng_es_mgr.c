@@ -195,7 +195,6 @@ static void lrng_init_wakeup(void)
 {
 	wake_up_all(&lrng_init_wait);
 	lrng_init_wakeup_dev();
-	lrng_kick_random_ready();
 }
 
 static u32 lrng_avail_entropy_thresh(void)
