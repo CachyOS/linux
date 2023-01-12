@@ -227,7 +227,7 @@ int lrng_set_drng_cb(const struct lrng_drng_cb *drng_cb)
 	ret = lrng_switch(drng_cb, lrng_drng_switch);
 	/* The switch may imply new entropy due to larger DRNG sec strength. */
 	if (!ret)
-		lrng_es_add_entropy();
+		lrng_force_fully_seeded();
 
 out:
 	mutex_unlock(&lrng_crypto_cb_update);
@@ -275,7 +275,7 @@ int lrng_set_hash_cb(const struct lrng_hash_cb *hash_cb)
 	 * any waiting entropy providers.
 	 */
 	if (!ret) {
-		lrng_es_add_entropy();
+		lrng_force_fully_seeded();
 		lrng_writer_wakeup();
 	}
 
