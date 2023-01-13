@@ -261,7 +261,7 @@ void lrng_unset_fully_seeded(struct lrng_drng *drng)
 		lrng_state.lrng_fully_seeded = false;
 
 		/* If sufficient entropy is available, reseed now. */
-		lrng_force_fully_seeded();
+		lrng_es_add_entropy();
 	}
 }
 
