@@ -251,8 +251,7 @@ void lrng_drng_inject(struct lrng_drng *drng, const u8 *inbuf, u32 inbuflen,
  * Perform the seeding of the DRNG with data from entropy source.
  * The function returns the entropy injected into the DRNG in bits.
  */
-static u32 lrng_drng_seed_es_nolock(struct lrng_drng *drng, bool init_ops,
-				    const char *drng_type)
+static u32 lrng_drng_seed_es_nolock(struct lrng_drng *drng)
 {
 	struct entropy_buf seedbuf __aligned(LRNG_KCAPI_ALIGN),
 			   collected_seedbuf;
@@ -268,8 +267,7 @@ static u32 lrng_drng_seed_es_nolock(struct lrng_drng *drng, bool init_ops,
 		num_es_delivered = 0;
 
 		if (collected_entropy)
-			pr_debug("Force fully seeding level for %s DRNG by repeatedly pull entropy from available entropy sources\n",
-				 drng_type);
+			pr_debug("Force fully seeding level by repeatedly pull entropy from available entropy sources\n");
 
 		lrng_fill_seed_buffer(&seedbuf,
 			lrng_get_seed_entropy_osr(drng->fully_seeded),
@@ -287,16 +285,10 @@ static u32 lrng_drng_seed_es_nolock(struct lrng_drng *drng, bool init_ops,
 				 lrng_fully_seeded(drng->fully_seeded,
 						   collected_entropy,
 						   &collected_seedbuf),
-				 drng_type);
+				 "regular");
 
-		/*
-		 * Set the seeding state of the LRNG
-		 *
-		 * Do not call lrng_init_ops(seedbuf) here as the atomic DRNG
-		 * does not serve common users.
-		 */
-		if (init_ops)
-			lrng_init_ops(&collected_seedbuf);
+		/* Set the seeding state of the LRNG */
+		lrng_init_ops(&collected_seedbuf);
 
 	/*
 	 * Emergency reseeding: If we reached the min seed threshold now
@@ -322,7 +314,7 @@ static u32 lrng_drng_seed_es_nolock(struct lrng_drng *drng, bool init_ops,
 static void lrng_drng_seed_es(struct lrng_drng *drng)
 {
 	mutex_lock(&drng->lock);
-	lrng_drng_seed_es_nolock(drng, true, "regular");
+	lrng_drng_seed_es_nolock(drng);
 	mutex_unlock(&drng->lock);
 }
 
@@ -331,10 +323,21 @@ static void lrng_drng_seed(struct lrng_drng *drng)
 	BUILD_BUG_ON(LRNG_MIN_SEED_ENTROPY_BITS >
 		     LRNG_DRNG_SECURITY_STRENGTH_BITS);
 
-	/* (Re-)Seed DRNG */
-	lrng_drng_seed_es(drng);
-	/* (Re-)Seed atomic DRNG from regular DRNG */
-	lrng_drng_atomic_seed_drng(drng);
+	if (lrng_get_available()) {
+		/* (Re-)Seed DRNG */
+		lrng_drng_seed_es(drng);
+		/* (Re-)Seed atomic DRNG from regular DRNG */
+		lrng_drng_atomic_seed_drng(drng);
+	} else {
+		/*
+		 * If no-one is waiting for the DRNG, seed the atomic DRNG
+		 * directly from the entropy sources.
+		 */
+		if (!wq_has_sleeper(&lrng_init_wait))
+			lrng_drng_atomic_seed_es();
+		else
+			lrng_init_ops(NULL);
+	}
 }
 
 static void lrng_drng_seed_work_one(struct lrng_drng *drng, u32 node)
@@ -353,34 +356,9 @@ static void lrng_drng_seed_work_one(struct lrng_drng *drng, u32 node)
  */
 static void __lrng_drng_seed_work(bool force)
 {
-	struct lrng_drng **lrng_drng;
+	struct lrng_drng **lrng_drng = lrng_drng_instances();
 	u32 node;
 
-	/*
-	 * If the DRNG is not yet initialized, let us try to seed the atomic
-	 * DRNG.
-	 */
-	if (!lrng_get_available()) {
-		struct lrng_drng *atomic;
-		unsigned long flags;
-
-		if (wq_has_sleeper(&lrng_init_wait)) {
-			lrng_init_ops(NULL);
-			return;
-		}
-		atomic = lrng_get_atomic();
-		if (!atomic || atomic->fully_seeded)
-			return;
-
-		atomic->force_reseed |= force;
-		spin_lock_irqsave(&atomic->spin_lock, flags);
-		lrng_drng_seed_es_nolock(atomic, false, "atomic");
-		spin_unlock_irqrestore(&atomic->spin_lock, flags);
-
-		return;
-	}
-
-	lrng_drng = lrng_drng_instances();
 	if (lrng_drng) {
 		for_each_online_node(node) {
 			struct lrng_drng *drng = lrng_drng[node];
@@ -512,8 +490,7 @@ int lrng_drng_get(struct lrng_drng *drng, u8 *outbuf, u32 outbuflen)
 					continue;
 				}
 
-				coll_ent_bits = lrng_drng_seed_es_nolock(
-							drng, true, "regular");
+				coll_ent_bits = lrng_drng_seed_es_nolock(drng);
 
 				lrng_pool_unlock();
 
@@ -616,14 +593,20 @@ void lrng_reset(void)
 
 /******************* Generic LRNG kernel output interfaces ********************/
 
-void lrng_force_fully_seeded(void)
+static void lrng_force_fully_seeded(void)
 {
+	static unsigned int ctr = 0;
+
 	if (lrng_pool_all_numa_nodes_seeded_get())
+		return;
+
+	if (ctr++ < LRNG_FORCE_FULLY_SEEDED_ATTEMPT)
 		return;
 
 	lrng_pool_lock();
 	__lrng_drng_seed_work(true);
 	lrng_pool_unlock();
+	ctr = 0;
 }
 
 static int lrng_drng_sleep_while_not_all_nodes_seeded(unsigned int nonblock)

@@ -121,6 +121,13 @@
  */
 #define LRNG_POOL_SIZE	(sizeof(struct shash_desc) + HASH_MAX_DESCSIZE)
 
+/*
+ * How many attempts to reach fully seeded are allowed before trying to force
+ * reseed from available entropy (pull data from entropy sources in a repeated
+ * fashion allowing to sum up the entropy).
+ */
+#define LRNG_FORCE_FULLY_SEEDED_ATTEMPT	5
+
 /****************************** Helper code ***********************************/
 
 static inline u32 lrng_fast_noise_entropylevel(u32 ent_bits, u32 requested_bits)

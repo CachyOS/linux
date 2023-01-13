@@ -57,8 +57,9 @@ static int __init lrng_jent_initialize(void)
 	    jent_entropy == CONFIG_LRNG_JENT_ENTROPY_RATE)
 		jent_entropy = LRNG_DRNG_SECURITY_STRENGTH_BITS;
 
+	lrng_drng_force_reseed();
 	if (jent_entropy)
-		lrng_force_fully_seeded();
+		lrng_es_add_entropy();
 
 	return 0;
 }
