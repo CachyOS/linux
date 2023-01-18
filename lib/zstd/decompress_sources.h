@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause */
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -15,6 +15,12 @@
  * source into the translation-unit, so it can be used for kernel
  * decompression.
  */
+
+/*
+ * Disable the ASM Huffman implementation because we need to
+ * include all the sources.
+ */
+#define ZSTD_DISABLE_ASM 1
 
 #include "common/debug.c"
 #include "common/entropy_common.c"
