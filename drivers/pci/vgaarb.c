@@ -143,6 +143,7 @@ void vga_set_default_device(struct pci_dev *pdev)
 	pci_dev_put(vga_default);
 	vga_default = pci_dev_get(pdev);
 }
+EXPORT_SYMBOL_GPL(vga_set_default_device);
 
 /**
  * vga_remove_vgacon - deactivate VGA console
