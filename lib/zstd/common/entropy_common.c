@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
 /* ******************************************************************
  * Common functions of New Generation Entropy library
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Copyright (c) Yann Collet, Facebook, Inc.
  *
  *  You can contact the author at :
  *  - FSE+HUF source repository : https://github.com/Cyan4973/FiniteStateEntropy
@@ -20,8 +19,8 @@
 #include "error_private.h"       /* ERR_*, ERROR */
 #define FSE_STATIC_LINKING_ONLY  /* FSE_MIN_TABLELOG */
 #include "fse.h"
+#define HUF_STATIC_LINKING_ONLY  /* HUF_TABLELOG_ABSOLUTEMAX */
 #include "huf.h"
-#include "bits.h"                /* ZSDT_highbit32, ZSTD_countTrailingZeros32 */
 
 
 /*===   Version   ===*/
@@ -39,6 +38,23 @@ const char* HUF_getErrorName(size_t code) { return ERR_getErrorName(code); }
 /*-**************************************************************
 *  FSE NCount encoding-decoding
 ****************************************************************/
+static U32 FSE_ctz(U32 val)
+{
+    assert(val != 0);
+    {
+#   if (__GNUC__ >= 3)   /* GCC Intrinsic */
+        return __builtin_ctz(val);
+#   else   /* Software version */
+        U32 count = 0;
+        while ((val & 1) == 0) {
+            val >>= 1;
+            ++count;
+        }
+        return count;
+#   endif
+    }
+}
+
 FORCE_INLINE_TEMPLATE
 size_t FSE_readNCount_body(short* normalizedCounter, unsigned* maxSVPtr, unsigned* tableLogPtr,
                            const void* headerBuffer, size_t hbSize)
@@ -86,7 +102,7 @@ size_t FSE_readNCount_body(short* normalizedCounter, unsigned* maxSVPtr, unsigne
              * repeat.
              * Avoid UB by setting the high bit to 1.
              */
-            int repeats = ZSTD_countTrailingZeros32(~bitStream | 0x80000000) >> 1;
+            int repeats = FSE_ctz(~bitStream | 0x80000000) >> 1;
             while (repeats >= 12) {
                 charnum += 3 * 12;
                 if (LIKELY(ip <= iend-7)) {
@@ -97,7 +113,7 @@ size_t FSE_readNCount_body(short* normalizedCounter, unsigned* maxSVPtr, unsigne
                     ip = iend - 4;
                 }
                 bitStream = MEM_readLE32(ip) >> bitCount;
-                repeats = ZSTD_countTrailingZeros32(~bitStream | 0x80000000) >> 1;
+                repeats = FSE_ctz(~bitStream | 0x80000000) >> 1;
             }
             charnum += 3 * repeats;
             bitStream >>= 2 * repeats;
@@ -162,7 +178,7 @@ size_t FSE_readNCount_body(short* normalizedCounter, unsigned* maxSVPtr, unsigne
                  * know that threshold > 1.
                  */
                 if (remaining <= 1) break;
-                nbBits = ZSTD_highbit32(remaining) + 1;
+                nbBits = BIT_highbit32(remaining) + 1;
                 threshold = 1 << (nbBits - 1);
             }
             if (charnum >= maxSV1) break;
@@ -237,7 +253,7 @@ size_t HUF_readStats(BYTE* huffWeight, size_t hwSize, U32* rankStats,
                      const void* src, size_t srcSize)
 {
     U32 wksp[HUF_READ_STATS_WORKSPACE_SIZE_U32];
-    return HUF_readStats_wksp(huffWeight, hwSize, rankStats, nbSymbolsPtr, tableLogPtr, src, srcSize, wksp, sizeof(wksp), /* flags */ 0);
+    return HUF_readStats_wksp(huffWeight, hwSize, rankStats, nbSymbolsPtr, tableLogPtr, src, srcSize, wksp, sizeof(wksp), /* bmi2 */ 0);
 }
 
 FORCE_INLINE_TEMPLATE size_t
@@ -285,14 +301,14 @@ HUF_readStats_body(BYTE* huffWeight, size_t hwSize, U32* rankStats,
     if (weightTotal == 0) return ERROR(corruption_detected);
 
     /* get last non-null symbol weight (implied, total must be 2^n) */
-    {   U32 const tableLog = ZSTD_highbit32(weightTotal) + 1;
+    {   U32 const tableLog = BIT_highbit32(weightTotal) + 1;
         if (tableLog > HUF_TABLELOG_MAX) return ERROR(corruption_detected);
         *tableLogPtr = tableLog;
         /* determine last weight */
         {   U32 const total = 1 << tableLog;
             U32 const rest = total - weightTotal;
-            U32 const verif = 1 << ZSTD_highbit32(rest);
-            U32 const lastWeight = ZSTD_highbit32(rest) + 1;
+            U32 const verif = 1 << BIT_highbit32(rest);
+            U32 const lastWeight = BIT_highbit32(rest) + 1;
             if (verif != rest) return ERROR(corruption_detected);    /* last value must be a clean power of 2 */
             huffWeight[oSize] = (BYTE)lastWeight;
             rankStats[lastWeight]++;
@@ -329,13 +345,13 @@ size_t HUF_readStats_wksp(BYTE* huffWeight, size_t hwSize, U32* rankStats,
                      U32* nbSymbolsPtr, U32* tableLogPtr,
                      const void* src, size_t srcSize,
                      void* workSpace, size_t wkspSize,
-                     int flags)
+                     int bmi2)
 {
 #if DYNAMIC_BMI2
-    if (flags & HUF_flags_bmi2) {
+    if (bmi2) {
         return HUF_readStats_body_bmi2(huffWeight, hwSize, rankStats, nbSymbolsPtr, tableLogPtr, src, srcSize, workSpace, wkspSize);
     }
 #endif
-    (void)flags;
+    (void)bmi2;
     return HUF_readStats_body_default(huffWeight, hwSize, rankStats, nbSymbolsPtr, tableLogPtr, src, srcSize, workSpace, wkspSize);
 }

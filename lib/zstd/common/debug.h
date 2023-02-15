@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause */
 /* ******************************************************************
  * debug
  * Part of FSE library
- * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * Copyright (c) Yann Collet, Facebook, Inc.
  *
  * You can contact the author at :
  * - Source repository : https://github.com/Cyan4973/FiniteStateEntropy
