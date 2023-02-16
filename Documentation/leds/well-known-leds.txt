@@ -44,6 +44,14 @@ Legacy: "lp5523:kb{1,2,3,4,5,6}" (Nokia N900)
 
 Frontlight/backlight of main keyboard.
 
+Good: ":*:kbd_backlight"
+Good: "input*:*:kbd_backlight"
+Legacy: "*:*:kbd_backlight"
+
+Many drivers have the vendor or product name as the first field of the led name,
+this makes names inconsistent and is redundant as that information is already in
+sysfs.
+
 Legacy: "button-backlight" (Motorola Droid 4)
 
 Some phones have touch buttons below screen; it is different from main
