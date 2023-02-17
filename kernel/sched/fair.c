@@ -6311,6 +6311,18 @@ enqueue_throttle:
 
 static void set_next_buddy(struct sched_entity *se);
 
+static inline void dur_avg_update(struct task_struct *p, bool task_sleep)
+{
+	u64 dur;
+
+	if (!task_sleep)
+		return;
+
+	dur = p->se.sum_exec_runtime - p->se.prev_sleep_sum_runtime;
+	p->se.prev_sleep_sum_runtime = p->se.sum_exec_runtime;
+	update_avg(&p->se.dur_avg, dur);
+}
+
 /*
  * The dequeue_task method is called before nr_running is
  * decreased. We remove the task from the rbtree and
@@ -6383,6 +6395,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 dequeue_throttle:
 	util_est_update(&rq->cfs, p, task_sleep);
+	dur_avg_update(p, task_sleep);
 	hrtick_update(rq);
 }
 
@@ -6517,6 +6530,20 @@ static int wake_wide(struct task_struct *p)
 }
 
 /*
+ * If a task switches in and then voluntarily relinquishes the
+ * CPU quickly, it is regarded as a short duration task.
+ *
+ * SIS_SHORT tries to wake up the short wakee on current CPU. This
+ * aims to avoid race condition among CPUs due to frequent context
+ * switch.
+ */
+static inline int is_short_task(struct task_struct *p)
+{
+	return sched_feat(SIS_SHORT) && p->se.dur_avg &&
+	       ((p->se.dur_avg * 8) < sysctl_sched_min_granularity);
+}
+
+/*
  * The purpose of wake_affine() is to quickly determine on which CPU we can run
  * soonest. For the purpose of speed we only consider the waking and previous
  * CPU.
@@ -6551,6 +6578,11 @@ wake_affine_idle(int this_cpu, int prev_cpu, int sync)
 
 	if (available_idle_cpu(prev_cpu))
 		return prev_cpu;
+
+	/* The only running task is a short duration one. */
+	if (cpu_rq(this_cpu)->nr_running == 1 &&
+	    is_short_task(rcu_dereference(cpu_curr(this_cpu))))
+		return this_cpu;
 
 	return nr_cpumask_bits;
 }
@@ -6926,6 +6958,13 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool 
 			/* overloaded LLC is unlikely to have idle cpu/core */
 			if (nr == 1)
 				return -1;
+
+			if (!has_idle_core && this == target &&
+			    (5 * nr < 3 * sd->span_weight) &&
+			    cpu_rq(target)->nr_running <= 1 &&
+			    is_short_task(p) &&
+			    is_short_task(rcu_dereference(cpu_curr(target))))
+				return target;
 		}
 	}
 
