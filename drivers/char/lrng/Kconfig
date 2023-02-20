@@ -625,10 +625,10 @@ config LRNG_DRBG
 	depends on CRYPTO
 	select CRYPTO_DRBG_MENU
 
-# config LRNG_DRNG_KCAPI
-# 	tristate
-# 	depends on CRYPTO
-# 	select CRYPTO_RNG
+config LRNG_DRNG_KCAPI
+	tristate
+	depends on CRYPTO
+	select CRYPTO_RNG
 
 config LRNG_SWITCH
 	bool
@@ -680,17 +680,17 @@ config LRNG_SWITCH_DRBG
 	  module is loaded, output from /dev/random, /dev/urandom,
 	  getrandom(2), or get_random_bytes_full is provided by a DRBG.
 
-# config LRNG_SWITCH_DRNG_KCAPI
-# 	tristate "Kernel Crypto API support for the LRNG"
-# 	depends on !LRNG_DFLT_DRNG_KCAPI
-#	depends on !LRNG_SWITCH_DRBG
-# 	select LRNG_DRNG_KCAPI
-# 	help
-# 	  Enable the support for generic pseudo-random number
-# 	  generators offered by the kernel crypto API with the
-# 	  LRNG. Once the module is loaded, output from /dev/random,
-# 	  /dev/urandom, getrandom(2), or get_random_bytes is
-# 	  provided by the selected kernel crypto API RNG.
+config LRNG_SWITCH_DRNG_KCAPI
+	tristate "Kernel Crypto API support for the LRNG"
+	depends on !LRNG_DFLT_DRNG_KCAPI
+	depends on !LRNG_SWITCH_DRBG
+	select LRNG_DRNG_KCAPI
+	help
+	  Enable the support for generic pseudo-random number
+	  generators offered by the kernel crypto API with the
+	  LRNG. Once the module is loaded, output from /dev/random,
+	  /dev/urandom, getrandom(2), or get_random_bytes is
+	  provided by the selected kernel crypto API RNG.
 
 endif # LRNG_SWITCH_DRNG
 
@@ -712,10 +712,10 @@ choice
 		bool "SP800-90A DRBG"
 		select LRNG_DRBG
 
-# 	config LRNG_DFLT_DRNG_KCAPI
-# 		depends on RANDOM_DEFAULT_IMPL
-# 		bool "Kernel Crypto API DRNG"
-# 		select LRNG_DRNG_KCAPI
+	config LRNG_DFLT_DRNG_KCAPI
+		depends on RANDOM_DEFAULT_IMPL
+		bool "Kernel Crypto API DRNG"
+		select LRNG_DRNG_KCAPI
 endchoice
 
 # menuconfig LRNG_TESTING_MENU
