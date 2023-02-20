@@ -542,8 +542,8 @@ quiet_cmd_xzmisc = XZMISC  $@
 # decompression is used, like initramfs decompression, zstd22 should likely not
 # be used because it would require zstd to allocate a 128 MB buffer.
 
-ifdef CONFIG_ZSTD_COMP_VAL
-zstd_comp_val	:= $(CONFIG_ZSTD_COMP_VAL)
+ifdef CONFIG_ZSTD_COMPRESSION_LVL
+zstd_comp_val	:= $(CONFIG_ZSTD_COMPRESSION_LVL)
 ifeq ($(shell test $(zstd_comp_val) -gt 19; echo $$?),0)
 zstd_comp_val	+= --ultra
 endif

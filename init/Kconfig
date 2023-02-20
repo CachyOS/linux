@@ -355,7 +355,7 @@ endchoice
 menu "ZSTD compression options"
 	depends on KERNEL_ZSTD
 
-config ZSTD_COMP_VAL
+config ZSTD_COMPRESSION_LVL
 	int "Compression level (1-22)"
 	range 1 22
 	default "22"
