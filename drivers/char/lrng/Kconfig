@@ -586,34 +586,34 @@ config LRNG_SCHED_ENTROPY_RATE
 	  scheduler entropy source will still deliver data but without
 	  being credited with entropy.
 
-# comment "Kernel RNG Entropy Source"
-#
-# config LRNG_KERNEL_RNG
-# 	bool "Enable Kernel RNG as LRNG Seed Source"
-# 	depends on RANDOM_DEFAULT_IMPL
-# 	help
-# 	  The LRNG may use the kernel RNG (random.c) as entropy
-# 	  source.
-#
-# config LRNG_KERNEL_RNG_ENTROPY_RATE
-# 	int "Kernel RNG Entropy Source Entropy Rate"
-# 	depends on LRNG_KERNEL_RNG
-# 	range 0 256
-# 	default 256
-# 	help
-# 	  The option defines the amount of entropy the LRNG applies to 256
-# 	  bits of data obtained from the kernel RNG entropy source. The
-# 	  LRNG enforces the limit that this value must be in the range
-# 	  between 0 and 256.
-#
-# 	  When configuring this value to 0, the kernel RNG entropy source
-# 	  will provide 256 bits of data without being credited to contain
-# 	  entropy.
-#
-# 	  Note: This value is set to 0 automatically when booting the
-# 	  kernel in FIPS mode (with fips=1 kernel command line option).
-# 	  This is due to the fact that random.c is not SP800-90B
-# 	  compliant.
+comment "Kernel RNG Entropy Source"
+
+config LRNG_KERNEL_RNG
+	bool "Enable Kernel RNG as LRNG Seed Source"
+	depends on RANDOM_DEFAULT_IMPL
+	help
+	  The LRNG may use the kernel RNG (random.c) as entropy
+	  source.
+
+config LRNG_KERNEL_RNG_ENTROPY_RATE
+	int "Kernel RNG Entropy Source Entropy Rate"
+	depends on LRNG_KERNEL_RNG
+	range 0 256
+	default 256
+	help
+	  The option defines the amount of entropy the LRNG applies to 256
+	  bits of data obtained from the kernel RNG entropy source. The
+	  LRNG enforces the limit that this value must be in the range
+	  between 0 and 256.
+
+	  When configuring this value to 0, the kernel RNG entropy source
+	  will provide 256 bits of data without being credited to contain
+	  entropy.
+
+	  Note: This value is set to 0 automatically when booting the
+	  kernel in FIPS mode (with fips=1 kernel command line option).
+	  This is due to the fact that random.c is not SP800-90B
+	  compliant.
 
 endmenu # "Entropy Source Configuration"
 
