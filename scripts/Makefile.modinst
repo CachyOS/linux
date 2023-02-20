@@ -101,7 +101,7 @@ quiet_cmd_gzip = GZIP    $@
 quiet_cmd_xz = XZ      $@
       cmd_xz = $(XZ) --lzma2=dict=2MiB -f $<
 quiet_cmd_zstd = ZSTD    $@
-      cmd_zstd = $(ZSTD) -T0 -7 --rm -f -q $<
+      cmd_zstd = $(ZSTD) -T0 -$(CONFIG_MODULE_COMPRESS_ZSTD_LVL) --rm -f -q $<
 
 $(dst)/%.ko.gz: $(dst)/%.ko FORCE
 	$(call cmd,gzip)
