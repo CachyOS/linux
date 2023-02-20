@@ -620,11 +620,11 @@ endmenu # "Specific DRNG seeding strategies"
 config LRNG_DRNG_CHACHA20
 	tristate
 
-# config LRNG_DRBG
-# 	tristate
-# 	depends on CRYPTO
-# 	select CRYPTO_DRBG_MENU
-#
+config LRNG_DRBG
+	tristate
+	depends on CRYPTO
+	select CRYPTO_DRBG_MENU
+
 # config LRNG_DRNG_KCAPI
 # 	tristate
 # 	depends on CRYPTO
@@ -653,33 +653,33 @@ config LRNG_HASH_KCAPI
 
 endif # LRNG_SWITCH_HASH
 
-# menuconfig LRNG_SWITCH_DRNG
-# 	bool "Support DRNG runtime switching"
-# 	select LRNG_SWITCH
-# 	help
-# 	  The LRNG uses a default DRNG With this configuration
-# 	  option other DRNGs or message digests can be selected and
-# 	  loaded at runtime.
-#
-# if LRNG_SWITCH_DRNG
-#
-# config LRNG_SWITCH_DRNG_CHACHA20
-# 	tristate "ChaCha20-based DRNG support for LRNG"
-# 	depends on !LRNG_DFLT_DRNG_CHACHA20
-# 	select LRNG_DRNG_CHACHA20
-# 	help
-# 	  Enable the ChaCha20-based DRNG. This DRNG implementation
-# 	  does not depend on the kernel crypto API presence.
-#
-# config LRNG_SWITCH_DRBG
-# 	tristate "SP800-90A support for the LRNG"
-# 	depends on !LRNG_DFLT_DRNG_DRBG
-# 	select LRNG_DRBG
-# 	help
-# 	  Enable the SP800-90A DRBG support for the LRNG. Once the
-# 	  module is loaded, output from /dev/random, /dev/urandom,
-# 	  getrandom(2), or get_random_bytes_full is provided by a DRBG.
-#
+menuconfig LRNG_SWITCH_DRNG
+	bool "Support DRNG runtime switching"
+	select LRNG_SWITCH
+	help
+	  The LRNG uses a default DRNG With this configuration
+	  option other DRNGs or message digests can be selected and
+	  loaded at runtime.
+
+if LRNG_SWITCH_DRNG
+
+config LRNG_SWITCH_DRNG_CHACHA20
+	tristate "ChaCha20-based DRNG support for LRNG"
+	depends on !LRNG_DFLT_DRNG_CHACHA20
+	select LRNG_DRNG_CHACHA20
+	help
+	  Enable the ChaCha20-based DRNG. This DRNG implementation
+	  does not depend on the kernel crypto API presence.
+
+config LRNG_SWITCH_DRBG
+	tristate "SP800-90A support for the LRNG"
+	depends on !LRNG_DFLT_DRNG_DRBG
+	select LRNG_DRBG
+	help
+	  Enable the SP800-90A DRBG support for the LRNG. Once the
+	  module is loaded, output from /dev/random, /dev/urandom,
+	  getrandom(2), or get_random_bytes_full is provided by a DRBG.
+
 # config LRNG_SWITCH_DRNG_KCAPI
 # 	tristate "Kernel Crypto API support for the LRNG"
 # 	depends on !LRNG_DFLT_DRNG_KCAPI
@@ -691,8 +691,8 @@ endif # LRNG_SWITCH_HASH
 # 	  LRNG. Once the module is loaded, output from /dev/random,
 # 	  /dev/urandom, getrandom(2), or get_random_bytes is
 # 	  provided by the selected kernel crypto API RNG.
-#
-# endif # LRNG_SWITCH_DRNG
+
+endif # LRNG_SWITCH_DRNG
 
 choice
 	prompt "LRNG Default DRNG"
@@ -707,11 +707,11 @@ choice
 		bool "ChaCha20-based DRNG"
 		select LRNG_DRNG_CHACHA20
 
-# 	config LRNG_DFLT_DRNG_DRBG
-# 		depends on RANDOM_DEFAULT_IMPL
-# 		bool "SP800-90A DRBG"
-# 		select LRNG_DRBG
-#
+	config LRNG_DFLT_DRNG_DRBG
+		depends on RANDOM_DEFAULT_IMPL
+		bool "SP800-90A DRBG"
+		select LRNG_DRBG
+
 # 	config LRNG_DFLT_DRNG_KCAPI
 # 		depends on RANDOM_DEFAULT_IMPL
 # 		bool "Kernel Crypto API DRNG"
