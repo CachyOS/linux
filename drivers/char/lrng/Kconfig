@@ -629,10 +629,10 @@ config LRNG_DRNG_CHACHA20
 # 	tristate
 # 	depends on CRYPTO
 # 	select CRYPTO_RNG
-#
-# config LRNG_SWITCH
-# 	bool
-#
+
+config LRNG_SWITCH
+	bool
+
 # menuconfig LRNG_SWITCH_HASH
 # 	bool "Support conditioning hash runtime switching"
 # 	select LRNG_SWITCH
