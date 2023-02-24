@@ -1305,6 +1305,12 @@ static void set_load_weight(struct task_struct *p, bool update_load)
 	}
 }
 
+static inline void set_latency_prio(struct task_struct *p, int prio)
+{
+	p->latency_prio = prio;
+	set_latency_fair(&p->se, prio - MAX_RT_PRIO);
+}
+
 #ifdef CONFIG_UCLAMP_TASK
 /*
  * Serializes updates of utilization clamp values
@@ -4502,8 +4508,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
 	p->se.vlag			= 0;
-	p->se.slice			= sysctl_sched_base_slice;
 	INIT_LIST_HEAD(&p->se.group_node);
+
+	set_latency_prio(p, p->latency_prio);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	p->se.cfs_rq			= NULL;
@@ -4756,8 +4763,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 
 		p->prio = p->normal_prio = p->static_prio;
 		set_load_weight(p, false);
-
-		p->latency_prio = NICE_TO_PRIO(0);
+		set_latency_prio(p, NICE_TO_PRIO(0));
 
 		/*
 		 * We don't need the reset flag anymore after the fork. It has
@@ -7548,7 +7554,7 @@ static void __setscheduler_latency(struct task_struct *p,
 				   const struct sched_attr *attr)
 {
 	if (attr->sched_flags & SCHED_FLAG_LATENCY_NICE)
-		p->latency_prio = NICE_TO_PRIO(attr->sched_latency_nice);
+		set_latency_prio(p, NICE_TO_PRIO(attr->sched_latency_nice));
 }
 
 /*

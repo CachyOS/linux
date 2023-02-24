@@ -2516,6 +2516,8 @@ extern unsigned int sysctl_numa_balancing_scan_size;
 extern unsigned int sysctl_numa_balancing_hot_threshold;
 #endif
 
+extern void set_latency_fair(struct sched_entity *se, int prio);
+
 #ifdef CONFIG_SCHED_HRTICK
 
 /*
