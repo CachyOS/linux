@@ -497,7 +497,7 @@ struct hci_dev {
 	struct workqueue_struct	*workqueue;
 	struct workqueue_struct	*req_workqueue;
 
-	struct work_struct	power_on;
+	struct delayed_work	power_on;
 	struct delayed_work	power_off;
 	struct work_struct	error_reset;
 	struct work_struct	cmd_sync_work;
