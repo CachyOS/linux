@@ -8108,7 +8108,7 @@ static int set_external_config(struct sock *sk, struct hci_dev *hdev,
 			hci_dev_set_flag(hdev, HCI_CONFIG);
 			hci_dev_set_flag(hdev, HCI_AUTO_OFF);
 
-			queue_work(hdev->req_workqueue, &hdev->power_on);
+			queue_work(hdev->req_workqueue, &hdev->power_on.work);
 		} else {
 			set_bit(HCI_RAW, &hdev->flags);
 			mgmt_index_added(hdev);
@@ -8164,7 +8164,7 @@ static int set_public_address(struct sock *sk, struct hci_dev *hdev,
 		hci_dev_set_flag(hdev, HCI_CONFIG);
 		hci_dev_set_flag(hdev, HCI_AUTO_OFF);
 
-		queue_work(hdev->req_workqueue, &hdev->power_on);
+		queue_work(hdev->req_workqueue, &hdev->power_on.work);
 	}
 
 unlock:

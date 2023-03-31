@@ -520,7 +520,7 @@ int hci_dev_close(__u16 dev)
 		goto done;
 	}
 
-	cancel_work_sync(&hdev->power_on);
+	cancel_delayed_work(&hdev->power_on);
 	if (hci_dev_test_and_clear_flag(hdev, HCI_AUTO_OFF))
 		cancel_delayed_work(&hdev->power_off);
 
@@ -943,7 +943,7 @@ static const struct rfkill_ops hci_rfkill_ops = {
 
 static void hci_power_on(struct work_struct *work)
 {
-	struct hci_dev *hdev = container_of(work, struct hci_dev, power_on);
+	struct hci_dev *hdev = container_of(work, struct hci_dev, power_on.work);
 	int err;
 
 	BT_DBG("%s", hdev->name);
@@ -2548,7 +2548,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_WORK(&hdev->rx_work, hci_rx_work);
 	INIT_WORK(&hdev->cmd_work, hci_cmd_work);
 	INIT_WORK(&hdev->tx_work, hci_tx_work);
-	INIT_WORK(&hdev->power_on, hci_power_on);
+	INIT_DELAYED_WORK(&hdev->power_on, hci_power_on);
 	INIT_WORK(&hdev->error_reset, hci_error_reset);
 
 	hci_cmd_sync_init(hdev);
@@ -2669,7 +2669,7 @@ int hci_register_dev(struct hci_dev *hdev)
 	if (error)
 		BT_WARN("register suspend notifier failed error:%d\n", error);
 
-	queue_work(hdev->req_workqueue, &hdev->power_on);
+	queue_delayed_work(hdev->req_workqueue, &hdev->power_on,HCI_AUTO_ON_TIMEOUT);
 
 	idr_init(&hdev->adv_monitors_idr);
 	msft_register(hdev);
@@ -2706,7 +2706,7 @@ void hci_unregister_dev(struct hci_dev *hdev)
 	disable_work_sync(&hdev->rx_work);
 	disable_work_sync(&hdev->cmd_work);
 	disable_work_sync(&hdev->tx_work);
-	disable_work_sync(&hdev->power_on);
+	disable_delayed_work(&hdev->power_on);
 	disable_work_sync(&hdev->error_reset);
 
 	hci_cmd_sync_clear(hdev);
