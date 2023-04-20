@@ -379,6 +379,12 @@ struct amdgpu_mode_info {
 	 */
 	struct drm_property *plane_shaper_lut_size_property;
 	/**
+	 * @plane_shaper_tf_property: Plane property to set a predefined
+	 * transfer function for pre-blending shaper (before applying 3D LUT)
+	 * with or without LUT.
+	 */
+	struct drm_property *plane_shaper_tf_property;
+	/**
 	 * @plane_lut3d_property: Plane property for gamma correction using a
 	 * 3D LUT (pre-blending).
 	 */

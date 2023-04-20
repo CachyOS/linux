@@ -767,6 +767,12 @@ struct dm_plane_state {
 	 */
 	struct drm_property_blob *shaper_lut;
 	/**
+	 * @shaper_tf:
+	 *
+	 * Predefined transfer function to delinearize color space.
+	 */
+	enum amdgpu_transfer_function shaper_tf;
+	/**
 	 * @lut3d: 3D lookup table blob. The blob (if not NULL) is an array of
 	 * &struct drm_color_lut.
 	 */
