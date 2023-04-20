@@ -368,6 +368,16 @@ struct amdgpu_mode_info {
 	 * @plane_hdr_mult_property:
 	 */
 	struct drm_property *plane_hdr_mult_property;
+	/**
+	 * @plane_lut3d_property: Plane property for gamma correction using a
+	 * 3D LUT (pre-blending).
+	 */
+	struct drm_property *plane_lut3d_property;
+	/**
+	 * @plane_degamma_lut_size_property: Plane property to define the max
+	 * size of 3D LUT as supported by the driver (read-only).
+	 */
+	struct drm_property *plane_lut3d_size_property;
 };
 
 #define AMDGPU_MAX_BL_LEVEL 0xFF
