@@ -313,7 +313,7 @@ dm_crtc_additional_color_mgmt(struct drm_crtc *crtc)
 	if(adev->dm.dc->caps.color.mpc.ogam_ram)
 		drm_object_attach_property(&crtc->base,
 					   adev->mode_info.regamma_tf_property,
-					   AMD_TRANSFER_FUNCTION_DEFAULT);
+					   AMDGPU_TRANSFER_FUNCTION_DEFAULT);
 }
 
 static int
