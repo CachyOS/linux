@@ -51,4 +51,11 @@ config DRM_AMD_SECURE_DISPLAY
 	  This option enables the calculation of crc of specific region via
 	  debugfs. Cooperate with specific DMCU FW.
 
+config DRM_AMD_COLOR_STEAMDECK
+	bool "Enable color calibration features for Steam Deck"
+	depends on DRM_AMD_DC
+	help
+	  Choose this option if you want to use AMDGPU features for broader
+	  color management support on Steam Deck.
+
 endmenu

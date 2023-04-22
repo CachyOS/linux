@@ -85,7 +85,7 @@ void amdgpu_dm_init_color_mod(void)
 	setup_x_points_distribution();
 }
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 static const struct drm_prop_enum_list amdgpu_transfer_function_enum_list[] = {
 	{ AMDGPU_TRANSFER_FUNCTION_DEFAULT, "Default" },
 	{ AMDGPU_TRANSFER_FUNCTION_SRGB, "sRGB" },
