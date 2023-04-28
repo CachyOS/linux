@@ -18,6 +18,8 @@
 #else
 #include <linux/module.h>
 #include <linux/gfp.h>
+#include <linux/sched/clock.h>
+
 /* In .bss so it's zeroed */
 const char raid6_empty_zero_page[PAGE_SIZE] __attribute__((aligned(256)));
 EXPORT_SYMBOL(raid6_empty_zero_page);
@@ -155,12 +157,15 @@ static inline const struct raid6_recov_calls *raid6_choose_recov(void)
 static inline const struct raid6_calls *raid6_choose_gen(
 	void *(*const dptrs)[RAID6_TEST_DISKS], const int disks)
 {
-	unsigned long perf, bestgenperf, j0, j1;
+	unsigned long perf;
+	const unsigned long max_perf = 2500;
 	int start = (disks>>1)-1, stop = disks-3;	/* work on the second half of the disks */
 	const struct raid6_calls *const *algo;
 	const struct raid6_calls *best;
+	const u64 ns_per_mb = 1000000000 >> 20;
+	u64 n, ns, t, ns_best = ~0ULL;
 
-	for (bestgenperf = 0, best = NULL, algo = raid6_algos; *algo; algo++) {
+	for (best = NULL, algo = raid6_algos; *algo; algo++) {
 		if (!best || (*algo)->priority >= best->priority) {
 			if ((*algo)->valid && !(*algo)->valid())
 				continue;
@@ -170,26 +175,20 @@ static inline const struct raid6_calls *raid6_choose_gen(
 				break;
 			}
 
-			perf = 0;
-
 			preempt_disable();
-			j0 = jiffies;
-			while ((j1 = jiffies) == j0)
-				cpu_relax();
-			while (time_before(jiffies,
-					    j1 + (1<<RAID6_TIME_JIFFIES_LG2))) {
+			t = local_clock();
+			for (perf = 0; perf < max_perf; perf++) {
 				(*algo)->gen_syndrome(disks, PAGE_SIZE, *dptrs);
-				perf++;
 			}
+			ns = local_clock() - t;
 			preempt_enable();
 
-			if (perf > bestgenperf) {
-				bestgenperf = perf;
+			if (ns < ns_best) {
+				ns_best = ns;
 				best = *algo;
 			}
-			pr_info("raid6: %-8s gen() %5ld MB/s\n", (*algo)->name,
-				(perf * HZ * (disks-2)) >>
-				(20 - PAGE_SHIFT + RAID6_TIME_JIFFIES_LG2));
+			n = max_perf * PAGE_SIZE * ns_per_mb * (disks - 2);
+			pr_info("raid6: %-8s gen() %5llu MB/s (%llu ns)\n", (*algo)->name, (ns > 0) ? n / ns : 0, ns);
 		}
 	}
 
@@ -206,31 +205,23 @@ static inline const struct raid6_calls *raid6_choose_gen(
 		goto out;
 	}
 
-	pr_info("raid6: using algorithm %s gen() %ld MB/s\n",
-		best->name,
-		(bestgenperf * HZ * (disks - 2)) >>
-		(20 - PAGE_SHIFT + RAID6_TIME_JIFFIES_LG2));
+	n = max_perf * PAGE_SIZE * ns_per_mb * (disks - 2);
+	pr_info("raid6: using algorithm %s gen() %llu MB/s (%llu ns)\n",
+		best->name, (ns_best > 0) ? n / ns_best : 0, ns_best);
 
 	if (best->xor_syndrome) {
-		perf = 0;
-
 		preempt_disable();
-		j0 = jiffies;
-		while ((j1 = jiffies) == j0)
-			cpu_relax();
-		while (time_before(jiffies,
-				   j1 + (1 << RAID6_TIME_JIFFIES_LG2))) {
+		t = local_clock();
+		for (perf = 0; perf < max_perf; perf++) {
 			best->xor_syndrome(disks, start, stop,
 					   PAGE_SIZE, *dptrs);
-			perf++;
 		}
+		ns = local_clock() - t;
 		preempt_enable();
 
-		pr_info("raid6: .... xor() %ld MB/s, rmw enabled\n",
-			(perf * HZ * (disks - 2)) >>
-			(20 - PAGE_SHIFT + RAID6_TIME_JIFFIES_LG2 + 1));
+		n = max_perf * PAGE_SIZE * ns_per_mb * (disks - 2);
+		pr_info("raid6: .... xor() %llu MB/s, rmw enabled (%llu ns)\n", (ns > 0) ? n / ns : 0, ns);
 	}
-
 out:
 	return best;
 }
