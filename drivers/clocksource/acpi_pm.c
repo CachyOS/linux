@@ -208,13 +208,16 @@ static int verify_pmtmr_rate(void)
 static int __init init_acpi_pm_clocksource(void)
 {
 	u64 value1, value2;
-	unsigned int i, j = 0;
+	unsigned int i, j = 0, checks = 1;
 
 	if (!pmtmr_ioport)
 		return -ENODEV;
 
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
+		checks = ACPI_PM_MONOTONICITY_CHECKS;
+
 	/* "verify" this timing source: */
-	for (j = 0; j < ACPI_PM_MONOTONICITY_CHECKS; j++) {
+	for (j = 0; j < checks; j++) {
 		udelay(100 * j);
 		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
 		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
