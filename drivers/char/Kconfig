@@ -421,4 +421,15 @@ config ADI
 	  and SSM (Silicon Secured Memory).  Intended consumers of this
 	  driver include crash and makedumpfile.
 
+config DDCCI
+	tristate "DDCCI display protocol support"
+	depends on I2C
+	help
+	  Display Data Channel Command Interface is an
+	  interface that allows the kernel to "talk"
+	  to most displays made after 2005. Check your
+	  display's specification to see if it has
+	  support for this. This depends on I2C to
+	  compile.
+
 endmenu
