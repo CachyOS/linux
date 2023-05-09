@@ -352,19 +352,6 @@ config KERNEL_UNCOMPRESSED
 
 endchoice
 
-menu "ZSTD compression options"
-	depends on KERNEL_ZSTD
-
-config ZSTD_COMP_VAL
-	int "Compression level (1-22)"
-	range 1 22
-	default "22"
-	help
-	  Choose a compression level for zstd kernel compression.
-	  Default is 22, which is the maximum.
-
-endmenu
-
 config DEFAULT_INIT
 	string "Default init path"
 	default ""
