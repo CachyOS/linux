@@ -262,6 +262,7 @@ static struct drm_crtc_state *amdgpu_dm_crtc_duplicate_state(struct drm_crtc *cr
 	state->regamma_tf = cur->regamma_tf;
 	state->crc_skip_count = cur->crc_skip_count;
 	state->mpo_requested = cur->mpo_requested;
+	state->cm_needs_reset = cur->cm_needs_reset;
 	/* TODO Duplicate dc_stream after objects are stream object is flattened */
 
 	return &state->base;

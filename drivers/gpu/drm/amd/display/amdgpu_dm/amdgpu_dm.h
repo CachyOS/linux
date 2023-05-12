@@ -813,6 +813,7 @@ struct dm_crtc_state {
 	struct dc_info_packet vrr_infopacket;
 
 	int abm_level;
+	bool cm_needs_reset;
 
         /**
 	 * @regamma_tf:

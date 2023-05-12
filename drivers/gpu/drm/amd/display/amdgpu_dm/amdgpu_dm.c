@@ -10210,6 +10210,21 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			}
 		}
 	}
+
+	/* Propogate CM reset state */
+	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
+		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
+		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
+
+		if (dm_old_crtc_state->cm_needs_reset || dm_new_crtc_state->cm_needs_reset)
+		{
+			dm_old_crtc_state->cm_needs_reset = false;
+			dm_new_crtc_state->cm_needs_reset = false;
+
+			dm_new_crtc_state->base.color_mgmt_changed = true;
+		}
+	}
+
 	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
 		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
 
@@ -10571,6 +10586,23 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 	return ret;
 
 fail:
+	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
+		/*
+		 * If we failed our commit, if our new crtc was dirty color-wise, make sure we forward that
+		 * dirty bit on our old state now so we don't forget to revert the work we did before
+		 * we failed this commit on the next commit.
+		 *
+		 * Store it on old and new state so we don't lose track of it for this CRTC.
+		 */
+		dm_old_crtc_state = to_dm_crtc_state(old_crtc_state);
+		dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
+
+		if (new_crtc_state->color_mgmt_changed) {
+			dm_old_crtc_state->cm_needs_reset = true;
+			dm_new_crtc_state->cm_needs_reset = true;
+		}
+	}
+
 	if (ret == -EDEADLK)
 		DRM_DEBUG_DRIVER("Atomic check stopped to avoid deadlock.\n");
 	else if (ret == -EINTR || ret == -EAGAIN || ret == -ERESTARTSYS)
