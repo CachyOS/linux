@@ -351,6 +351,14 @@ struct amdgpu_mode_info {
 	 * amdgpu_transfer_function`.
 	 */
 	struct drm_property *regamma_tf_property;
+	/* @plane_degamma_lut_property: Plane property to set a degamma LUT to
+	 * convert color space before blending.
+	 */
+	struct drm_property *plane_degamma_lut_property;
+	/* @plane_degamma_lut_size_property: Plane property to define the max
+	 * size of degamma LUT as supported by the driver (read-only).
+	 */
+	struct drm_property *plane_degamma_lut_size_property;
 };
 
 #define AMDGPU_MAX_BL_LEVEL 0xFF
