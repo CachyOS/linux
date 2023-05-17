@@ -464,10 +464,20 @@ static int amd_pstate_update_freq(struct cpufreq_policy *policy,
 	des_perf = DIV_ROUND_CLOSEST(target_freq * cap_perf,
 				     cpudata->max_freq);
 
-	cpufreq_freq_transition_begin(policy, &freqs);
+	WARN_ON(fast_switch && !policy->fast_switch_enabled);
+	/*
+	 * If fast_switch is desired, then there aren't any registered
+	 * transition notifiers. See comment for
+	 * cpufreq_enable_fast_switch().
+	 */
+	if (!fast_switch)
+		cpufreq_freq_transition_begin(policy, &freqs);
+
 	amd_pstate_update(cpudata, min_perf, des_perf,
-			  max_perf, false, policy->governor->flags);
-	cpufreq_freq_transition_end(policy, &freqs, false);
+			max_perf, fast_switch, policy->governor->flags);
+
+	if (!fast_switch)
+		cpufreq_freq_transition_end(policy, &freqs, false);
 
 	return 0;
 }
