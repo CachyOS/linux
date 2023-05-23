@@ -797,6 +797,21 @@ struct dm_crtc_state {
 
 	int abm_level;
 
+	/* AMD driver-private CRTC color management
+	 *
+	 * DRM provides CRTC degamma/ctm/gamma color mgmt features, but AMD HW
+	 * has a larger set of post-blending color calibration. Here, DC MPC
+	 * color caps are wired up to DM CRTC state:
+	 */
+	/**
+	 * @lut3d:
+	 *
+	 * Post-blending 3D Lookup table for converting pixel data. When
+	 * supported by HW (DCN 3+), it is positioned just before post-blending
+	 * regamma and always assumes a preceding shaper LUT. The blob (if not
+	 * NULL) is an array of &struct drm_color_lut.
+	 */
+	struct drm_property_blob *lut3d;
         /**
 	 * @regamma_tf:
 	 *
@@ -868,6 +883,8 @@ void amdgpu_dm_trigger_timing_sync(struct drm_device *dev);
 /* 3D LUT max size is 17x17x17 */
 #define MAX_COLOR_3DLUT_ENTRIES 4913
 #define MAX_COLOR_3DLUT_BITDEPTH 12
+int amdgpu_dm_verify_lut3d_size(struct amdgpu_device *adev,
+				const struct drm_crtc_state *crtc_state);
 /* 1D LUT size */
 #define MAX_COLOR_LUT_ENTRIES 4096
 /* Legacy gamm LUT users such as X doesn't like large LUT sizes */

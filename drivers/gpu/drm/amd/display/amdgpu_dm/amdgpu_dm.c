@@ -9956,6 +9956,12 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 			goto fail;
 		}
 
+		ret = amdgpu_dm_verify_lut3d_size(adev, new_crtc_state);
+		if (ret) {
+			drm_dbg_driver(dev, "amdgpu_dm_verify_lut_sizes() failed\n");
+			goto fail;
+		}
+
 		if (!new_crtc_state->enable)
 			continue;
 
