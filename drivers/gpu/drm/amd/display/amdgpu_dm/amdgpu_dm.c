@@ -9451,6 +9451,9 @@ static bool should_reset_plane(struct drm_atomic_state *state,
 	if (drm_atomic_crtc_needs_modeset(new_crtc_state))
 		return true;
 
+	if (new_plane_state->color_mgmt_changed)
+		return true;
+
 	/*
 	 * If there are any new primary or overlay planes being added or
 	 * removed then the z-order can potentially change. To ensure
