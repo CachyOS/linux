@@ -51,6 +51,7 @@
 
 #define AMDGPU_DMUB_NOTIFICATION_MAX 5
 
+#define AMDGPU_HDR_MULT_DEFAULT (0x100000000LL)
 /*
 #include "include/amdgpu_dal_power_if.h"
 #include "amdgpu_dm_irq.h"
@@ -732,6 +733,17 @@ struct dm_plane_state {
 	 * linearize.
 	 */
 	enum drm_transfer_function degamma_tf;
+	/**
+	 * @hdr_mult:
+	 *
+	 * Multiplier to 'gain' the plane.  When PQ is decoded using the fixed
+	 * func transfer function to the internal FP16 fb, 1.0 -> 80 nits (on
+	 * AMD at least). When sRGB is decoded, 1.0 -> 1.0, obviously.
+	 * Therefore, 1.0 multiplier = 80 nits for SDR content.  So if you
+	 * want, 203 nits for SDR content, pass in (203.0 / 80.0).  Format is
+	 * S31.32 sign-magnitude.
+	 */
+	__u64 hdr_mult;
 };
 
 struct dm_crtc_state {
