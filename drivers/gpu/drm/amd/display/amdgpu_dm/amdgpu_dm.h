@@ -804,6 +804,13 @@ struct dm_crtc_state {
 	 * color caps are wired up to DM CRTC state:
 	 */
 	/**
+	 * @shaper_lut:
+	 *
+	 * Post-blending 1D Lookup table used to de-linearize pixel data for 3D
+	 * LUT. The blob (if not NULL) is an array of &struct drm_color_lut.
+	 */
+	struct drm_property_blob *shaper_lut;
+	/**
 	 * @lut3d:
 	 *
 	 * Post-blending 3D Lookup table for converting pixel data. When
