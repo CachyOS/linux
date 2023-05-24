@@ -2778,6 +2778,7 @@ static const struct acpi_device_id qca_bluetooth_acpi_match[] = {
 	{ "DLA16390", (kernel_ulong_t)&qca_soc_data_qca6390 },
 	{ "DLB16390", (kernel_ulong_t)&qca_soc_data_qca6390 },
 	{ "DLB26390", (kernel_ulong_t)&qca_soc_data_qca6390 },
+	{ "QCOM2066", (kernel_ulong_t)&qca_soc_data_qca2066 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, qca_bluetooth_acpi_match);
