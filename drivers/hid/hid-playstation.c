@@ -337,8 +337,15 @@ struct dualsense_output_report {
  * 0x3F - disabled
  */
 #define DS4_OUTPUT_HWCTL_BT_POLL_MASK	0x3F
-/* Default to 4ms poll interval, which is same as USB (not adjustable). */
+
+#ifdef CONFIG_CACHY
+/* Default to 1ms poll interval (1000Hz, lower latency). */
+#define DS4_BT_DEFAULT_POLL_INTERVAL_MS	1
+#else
+/* Default to 4ms poll interval, which is same as USB. */
 #define DS4_BT_DEFAULT_POLL_INTERVAL_MS	4
+#endif
+
 #define DS4_OUTPUT_HWCTL_CRC32		0x40
 #define DS4_OUTPUT_HWCTL_HID		0x80
 
