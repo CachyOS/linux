@@ -7618,6 +7618,7 @@ MODULE_ALIAS("bfq-iosched");
 static int __init bfq_init(void)
 {
 	int ret;
+	char msg[60] = "BFQ I/O-scheduler: BFQ-CachyOS v6.4";
 
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 	ret = blkcg_policy_register(&blkcg_policy_bfq);
@@ -7648,6 +7649,11 @@ static int __init bfq_init(void)
 	ret = elv_register(&iosched_bfq_mq);
 	if (ret)
 		goto slab_kill;
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	strcat(msg, " (with cgroups support)");
+#endif
+	pr_info("%s", msg);
 
 	return 0;
 

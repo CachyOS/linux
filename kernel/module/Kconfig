@@ -317,6 +317,31 @@ config MODULE_COMPRESS_ZSTD
 
 endchoice
 
+menu "ZSTD module compression options"
+    depends on MODULE_COMPRESS_ZSTD
+
+config MODULE_COMPRESS_ZSTD_LEVEL
+	int "Compression level (1-19)"
+	range 1 19
+	default 9
+	help
+	  Compression level used by zstd for compressing modules.
+
+config MODULE_COMPRESS_ZSTD_ULTRA
+	bool "Enable ZSTD ultra compression"
+	help
+	  Compress modules with ZSTD using the highest possible compression.
+
+config MODULE_COMPRESS_ZSTD_LEVEL_ULTRA
+	int "Compression level (20-22)"
+	depends on MODULE_COMPRESS_ZSTD_ULTRA
+	range 20 22
+	default 20
+	help
+	  Ultra compression level used by zstd for compressing modules.
+
+endmenu
+
 config MODULE_DECOMPRESS
 	bool "Support in-kernel module decompression"
 	depends on MODULE_COMPRESS_GZIP || MODULE_COMPRESS_XZ || MODULE_COMPRESS_ZSTD
