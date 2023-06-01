@@ -3085,6 +3085,27 @@ static bool ath11k_mac_vif_recalc_sta_he_txbf(struct ath11k *ar,
 			hemode |= FIELD_PREP(HE_MODE_SU_TX_BFER, HE_SU_BFER_ENABLE);
 	}
 
+	ath11k_info(ar->ab, "mac0-5 cap %x-%x-%x-%x-%x-%x\n",
+		he_cap_elem.mac_cap_info[0],
+		he_cap_elem.mac_cap_info[1],
+		he_cap_elem.mac_cap_info[2],
+		he_cap_elem.mac_cap_info[3],
+		he_cap_elem.mac_cap_info[4],
+		he_cap_elem.mac_cap_info[5]);
+	ath11k_info(ar->ab, "phy0-5 cap %x-%x-%x-%x-%x-%x\n",
+		he_cap_elem.phy_cap_info[0],
+		he_cap_elem.phy_cap_info[1],
+		he_cap_elem.phy_cap_info[2],
+		he_cap_elem.phy_cap_info[3],
+		he_cap_elem.phy_cap_info[4],
+		he_cap_elem.phy_cap_info[5]);
+	ath11k_info(ar->ab, "phy6-10 cap %x-%x-%x-%x-%x\n",
+		he_cap_elem.phy_cap_info[6],
+		he_cap_elem.phy_cap_info[7],
+		he_cap_elem.phy_cap_info[8],
+		he_cap_elem.phy_cap_info[9],
+		he_cap_elem.phy_cap_info[10]);
+	ath11k_info(ar->ab, "WMI_VDEV_PARAM_SET_HEMU_MODE 3 0x%x\n", hemode);
 	ret = ath11k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, param, hemode);
 	if (ret) {
 		ath11k_warn(ar->ab, "failed to submit vdev param txbf 0x%x: %d\n",
