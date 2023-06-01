@@ -4237,6 +4237,7 @@ ath11k_wmi_copy_resource_config(struct wmi_resource_config *wmi_cfg,
 	wmi_cfg->sched_params = tg_cfg->sched_params;
 	wmi_cfg->twt_ap_pdev_count = tg_cfg->twt_ap_pdev_count;
 	wmi_cfg->twt_ap_sta_count = tg_cfg->twt_ap_sta_count;
+	wmi_cfg->host_service_flags = tg_cfg->host_service_flags;
 	wmi_cfg->host_service_flags &=
 		~(1 << WMI_CFG_HOST_SERVICE_FLAG_REG_CC_EXT);
 	wmi_cfg->host_service_flags |= (tg_cfg->is_reg_cc_ext_event_supported <<

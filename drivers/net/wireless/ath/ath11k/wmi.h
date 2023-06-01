@@ -2352,6 +2352,7 @@ struct wmi_init_cmd {
 	u32 num_host_mem_chunks;
 } __packed;
 
+#define WMI_RSRC_CFG_HOST_SERVICE_FLAG_NAN_IFACE_SUPPORT       BIT(0)
 #define WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64 BIT(5)
 #define WMI_RSRC_CFG_FLAG2_CALC_NEXT_DTIM_COUNT_SET BIT(9)
 #define WMI_RSRC_CFG_FLAG1_ACK_RSSI BIT(18)
@@ -5807,6 +5808,12 @@ struct target_resource_config {
 	u8 is_reg_cc_ext_event_supported;
 	u32 ema_max_vap_cnt;
 	u32 ema_max_profile_period;
+	u32 max_bssid_indicator;
+	u32 ul_resp_config;
+	u32 msdu_flow_override_config0;
+	u32 msdu_flow_override_config1;
+	u32 flags2;
+	u32 host_service_flags;
 };
 
 enum wmi_debug_log_param {
