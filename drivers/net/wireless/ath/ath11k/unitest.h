@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/**
+ * Copyright (c) 2020  The Linux Foundation. All rights reserved.
+ */
+
+#ifndef _UNIT_TEST_H_
+#define _UNIT_TEST_H_
+
+#define VENDOR_ID	0x001374
+#define QCA_NL80211_VENDOR_UNITEST_SUBCMD	84
+#define MAX_UNITEST_MEMORY_LEN	128
+
+enum qca_wlan_vendor_attr_unit_test {
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_INVALID = 0,
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_MODULE_ID,
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_ARGS_NUM,
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_ARGS,
+	/* keep last */
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_AFTER_LAST,
+	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_MAX =
+		QCA_WLAN_VENDOR_ATTR_UNIT_TEST_AFTER_LAST - 1,
+};
+
+#define UNITEST_INVALID	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_INVALID
+#define UNITEST_MODULE_ID	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_MODULE_ID
+#define UNITEST_ARGS	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_ARGS
+#define UNITEST_ARGS_NUM	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_ARGS_NUM
+#define UNITEST_MAX	QCA_WLAN_VENDOR_ATTR_UNIT_TEST_MAX
+
+#define ath11k_unit_test_command \
+{\
+	.info.vendor_id = VENDOR_ID,\
+	.info.subcmd = QCA_NL80211_VENDOR_UNITEST_SUBCMD,\
+	.flags = WIPHY_VENDOR_CMD_NEED_WDEV |\
+		WIPHY_VENDOR_CMD_NEED_NETDEV |\
+		WIPHY_VENDOR_CMD_NEED_RUNNING,\
+	.doit = ath11k_unit_test,\
+	.policy = VENDOR_CMD_RAW_DATA,\
+	.maxattr = QCA_WLAN_VENDOR_ATTR_UNIT_TEST_MAX,\
+}
+
+int ath11k_unit_test(struct wiphy *wiphy, struct wireless_dev *wdev,
+		     const void *data, int data_len);
+#endif

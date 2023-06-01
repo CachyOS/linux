@@ -10142,3 +10142,46 @@ bool ath11k_wmi_supports_6ghz_cc_ext(struct ath11k *ar)
 	return test_bit(WMI_TLV_SERVICE_REG_CC_EXT_EVENT_SUPPORT,
 			ar->ab->wmi_ab.svc_map) && ar->supports_6ghz;
 }
+
+int ath11k_wmi_set_unit_test(struct ath11k *ar, struct unit_test_cmd *unit_test)
+{
+	struct ath11k_pdev_wmi *wmi = ar->wmi;
+	struct sk_buff *skb;
+	struct wmi_unit_test_cmd_fixed_param *cmd;
+	u32 len, args_tlv_len;
+	u8 *buf_ptr;
+	u32 *args;
+	struct wmi_tlv *tlv;
+	u32 i;
+
+	args_tlv_len = TLV_HDR_SIZE + unit_test->num_args * sizeof(u32);
+
+	len = sizeof(struct wmi_unit_test_cmd_fixed_param) + args_tlv_len;
+	skb = ath11k_wmi_alloc_skb(wmi->wmi_ab, len);
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_unit_test_cmd_fixed_param *)skb->data;
+	buf_ptr = (u8 *)cmd;
+	cmd->tlv_header = FIELD_PREP(WMI_TLV_TAG,
+				     WMI_TAG_UNIT_TEST_CMD) |
+				     FIELD_PREP(WMI_TLV_LEN, sizeof(*cmd) - TLV_HDR_SIZE);
+	cmd->vdev_id = unit_test->vdev_id;
+	cmd->module_id = unit_test->module_id;
+	cmd->num_args = unit_test->num_args;
+
+	buf_ptr += sizeof(*cmd);
+
+	tlv  = (struct wmi_tlv *)buf_ptr;
+	tlv->header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_ARRAY_UINT32) |
+				 FIELD_PREP(WMI_TLV_LEN, unit_test->num_args * sizeof(u32));
+	args = (u32 *)(buf_ptr + TLV_HDR_SIZE);
+	ath11k_info(ar->ab, "module id = 0x%x, num args = %u",
+		    unit_test->module_id, unit_test->num_args);
+	for (i = 0; (i < unit_test->num_args && i < UNIT_TEST_MAX_NUM_ARGS); i++) {
+		args[i] = unit_test->args[i];
+		ath11k_info(ar->ab, "0x%x,", unit_test->args[i]);
+	}
+
+	return ath11k_wmi_cmd_send(wmi, skb, WMI_UNIT_TEST_CMDID);
+}

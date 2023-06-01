@@ -6438,6 +6438,29 @@ enum wmi_wmm_params_type {
 
 const void **ath11k_wmi_tlv_parse_alloc(struct ath11k_base *ab,
 					struct sk_buff *skb, gfp_t gfp);
+
+#define UNIT_TEST_MAX_NUM_ARGS    8
+
+struct unit_test_cmd {
+	u32 vdev_id;
+	u32 module_id;
+	u32 num_args;
+	u32 args[UNIT_TEST_MAX_NUM_ARGS];
+};
+
+struct wmi_unit_test_cmd_fixed_param {
+	u32 tlv_header;
+	u32 vdev_id;
+	u32 module_id;
+	u32 num_args;
+	u32 diag_token;
+	/**
+	 * TLV (tag length value) parameters follow the wmi_unit_test_cmd_fixed_param
+	 * structure. The TLV's are:
+	 *     u32 args[];
+	 */
+} __packed;
+
 int ath11k_wmi_cmd_send(struct ath11k_pdev_wmi *wmi, struct sk_buff *skb,
 			u32 cmd_id);
 struct sk_buff *ath11k_wmi_alloc_skb(struct ath11k_wmi_base *wmi_sc, u32 len);
@@ -6630,4 +6653,6 @@ int ath11k_wmi_send_vdev_set_tpc_power(struct ath11k *ar,
 int ath11k_wmi_peer_set_cfr_capture_conf(struct ath11k *ar,
 					 u32 vdev_id, const u8 *mac,
 					 struct wmi_peer_cfr_capture_conf_arg *arg);
+int ath11k_wmi_set_unit_test(struct ath11k *ar, struct unit_test_cmd *unit_test);
+
 #endif
