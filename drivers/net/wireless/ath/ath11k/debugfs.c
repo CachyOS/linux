@@ -412,6 +412,10 @@ static ssize_t ath11k_write_simulate_fw_crash(struct file *file,
 		ath11k_info(ab, "user requested hw restart\n");
 		queue_work(ab->workqueue_aux, &ab->reset_work);
 		ret = 0;
+	} else if (!strcmp(buf, "mhi-rddm")) {
+		ath11k_info(ab, "force target rddm\n");
+		ath11k_hif_force_rddm(ab);
+		ret = 0;
 	} else {
 		ret = -EINVAL;
 		goto exit;

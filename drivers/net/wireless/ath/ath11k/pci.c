@@ -900,6 +900,14 @@ static int ath11k_pci_start(struct ath11k_base *ab)
 	return 0;
 }
 
+static int ath11k_pci_force_rddm(struct ath11k_base *ab)
+{
+	struct ath11k_pci *ar_pci;
+
+	ar_pci = ath11k_pci_priv(ab);
+	return ath11k_mhi_force_rddm(ar_pci);
+}
+
 static const struct ath11k_hif_ops ath11k_pci_hif_ops = {
 	.start = ath11k_pci_start,
 	.stop = ath11k_pcic_stop,
@@ -921,6 +929,7 @@ static const struct ath11k_hif_ops ath11k_pci_hif_ops = {
 #ifdef CONFIG_DEV_COREDUMP
 	.coredump_download = ath11k_pci_coredump_download,
 #endif
+	.target_crash = ath11k_pci_force_rddm,
 };
 
 static void ath11k_pci_read_hw_version(struct ath11k_base *ab, u32 *major, u32 *minor)
