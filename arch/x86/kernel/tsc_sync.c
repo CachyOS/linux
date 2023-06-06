@@ -341,8 +341,6 @@ static cycles_t check_tsc_warp(unsigned int timeout)
  */
 static inline unsigned int loop_timeout(int cpu)
 {
-	if (!boot_cpu_has(X86_FEATURE_TSC_ADJUST))
-		return 30;
 	return (cpumask_weight(topology_core_cpumask(cpu)) > 1) ? 2 : 20;
 }
 
