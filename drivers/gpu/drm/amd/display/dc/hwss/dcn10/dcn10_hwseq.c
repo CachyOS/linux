@@ -2498,17 +2498,17 @@ void dcn10_program_gamut_remap(struct pipe_ctx *pipe_ctx)
 	adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_BYPASS;
 
 
-	if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
-		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
-		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
-			adjust.temperature_matrix[i] =
-				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
-	} else if (pipe_ctx->plane_state &&
-		   pipe_ctx->plane_state->gamut_remap_matrix.enable_remap == true) {
+	if (pipe_ctx->plane_state &&
+	    pipe_ctx->plane_state->gamut_remap_matrix.enable_remap == true) {
 		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
 		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
 			adjust.temperature_matrix[i] =
 				pipe_ctx->plane_state->gamut_remap_matrix.matrix[i];
+	} else if (pipe_ctx->stream->gamut_remap_matrix.enable_remap == true) {
+		adjust.gamut_adjust_type = GRAPHICS_GAMUT_ADJUST_TYPE_SW;
+		for (i = 0; i < CSC_TEMPERATURE_MATRIX_SIZE; i++)
+			adjust.temperature_matrix[i] =
+				pipe_ctx->stream->gamut_remap_matrix.matrix[i];
 	}
 
 	pipe_ctx->plane_res.dpp->funcs->dpp_set_gamut_remap(pipe_ctx->plane_res.dpp, &adjust);
@@ -2954,8 +2954,8 @@ void dcn10_program_pipe(
 	hws->funcs.set_hdr_multiplier(pipe_ctx);
 
 	if (pipe_ctx->plane_state->update_flags.bits.full_update ||
-			pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
-			pipe_ctx->plane_state->update_flags.bits.gamma_change)
+	    pipe_ctx->plane_state->update_flags.bits.in_transfer_func_change ||
+	    pipe_ctx->plane_state->update_flags.bits.gamma_change)
 		hws->funcs.set_input_transfer_func(dc, pipe_ctx, pipe_ctx->plane_state);
 
 	/* dcn10_translate_regamma_to_hw_format takes 750us to finish
