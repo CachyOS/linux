@@ -940,7 +940,7 @@ static void btusb_qca_cmd_timeout(struct hci_dev *hdev)
 		}
 
 		gpiod_set_value_cansleep(reset_gpio, 0);
-		msleep(200);
+		usleep_range(USEC_PER_SEC / 2, USEC_PER_SEC);
 		gpiod_set_value_cansleep(reset_gpio, 1);
 
 		return;
