@@ -247,7 +247,7 @@ void setup_initial_init_mm(void *start_code, void *end_code,
 struct vm_area_struct *vm_area_alloc(struct mm_struct *);
 struct vm_area_struct *vm_area_dup(struct vm_area_struct *);
 void vm_area_free(struct vm_area_struct *);
-/* Use only if VMA has no other users */
+/* Use only if VMA has no other users and might still be attached to a tree */
 void __vm_area_free(struct vm_area_struct *vma);
 
 #ifndef CONFIG_MMU
@@ -639,23 +639,24 @@ static inline void vma_numab_state_free(struct vm_area_struct *vma) {}
  */
 static inline bool vma_start_read(struct vm_area_struct *vma)
 {
-	/* Check before locking. A race might cause false locked result. */
-	if (vma->vm_lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))
+	int vm_lock_seq = READ_ONCE(vma->vm_lock_seq);
+
+	/*
+	 * Check if VMA is locked before taking vma->vm_lock. A race or
+	 * mm_lock_seq overflow might cause false locked result.
+	 */
+	if (vm_lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))
 		return false;
 
 	if (unlikely(down_read_trylock(&vma->vm_lock->lock) == 0))
 		return false;
 
-	/*
-	 * Overflow might produce false locked result.
-	 * False unlocked result is impossible because we modify and check
-	 * vma->vm_lock_seq under vma->vm_lock protection and mm->mm_lock_seq
-	 * modification invalidates all existing locks.
-	 */
-	if (unlikely(vma->vm_lock_seq == READ_ONCE(vma->vm_mm->mm_lock_seq))) {
+	/* Fail if VMA is detached or was write-locked after we checked it earlier */
+	if (unlikely(vma->detached || vm_lock_seq != READ_ONCE(vma->vm_lock_seq))) {
 		up_read(&vma->vm_lock->lock);
 		return false;
 	}
+
 	return true;
 }
 
@@ -750,7 +751,7 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	vma->vm_mm = mm;
 	vma->vm_ops = &dummy_vm_ops;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
-	vma_mark_detached(vma, false);
+	vma->detached = true;
 	vma_numab_state_init(vma);
 }
 

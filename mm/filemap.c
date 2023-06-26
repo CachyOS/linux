@@ -1701,31 +1701,35 @@ static int __folio_lock_async(struct folio *folio, struct wait_page_queue *wait)
 
 /*
  * Return values:
- * true - folio is locked; mmap_lock is still held.
+ * true - folio is locked.
  * false - folio is not locked.
- *     mmap_lock has been released (mmap_read_unlock(), unless flags had both
- *     FAULT_FLAG_ALLOW_RETRY and FAULT_FLAG_RETRY_NOWAIT set, in
- *     which case mmap_lock is still held.
+ *
+ * lock_dropped indicates whether mmap_lock/VMA lock got dropped.
+ *     mmap_lock/VMA lock is dropped when function fails to lock the folio,
+ *     unless flags had both FAULT_FLAG_ALLOW_RETRY and FAULT_FLAG_RETRY_NOWAIT
+ *     set, in which case mmap_lock/VMA lock is still held.
  *
  * If neither ALLOW_RETRY nor KILLABLE are set, will always return true
- * with the folio locked and the mmap_lock unperturbed.
+ * with the folio locked and the mmap_lock/VMA lock unperturbed.
  */
-bool __folio_lock_or_retry(struct folio *folio, struct mm_struct *mm,
-			 unsigned int flags)
+bool __folio_lock_or_retry(struct folio *folio, struct vm_area_struct *vma,
+			 unsigned int flags, bool *lock_dropped)
 {
 	if (fault_flag_allow_retry_first(flags)) {
-		/*
-		 * CAUTION! In this case, mmap_lock is not released
-		 * even though return 0.
-		 */
-		if (flags & FAULT_FLAG_RETRY_NOWAIT)
+		if (flags & FAULT_FLAG_RETRY_NOWAIT) {
+			*lock_dropped = false;
 			return false;
+		}
 
-		mmap_read_unlock(mm);
+		if (flags & FAULT_FLAG_VMA_LOCK)
+			vma_end_read(vma);
+		else
+			mmap_read_unlock(vma->vm_mm);
 		if (flags & FAULT_FLAG_KILLABLE)
 			folio_wait_locked_killable(folio);
 		else
 			folio_wait_locked(folio);
+		*lock_dropped = true;
 		return false;
 	}
 	if (flags & FAULT_FLAG_KILLABLE) {
@@ -1733,13 +1737,18 @@ bool __folio_lock_or_retry(struct folio *folio, struct mm_struct *mm,
 
 		ret = __folio_lock_killable(folio);
 		if (ret) {
-			mmap_read_unlock(mm);
+			if (flags & FAULT_FLAG_VMA_LOCK)
+				vma_end_read(vma);
+			else
+				mmap_read_unlock(vma->vm_mm);
+			*lock_dropped = true;
 			return false;
 		}
 	} else {
 		__folio_lock(folio);
 	}
 
+	*lock_dropped = false;
 	return true;
 }
 

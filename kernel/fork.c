@@ -544,6 +544,7 @@ static void vm_area_free_rcu_cb(struct rcu_head *head)
 
 	/* The vma should not be locked while being destroyed. */
 	VM_BUG_ON_VMA(rwsem_is_locked(&vma->vm_lock->lock), vma);
+	WARN_ON_ONCE(!vma->detached);
 	__vm_area_free(vma);
 }
 #endif
@@ -553,6 +554,7 @@ void vm_area_free(struct vm_area_struct *vma)
 #ifdef CONFIG_PER_VMA_LOCK
 	call_rcu(&vma->vm_rcu, vm_area_free_rcu_cb);
 #else
+	WARN_ON_ONCE(!vma->detached);
 	__vm_area_free(vma);
 #endif
 }

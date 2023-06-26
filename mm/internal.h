@@ -1068,6 +1068,7 @@ static inline void vma_iter_store(struct vma_iterator *vmi,
 	vmi->mas.index = vma->vm_start;
 	vmi->mas.last = vma->vm_end - 1;
 	mas_store_prealloc(&vmi->mas, vma);
+	vma_mark_detached(vma, false);
 }
 
 static inline int vma_iter_store_gfp(struct vma_iterator *vmi,

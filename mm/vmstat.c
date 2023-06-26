@@ -1403,7 +1403,6 @@ const char * const vmstat_text[] = {
 	"vma_lock_success",
 	"vma_lock_abort",
 	"vma_lock_retry",
-	"vma_lock_miss",
 #endif
 #endif /* CONFIG_VM_EVENT_COUNTERS || CONFIG_MEMCG */
 };

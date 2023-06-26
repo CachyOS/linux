@@ -896,8 +896,8 @@ static inline bool wake_page_match(struct wait_page_queue *wait_page,
 
 void __folio_lock(struct folio *folio);
 int __folio_lock_killable(struct folio *folio);
-bool __folio_lock_or_retry(struct folio *folio, struct mm_struct *mm,
-				unsigned int flags);
+bool __folio_lock_or_retry(struct folio *folio, struct vm_area_struct *vma,
+			   unsigned int flags, bool *lock_dropped);
 void unlock_page(struct page *page);
 void folio_unlock(struct folio *folio);
 
@@ -1002,10 +1002,16 @@ static inline int folio_lock_killable(struct folio *folio)
  * __folio_lock_or_retry().
  */
 static inline bool folio_lock_or_retry(struct folio *folio,
-		struct mm_struct *mm, unsigned int flags)
+		struct vm_area_struct *vma, unsigned int flags,
+		bool *lock_dropped)
 {
 	might_sleep();
-	return folio_trylock(folio) || __folio_lock_or_retry(folio, mm, flags);
+	if (folio_trylock(folio)) {
+		*lock_dropped = false;
+		return true;
+	}
+
+	return __folio_lock_or_retry(folio, vma, flags, lock_dropped);
 }
 
 /*
