@@ -277,7 +277,7 @@ static int fza_reset(struct fza_private *fp)
 	}
 	pr_info("%s: OK\n", fp->name);
 	pr_debug("%s: RESET: %lums elapsed\n", fp->name,
-		 (45 * HZ - t) * 1000 / HZ);
+		 ((45 * HZ - t) * 1000) / HZ);
 
 	return 0;
 }
@@ -408,7 +408,7 @@ static int fza_init_send(struct net_device *dev,
 		return -EIO;
 	}
 	pr_debug("%s: INIT: %lums elapsed\n", fp->name,
-		 (3 * HZ - t) * 1000 / HZ);
+		 ((3 * HZ - t) * 1000) / HZ);
 
 	if (init)
 		*init = fp->mmio + readl_u(&ring->buffer);
@@ -1211,7 +1211,7 @@ static int fza_open(struct net_device *dev)
 		return -EIO;
 	}
 	pr_debug("%s: PARAM: %lums elapsed\n", fp->name,
-		 (3 * HZ - t) * 1000 / HZ);
+		 ((3 * HZ - t) * 1000) / HZ);
 
 	return 0;
 }
@@ -1249,7 +1249,7 @@ static int fza_close(struct net_device *dev)
 		return -EIO;
 	}
 	pr_debug("%s: SHUT: %lums elapsed\n", fp->name,
-		 (15 * HZ - t) * 1000 / HZ);
+		 ((15 * HZ - t) * 1000) / HZ);
 
 	for (i = 0; i < FZA_RING_RX_SIZE; i++)
 		if (fp->rx_skbuff[i]) {

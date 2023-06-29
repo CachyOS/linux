@@ -85,7 +85,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 
 	printk("Total of %d processors activated (%lu.%02lu BogoMIPS).\n",
 		num, bogosum/(500000/HZ),
-		(bogosum/(5000/HZ))%100);
+		((bogosum*HZ)/5000)%100);
 
 	switch(sparc_cpu_model) {
 	case sun4m:
@@ -375,7 +375,7 @@ void smp_bogo(struct seq_file *m)
 			   "Cpu%dBogo\t: %lu.%02lu\n",
 			   i,
 			   cpu_data(i).udelay_val/(500000/HZ),
-			   (cpu_data(i).udelay_val/(5000/HZ))%100);
+			   ((cpu_data(i).udelay_val*HZ)/5000)%100);
 	}
 }
 

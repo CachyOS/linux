@@ -183,7 +183,7 @@ ssize_t diag_ftp_cmd(const struct hmcdrv_ftp_cmdspec *ftp, size_t *fsize)
 
 #ifdef DEBUG
 	pr_debug("completed DIAG X'2C4' after %lu ms\n",
-		 (jiffies - start_jiffies) * 1000 / HZ);
+		 ((jiffies - start_jiffies) * 1000) / HZ);
 	pr_debug("status of DIAG X'2C4' is %u, with %lld/%lld bytes\n",
 		 diag_ftp_subcode, ldfpl->transferred, ldfpl->fsize);
 #endif

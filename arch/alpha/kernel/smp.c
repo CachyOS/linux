@@ -494,7 +494,7 @@ smp_cpus_done(unsigned int max_cpus)
 	       "(%lu.%02lu BogoMIPS).\n",
 	       num_online_cpus(), 
 	       (bogosum + 2500) / (500000/HZ),
-	       ((bogosum + 2500) / (5000/HZ)) % 100);
+	       (((bogosum + 2500) * HZ) / 5000) % 100);
 }
 
 static void

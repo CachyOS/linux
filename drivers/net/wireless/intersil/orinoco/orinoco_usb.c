@@ -698,7 +698,7 @@ static void ezusb_req_ctx_wait_poll(struct ezusb_priv *upriv,
 		 * happen if the USB controller completes the URB requests in
 		 * BH.
 		 */
-		msecs = DEF_TIMEOUT * (1000 / HZ);
+		msecs = (DEF_TIMEOUT * 1000) / HZ;
 
 		while (!try_wait_for_completion(&ctx->done) && msecs--)
 			udelay(1000);

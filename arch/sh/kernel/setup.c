@@ -189,7 +189,7 @@ void calibrate_delay(void)
 	printk(KERN_INFO "Calibrating delay loop (skipped)... "
 			 "%lu.%02lu BogoMIPS PRESET (lpj=%lu)\n",
 			 loops_per_jiffy/(500000/HZ),
-			 (loops_per_jiffy/(5000/HZ)) % 100,
+			 ((loops_per_jiffy*HZ)/5000) % 100,
 			 loops_per_jiffy);
 }
 #endif

@@ -449,7 +449,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		   "Calibration:\t%lu loops\n",
 		   cpu, mmu, fpu,
 		   clockfreq/1000000,(clockfreq/100000)%10,
-		   loops_per_jiffy/(500000/HZ),(loops_per_jiffy/(5000/HZ))%100,
+		   loops_per_jiffy/(500000/HZ),((loops_per_jiffy*HZ)/5000)%100,
 		   loops_per_jiffy);
 	return 0;
 }

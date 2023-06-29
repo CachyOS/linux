@@ -416,7 +416,11 @@ void cpuidle_reflect(struct cpuidle_device *dev, int index)
  * Run multiple times to avoid cpufreq effects.
  */
 #define CPUIDLE_POLL_MIN 10000
+#if HZ > 1666
+#define CPUIDLE_POLL_MAX 18750
+#else
 #define CPUIDLE_POLL_MAX (TICK_NSEC / 16)
+#endif
 
 /**
  * cpuidle_poll_time - return amount of time to poll for,

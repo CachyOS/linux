@@ -494,7 +494,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	       "(%lu.%02lu BogoMIPS).\n",
 	       num_online_cpus(),
 	       bogosum / (500000/HZ),
-	       (bogosum / (5000/HZ)) % 100);
+	       ((bogosum * HZ) / 5000) % 100);
 
 	hyp_mode_check();
 }

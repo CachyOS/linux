@@ -476,7 +476,7 @@ static int __init init_tcic(void)
 	printk("status change on irq %d\n", cs_irq);
     else
 	printk("polled status, interval = %d ms\n",
-	       poll_interval * 1000 / HZ);
+	       (poll_interval * 1000) / HZ);
     
     for (i = 0; i < sockets; i++) {
 	tcic_setw(TCIC_ADDR+2, socket_table[i].psock << TCIC_SS_SHFT);

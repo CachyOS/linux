@@ -139,7 +139,7 @@ static void show_cpu_summary(struct seq_file *m, void *v)
 		   "# processors    : %i\n"
 		   "bogomips per cpu: %lu.%02lu\n",
 		   num_online_cpus(), loops_per_jiffy/(500000/HZ),
-		   (loops_per_jiffy/(5000/HZ))%100);
+		   ((loops_per_jiffy*HZ)/5000)%100);
 	seq_printf(m, "max thread id   : %d\n", smp_cpu_mtid);
 	seq_puts(m, "features\t: ");
 	for (i = 0; i < ARRAY_SIZE(hwcap_str); i++)

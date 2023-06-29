@@ -162,7 +162,11 @@ struct bnx2i_hba *bnx2i_find_hba_for_cnic(struct cnic_dev *cnic)
  */
 void bnx2i_start(void *handle)
 {
+#if HZ >= 1000
+#define BNX2I_INIT_POLL_TIME	1
+#else
 #define BNX2I_INIT_POLL_TIME	(1000 / HZ)
+#endif
 	struct bnx2i_hba *hba = handle;
 	int i = HZ;
 

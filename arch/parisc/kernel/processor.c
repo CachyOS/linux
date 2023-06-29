@@ -438,7 +438,7 @@ show_cpuinfo (struct seq_file *m, void *v)
 
 		seq_printf(m, "bogomips\t: %lu.%02lu\n",
 			     loops_per_jiffy / (500000 / HZ),
-			     loops_per_jiffy / (5000 / HZ) % 100);
+			     (loops_per_jiffy * HZ) / 5000 % 100);
 
 		seq_printf(m, "software id\t: %ld\n\n",
 				boot_cpu_data.pdc.model.sw_id);

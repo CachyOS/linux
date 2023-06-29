@@ -1881,7 +1881,11 @@ static void bnx2fc_stop(struct bnx2fc_interface *interface)
 
 static int bnx2fc_fw_init(struct bnx2fc_hba *hba)
 {
+#if HZ >= 1000
+#define BNX2FC_INIT_POLL_TIME		1
+#else
 #define BNX2FC_INIT_POLL_TIME		(1000 / HZ)
+#endif
 	int rc = -1;
 	int i = HZ;
 

@@ -688,7 +688,7 @@ smp_cpus_done (unsigned int dummy)
 	}
 
 	printk(KERN_INFO "Total of %d processors activated (%lu.%02lu BogoMIPS).\n",
-	       (int)num_online_cpus(), bogosum/(500000/HZ), (bogosum/(5000/HZ))%100);
+	       (int)num_online_cpus(), bogosum/(500000/HZ), ((bogosum*HZ)/5000)%100);
 }
 
 static inline void set_cpu_sibling_map(int cpu)

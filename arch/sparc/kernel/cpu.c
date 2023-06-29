@@ -346,7 +346,7 @@ static int show_cpuinfo(struct seq_file *m, void *__unused)
 		   num_online_cpus()
 #ifndef CONFIG_SMP
 		   , cpu_data(0).udelay_val/(500000/HZ),
-		   (cpu_data(0).udelay_val/(5000/HZ)) % 100,
+		   ((cpu_data(0).udelay_val * HZ)/5000) % 100,
 		   cpu_data(0).clock_tick
 #endif
 		);

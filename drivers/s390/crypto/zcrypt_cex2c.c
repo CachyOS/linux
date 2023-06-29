@@ -211,7 +211,11 @@ static int zcrypt_cex2c_rng_supported(struct ap_queue *aq)
 
 	/* Wait for the test message to complete. */
 	for (i = 0; i < 2 * HZ; i++) {
+#if HZ >= 1000
+		msleep(1);
+#else
 		msleep(1000 / HZ);
+#endif
 		rc = ap_recv(aq->qid, &psmid, ap_msg.msg, ap_msg.bufsize);
 		if (rc == 0 && psmid == 0x0102030405060708UL)
 			break;

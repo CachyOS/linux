@@ -703,7 +703,7 @@ unsigned long native_calibrate_tsc(void)
 	 * lapic_timer_period here to avoid having to calibrate the APIC
 	 * timer later.
 	 */
-	lapic_timer_period = crystal_khz * 1000 / HZ;
+	lapic_timer_period = (crystal_khz * 1000) / HZ;
 #endif
 
 	return crystal_khz * ebx_numerator / eax_denominator;

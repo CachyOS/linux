@@ -59,7 +59,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		   cpuinfo.cpu_clock_freq / 1000000,
 		   cpuinfo.cpu_clock_freq % 1000000,
 		   loops_per_jiffy / (500000 / HZ),
-		   (loops_per_jiffy / (5000 / HZ)) % 100);
+		   ((loops_per_jiffy * HZ) / 5000) % 100);
 
 	seq_printf(m,
 		   "HW:\n Shift:\t\t%s\n"

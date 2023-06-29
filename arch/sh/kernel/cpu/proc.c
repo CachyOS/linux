@@ -125,7 +125,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 	seq_printf(m, "bogomips\t: %lu.%02lu\n",
 		     c->loops_per_jiffy/(500000/HZ),
-		     (c->loops_per_jiffy/(5000/HZ)) % 100);
+		     ((c->loops_per_jiffy*HZ)/5000) % 100);
 
 	return 0;
 }

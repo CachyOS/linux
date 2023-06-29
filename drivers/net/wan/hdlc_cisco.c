@@ -104,7 +104,7 @@ static void cisco_keepalive_send(struct net_device *dev, u32 type,
 	data->par2 = par2;
 	data->rel = cpu_to_be16(0xFFFF);
 	/* we will need do_div here if 1000 % HZ != 0 */
-	data->time = htonl((jiffies - INITIAL_JIFFIES) * (1000 / HZ));
+	data->time = (htonl((jiffies - INITIAL_JIFFIES) * 1000) / HZ);
 
 	skb_put(skb, sizeof(struct cisco_packet));
 	skb->priority = TC_PRIO_CONTROL;

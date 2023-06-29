@@ -512,7 +512,7 @@ TRACE_EVENT(writeback_queue_io,
 	TP_fast_assign(
 		strscpy_pad(__entry->name, bdi_dev_name(wb->bdi), 32);
 		__entry->older	= dirtied_before;
-		__entry->age	= (jiffies - dirtied_before) * 1000 / HZ;
+		__entry->age	= ((jiffies - dirtied_before) * 1000) / HZ;
 		__entry->moved	= moved;
 		__entry->reason	= work->reason;
 		__entry->cgroup_ino	= __trace_wb_assign_cgroup(wb);
@@ -671,10 +671,10 @@ TRACE_EVENT(balance_dirty_pages,
 		__entry->dirtied	= dirtied;
 		__entry->dirtied_pause	= current->nr_dirtied_pause;
 		__entry->think		= current->dirty_paused_when == 0 ? 0 :
-			 (long)(jiffies - current->dirty_paused_when) * 1000/HZ;
-		__entry->period		= period * 1000 / HZ;
-		__entry->pause		= pause * 1000 / HZ;
-		__entry->paused		= (jiffies - start_time) * 1000 / HZ;
+			 ((long)(jiffies - current->dirty_paused_when) * 1000)/HZ;
+		__entry->period		= (period * 1000) / HZ;
+		__entry->pause		= (pause * 1000) / HZ;
+		__entry->paused		= ((jiffies - start_time) * 1000) / HZ;
 		__entry->cgroup_ino	= __trace_wb_assign_cgroup(wb);
 	),
 

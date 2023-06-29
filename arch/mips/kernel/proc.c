@@ -65,7 +65,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		      (fp_vers >> 4) & 0x0f, fp_vers & 0x0f);
 	seq_printf(m, "BogoMIPS\t\t: %u.%02u\n",
 		      cpu_data[n].udelay_val / (500000/HZ),
-		      (cpu_data[n].udelay_val / (5000/HZ)) % 100);
+		      ((cpu_data[n].udelay_val * HZ) / 5000) % 100);
 	seq_printf(m, "wait instruction\t: %s\n", cpu_wait ? "yes" : "no");
 	seq_printf(m, "microsecond timers\t: %s\n",
 		      cpu_has_counter ? "yes" : "no");

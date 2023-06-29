@@ -5014,7 +5014,11 @@ static int netdev_close(struct net_device *dev)
 		hw_clr_multicast(hw);
 
 		/* Delay for receive task to stop scheduling itself. */
+#if HZ >= 2000
+		msleep(1);
+#else
 		msleep(2000 / HZ);
+#endif
 
 		tasklet_kill(&hw_priv->rx_tasklet);
 		tasklet_kill(&hw_priv->tx_tasklet);

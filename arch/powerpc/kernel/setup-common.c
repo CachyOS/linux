@@ -211,7 +211,7 @@ static void show_cpuinfo_summary(struct seq_file *m)
 		for_each_online_cpu(i)
 			bogosum += loops_per_jiffy;
 		seq_printf(m, "total bogomips\t: %lu.%02lu\n",
-			   bogosum / (500000 / HZ), bogosum / (5000 / HZ) % 100);
+			   bogosum / (500000 / HZ), (bogosum * HZ) / 5000 % 100);
 	}
 	seq_printf(m, "timebase\t: %lu\n", ppc_tb_freq);
 	if (ppc_md.name)
@@ -332,7 +332,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 	if (IS_ENABLED(CONFIG_PPC32))
 		seq_printf(m, "bogomips\t: %lu.%02lu\n", loops_per_jiffy / (500000 / HZ),
-			   (loops_per_jiffy / (5000 / HZ)) % 100);
+			   ((loops_per_jiffy * HZ) / 5000) % 100);
 
 	seq_putc(m, '\n');
 

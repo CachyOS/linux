@@ -719,7 +719,7 @@ static void __init add_pcic(int ns, int type)
 	if (poll_interval == 0)
 	    poll_interval = HZ;
 	printk(" polling interval = %d ms\n",
-	       poll_interval * 1000 / HZ);
+	       (poll_interval * 1000) / HZ);
 	
     }
     

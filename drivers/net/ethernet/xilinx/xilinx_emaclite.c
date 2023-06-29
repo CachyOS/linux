@@ -522,7 +522,7 @@ static void xemaclite_tx_timeout(struct net_device *dev, unsigned int txqueue)
 	unsigned long flags;
 
 	dev_err(&lp->ndev->dev, "Exceeded transmit timeout of %lu ms\n",
-		TX_TIMEOUT * 1000UL / HZ);
+		(TX_TIMEOUT * 1000UL) / HZ);
 
 	dev->stats.tx_errors++;
 

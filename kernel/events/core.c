@@ -1063,7 +1063,11 @@ static void perf_cgroup_switch(struct task_struct *task)
  * set default to be dependent on timer tick just
  * like original code
  */
+#if HZ >= 1000
+#define PERF_CPU_HRTIMER (1)
+#else
 #define PERF_CPU_HRTIMER (1000 / HZ)
+#endif
 /*
  * function must be called with interrupts disabled
  */

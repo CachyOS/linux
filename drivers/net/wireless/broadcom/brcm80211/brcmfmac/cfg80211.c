@@ -3973,7 +3973,11 @@ static int brcmf_cfg80211_sched_scan_stop(struct wiphy *wiphy,
 
 static __always_inline void brcmf_delay(u32 ms)
 {
+#if HZ >= 1000
+	if (ms < 1) {
+#else
 	if (ms < 1000 / HZ) {
+#endif
 		cond_resched();
 		mdelay(ms);
 	} else {

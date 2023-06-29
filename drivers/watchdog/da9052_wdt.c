@@ -116,7 +116,7 @@ static int da9052_wdt_ping(struct watchdog_device *wdt_dev)
 	 * We have a minimum time for watchdog window called TWDMIN. A write
 	 * to the watchdog before this elapsed time should cause an error.
 	 */
-	msec = (jnow - driver_data->jpast) * 1000/HZ;
+	msec = ((jnow - driver_data->jpast) * 1000)/HZ;
 	if (msec < DA9052_TWDMIN)
 		mdelay(msec);
 

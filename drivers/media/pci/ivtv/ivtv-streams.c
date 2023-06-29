@@ -856,7 +856,7 @@ int ivtv_stop_v4l2_encode_stream(struct ivtv_stream *s, int gop_end)
 			 * accuracy if we do a rounding calculation of the constant.
 			 * Think of the case where HZ is 1024.
 			 */
-			duration = ((1000 + HZ / 2) / HZ) * (jiffies - then);
+			duration = ((1000 + HZ / 2) * (jiffies - then)) / HZ;
 
 			if (!test_bit(IVTV_F_I_EOS, &itv->i_flags)) {
 				IVTV_DEBUG_WARN("%s: EOS interrupt not received! stopping anyway.\n", s->name);

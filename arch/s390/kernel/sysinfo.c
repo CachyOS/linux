@@ -472,7 +472,7 @@ void calibrate_delay(void)
 	/* Print the good old Bogomips line .. */
 	printk(KERN_DEBUG "Calibrating delay loop (skipped)... "
 	       "%lu.%02lu BogoMIPS preset\n", loops_per_jiffy/(500000/HZ),
-	       (loops_per_jiffy/(5000/HZ)) % 100);
+	       ((loops_per_jiffy*HZ)/5000) % 100);
 }
 
 #ifdef CONFIG_DEBUG_FS

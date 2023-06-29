@@ -197,7 +197,7 @@ ssize_t sclp_ftp_cmd(const struct hmcdrv_ftp_cmdspec *ftp, size_t *fsize)
 
 #ifdef DEBUG
 	pr_debug("completed SCLP (ET7) request after %lu ms (all)\n",
-		 (jiffies - start_jiffies) * 1000 / HZ);
+		 ((jiffies - start_jiffies) * 1000) / HZ);
 	pr_debug("return code of SCLP (ET7) FTP Service is 0x%02x, with %lld/%lld bytes\n",
 		 sclp_ftp_ldflg, sclp_ftp_length, sclp_ftp_fsize);
 #endif

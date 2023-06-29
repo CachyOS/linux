@@ -1326,7 +1326,7 @@ static int prism2_hw_init(struct net_device *dev, int initial)
 	}
 	local->no_pri = 0;
 	printk(KERN_DEBUG "prism2_hw_init: initialized in %lu ms\n",
-	       (jiffies - start) * 1000 / HZ);
+	       ((jiffies - start) * 1000) / HZ);
 	HFA384X_OUTW(HFA384X_EV_CMD, HFA384X_EVACK_OFF);
 	return 0;
 }
