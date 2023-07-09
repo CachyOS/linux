@@ -334,6 +334,32 @@ static void __drm_ctm_to_dc_matrix(const struct drm_color_ctm *ctm,
 }
 
 /**
+ * __drm_ctm2_to_dc_matrix - converts a DRM CTM2 to a DC CSC float matrix
+ * @ctm: DRM color transformation matrix
+ * @matrix: DC CSC float matrix
+ *
+ * The matrix needs to be a 3x4 (12 entry) matrix.
+ */
+static void __drm_ctm2_to_dc_matrix(const struct drm_color_ctm2 *ctm,
+				   struct fixed31_32 *matrix)
+{
+	int i;
+
+	/*
+	 * DRM gives a 3x3 matrix, but DC wants 3x4. Assuming we're operating
+	 * with homogeneous coordinates, augment the matrix with 0's.
+	 *
+	 * The format provided is S31.32, using signed-magnitude representation.
+	 * Our fixed31_32 is also S31.32, but is using 2's complement. We have
+	 * to convert from signed-magnitude to 2's complement.
+	 */
+	for (i = 0; i < 12; i++) {
+		/* gamut_remap_matrix[i] = ctm[i - floor(i/4)] */
+		matrix[i] = dc_fixpt_from_s3132(ctm->matrix[i]);
+	}
+}
+
+/**
  * __set_legacy_tf - Calculates the legacy transfer function
  * @func: transfer function
  * @lut: lookup table that defines the color space
@@ -1065,7 +1091,7 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
 {
 	struct amdgpu_device *adev = drm_to_adev(crtc->base.state->dev);
 	struct dm_plane_state *dm_plane_state = to_dm_plane_state(plane_state);
-	struct drm_color_ctm *ctm = NULL;
+	struct drm_color_ctm2 *ctm = NULL;
 	struct dc_color_caps *color_caps = NULL;
 	bool has_crtc_cm_degamma;
 	int ret;
@@ -1119,7 +1145,7 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
 
 	/* Setup CRTC CTM. */
 	if (dm_plane_state->ctm) {
-		ctm = (struct drm_color_ctm *)dm_plane_state->ctm->data;
+		ctm = (struct drm_color_ctm2 *)dm_plane_state->ctm->data;
 
 		/*
 		 * So far, if we have both plane and CRTC CTM, plane CTM takes
@@ -1130,7 +1156,7 @@ int amdgpu_dm_update_plane_color_mgmt(struct dm_crtc_state *crtc,
 		 * provide support for both DPP and MPC matrix at the same
 		 * time.
 		 */
-		__drm_ctm_to_dc_matrix(ctm, dc_plane_state->gamut_remap_matrix.matrix);
+		__drm_ctm2_to_dc_matrix(ctm, dc_plane_state->gamut_remap_matrix.matrix);
 
 		dc_plane_state->gamut_remap_matrix.enable_remap = true;
 		dc_plane_state->input_csc_color_matrix.enable_adjustment = false;
