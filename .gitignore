@@ -65,7 +65,6 @@ modules.order
 /vmlinux
 /vmlinux.32
 /vmlinux.map
-/vmlinux.relocs
 /vmlinux.symvers
 /vmlinux-gdb.py
 /vmlinuz
