@@ -4982,7 +4982,9 @@ static int fill_dc_plane_attributes(struct amdgpu_device *adev,
 	 * Always set input transfer function, since plane state is refreshed
 	 * every time.
 	 */
-	ret = amdgpu_dm_update_plane_color_mgmt(dm_crtc_state, dc_plane_state);
+	ret = amdgpu_dm_update_plane_color_mgmt(dm_crtc_state,
+						plane_state,
+						dc_plane_state);
 	if (ret)
 		return ret;
 
@@ -7926,6 +7928,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 			bundle->surface_updates[planes_count].gamma = dc_plane->gamma_correction;
 			bundle->surface_updates[planes_count].in_transfer_func = dc_plane->in_transfer_func;
 			bundle->surface_updates[planes_count].gamut_remap_matrix = &dc_plane->gamut_remap_matrix;
+			bundle->surface_updates[planes_count].hdr_mult = dc_plane->hdr_mult;
+			bundle->surface_updates[planes_count].func_shaper = dc_plane->in_shaper_func;
+			bundle->surface_updates[planes_count].lut3d_func = dc_plane->lut3d_func;
+			bundle->surface_updates[planes_count].blend_tf = dc_plane->blend_tf;
 		}
 
 		amdgpu_dm_plane_fill_dc_scaling_info(dm->adev, new_plane_state,
@@ -8134,6 +8140,10 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 				&acrtc_state->stream->csc_color_matrix;
 			bundle->stream_update.out_transfer_func =
 				acrtc_state->stream->out_transfer_func;
+			bundle->stream_update.lut3d_func =
+				(struct dc_3dlut *) acrtc_state->stream->lut3d_func;
+			bundle->stream_update.func_shaper =
+				(struct dc_transfer_func *) acrtc_state->stream->func_shaper;
 		}
 
 		acrtc_state->stream->abm_level = acrtc_state->abm_level;
@@ -9319,7 +9329,12 @@ skip_modeset:
 	 */
 	if (dm_new_crtc_state->base.color_mgmt_changed ||
 	    drm_atomic_crtc_needs_modeset(new_crtc_state)) {
-		ret = amdgpu_dm_update_crtc_color_mgmt(dm_new_crtc_state);
+		if (!dm_state) {
+			ret = dm_atomic_get_state(state, &dm_state);
+			if (ret)
+				goto fail;
+		}
+		ret = amdgpu_dm_update_crtc_color_mgmt(dm_new_crtc_state, dm_state->context);
 		if (ret)
 			goto fail;
 	}
@@ -9373,6 +9388,9 @@ static bool should_reset_plane(struct drm_atomic_state *state,
 		return true;
 
 	if (drm_atomic_crtc_needs_modeset(new_crtc_state))
+		return true;
+
+	if (new_plane_state->color_mgmt_changed)
 		return true;
 
 	/*
@@ -9880,6 +9898,12 @@ static int amdgpu_dm_atomic_check(struct drm_device *dev,
 		ret = amdgpu_dm_verify_lut_sizes(new_crtc_state);
 		if (ret) {
 			DRM_DEBUG_DRIVER("amdgpu_dm_verify_lut_sizes() failed\n");
+			goto fail;
+		}
+
+		ret = amdgpu_dm_verify_lut3d_size(adev, new_crtc_state);
+		if (ret) {
+			drm_dbg_driver(dev, "amdgpu_dm_verify_lut_sizes() failed\n");
 			goto fail;
 		}
 
