@@ -496,9 +496,6 @@ static void mt_feature_mapping(struct hid_device *hdev,
 		if (!td->maxcontacts &&
 		    field->logical_maximum <= MT_MAX_MAXCONTACT)
 			td->maxcontacts = field->logical_maximum;
-		if (td->mtclass.maxcontacts)
-			/* check if the maxcontacts is given by the class */
-			td->maxcontacts = td->mtclass.maxcontacts;
 
 		break;
 	case HID_DG_BUTTONTYPE:
@@ -1314,6 +1311,10 @@ static int mt_touch_input_configured(struct hid_device *hdev,
 	struct mt_class *cls = &td->mtclass;
 	struct input_dev *input = hi->input;
 	int ret;
+
+	/* check if the maxcontacts is given by the class */
+	if (cls->maxcontacts)
+		td->maxcontacts = cls->maxcontacts;
 
 	if (!td->maxcontacts)
 		td->maxcontacts = MT_DEFAULT_MAXCONTACT;
