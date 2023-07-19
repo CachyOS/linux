@@ -146,6 +146,7 @@ struct mt_class {
 	__s32 sn_height;	/* Signal/noise ratio for height events */
 	__s32 sn_pressure;	/* Signal/noise ratio for pressure events */
 	__u8 maxcontacts;
+	bool is_direct;	/* true for touchscreens */
 	bool is_indirect;	/* true for touchpads */
 	bool export_all_inputs;	/* do not ignore mouse, keyboards, etc... */
 };
@@ -569,13 +570,13 @@ static struct mt_application *mt_allocate_application(struct mt_device *td,
 	mt_application->application = application;
 	INIT_LIST_HEAD(&mt_application->mt_usages);
 
-	if (application == HID_DG_TOUCHSCREEN)
+	if (application == HID_DG_TOUCHSCREEN && !td->mtclass.is_indirect)
 		mt_application->mt_flags |= INPUT_MT_DIRECT;
 
 	/*
 	 * Model touchscreens providing buttons as touchpads.
 	 */
-	if (application == HID_DG_TOUCHPAD) {
+	if (application == HID_DG_TOUCHPAD && !td->mtclass.is_direct) {
 		mt_application->mt_flags |= INPUT_MT_POINTER;
 		td->inputmode_value = MT_INPUTMODE_TOUCHPAD;
 	}
@@ -1322,6 +1323,9 @@ static int mt_touch_input_configured(struct hid_device *hdev,
 	mt_post_parse(td, app);
 	if (td->serial_maybe)
 		mt_post_parse_default_settings(td, app);
+
+	if (cls->is_direct)
+		app->mt_flags |= INPUT_MT_DIRECT;
 
 	if (cls->is_indirect)
 		app->mt_flags |= INPUT_MT_POINTER;
