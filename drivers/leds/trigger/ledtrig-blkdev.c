@@ -3,7 +3,7 @@
 /*
  *	Block device LED trigger
  *
- *	Copyright 2021-2022 Ian Pilcher <arequipeno@gmail.com>
+ *	Copyright 2021-2023 Ian Pilcher <arequipeno@gmail.com>
  */
 
 #include <linux/blkdev.h>
@@ -46,9 +46,6 @@
  * again (milliseconds)
  */
 #define BLKDEV_TRIG_CHECK_RETRY	5
-
-/* Mode argument for calls to blkdev_get_by_path() and blkdev_put() */
-#define BLKDEV_TRIG_FMODE	0
 
 /**
  * struct blkdev_trig_bdev - Trigger-specific data about a block device.
@@ -539,7 +536,7 @@ static struct block_device *blkdev_trig_get_bdev(const char *path, size_t len)
 	if (buf == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	bdev = blkdev_get_by_path(strim(buf), BLKDEV_TRIG_FMODE, THIS_MODULE);
+	bdev = blkdev_get_by_path(strim(buf), 0, NULL, NULL);
 	kfree(buf);
 	return bdev;
 }
@@ -603,7 +600,7 @@ exit_free_btb:
 	if (err)
 		devres_free(btb);
 exit_put_bdev:
-	blkdev_put(bdev, BLKDEV_TRIG_FMODE);
+	blkdev_put(bdev, NULL);
 	return err ? ERR_PTR(err) : btb;
 }
 
@@ -786,7 +783,7 @@ static ssize_t unlink_dev_by_path_store(struct device *dev,
 exit_unlock:
 	mutex_unlock(&blkdev_trig_mutex);
 exit_put_bdev:
-	blkdev_put(bdev, BLKDEV_TRIG_FMODE);
+	blkdev_put(bdev, NULL);
 	return err ? : count;
 }
 
