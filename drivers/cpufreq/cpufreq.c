@@ -2675,6 +2675,19 @@ void cpufreq_update_limits(unsigned int cpu)
 }
 EXPORT_SYMBOL_GPL(cpufreq_update_limits);
 
+/**
+ * cpufreq_update_highest_perf - Update highest performance for a given CPU.
+ * @cpu: CPU to update the highest performance for.
+ *
+ * Invoke the driver's ->update_highest_perf callback if present
+ */
+void cpufreq_update_highest_perf(unsigned int cpu)
+{
+	if (cpufreq_driver->update_highest_perf)
+		cpufreq_driver->update_highest_perf(cpu);
+}
+EXPORT_SYMBOL_GPL(cpufreq_update_highest_perf);
+
 /*********************************************************************
  *               BOOST						     *
  *********************************************************************/
@@ -2828,7 +2841,8 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 	     (driver_data->setpolicy && (driver_data->target_index ||
 		    driver_data->target)) ||
 	     (!driver_data->get_intermediate != !driver_data->target_intermediate) ||
-	     (!driver_data->online != !driver_data->offline))
+	     (!driver_data->online != !driver_data->offline) ||
+		 (driver_data->adjust_perf && !driver_data->fast_switch))
 		return -EINVAL;
 
 	pr_debug("trying to register driver %s\n", driver_data->name);
