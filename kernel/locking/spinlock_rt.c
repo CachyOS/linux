@@ -37,6 +37,8 @@
 
 static __always_inline void rtlock_lock(struct rt_mutex_base *rtm)
 {
+	lockdep_assert(!current->pi_blocked_on);
+
 	if (unlikely(!rt_mutex_cmpxchg_acquire(rtm, NULL, current)))
 		rtlock_slowlock(rtm);
 }
@@ -158,6 +160,9 @@ rwbase_rtmutex_lock_state(struct rt_mutex_base *rtm, unsigned int state)
 		rtlock_slowlock(rtm);
 	return 0;
 }
+
+static __always_inline void rwbase_sched_submit_work(void) { }
+static __always_inline void rwbase_sched_resume_work(void) { }
 
 static __always_inline int
 rwbase_rtmutex_slowlock_locked(struct rt_mutex_base *rtm, unsigned int state)

@@ -606,8 +606,10 @@ static int brcmuart_startup(struct uart_port *port)
 	 * Disable the Receive Data Interrupt because the DMA engine
 	 * will handle this.
 	 */
+	spin_lock_irq(&port->lock);
 	up->ier &= ~UART_IER_RDI;
-	serial_port_out(port, UART_IER, up->ier);
+	serial8250_set_IER(up, up->ier);
+	spin_unlock_irq(&port->lock);
 
 	priv->tx_running = false;
 	priv->dma.rx_dma = NULL;
@@ -787,6 +789,12 @@ static int brcmuart_handle_irq(struct uart_port *p)
 		spin_lock_irqsave(&p->lock, flags);
 		status = serial_port_in(p, UART_LSR);
 		if ((status & UART_LSR_DR) == 0) {
+			bool is_console;
+
+			is_console = serial8250_is_console(p);
+
+			if (is_console)
+				serial8250_enter_unsafe(up);
 
 			ier = serial_port_in(p, UART_IER);
 			/*
@@ -806,6 +814,9 @@ static int brcmuart_handle_irq(struct uart_port *p)
 			} else {
 				serial_port_in(p, UART_RX);
 			}
+
+			if (is_console)
+				serial8250_exit_unsafe(up);
 
 			handled = 1;
 		}
@@ -844,12 +855,22 @@ static enum hrtimer_restart brcmuart_hrtimer_func(struct hrtimer *t)
 	/* re-enable receive unless upper layer has disabled it */
 	if ((up->ier & (UART_IER_RLSI | UART_IER_RDI)) ==
 	    (UART_IER_RLSI | UART_IER_RDI)) {
+		bool is_console;
+
+		is_console = serial8250_is_console(p);
+
+		if (is_console)
+			serial8250_enter_unsafe(up);
+
 		status = serial_port_in(p, UART_IER);
 		status |= (UART_IER_RLSI | UART_IER_RDI);
 		serial_port_out(p, UART_IER, status);
 		status = serial_port_in(p, UART_MCR);
 		status |= UART_MCR_RTS;
 		serial_port_out(p, UART_MCR, status);
+
+		if (is_console)
+			serial8250_exit_unsafe(up);
 	}
 	spin_unlock_irqrestore(&p->lock, flags);
 	return HRTIMER_NORESTART;

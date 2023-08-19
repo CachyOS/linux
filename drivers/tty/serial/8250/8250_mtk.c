@@ -222,12 +222,38 @@ static void mtk8250_shutdown(struct uart_port *port)
 
 static void mtk8250_disable_intrs(struct uart_8250_port *up, int mask)
 {
-	serial_out(up, UART_IER, serial_in(up, UART_IER) & (~mask));
+	struct uart_port *port = &up->port;
+	bool is_console;
+	int ier;
+
+	is_console = serial8250_is_console(port);
+
+	if (is_console)
+		serial8250_enter_unsafe(up);
+
+	ier = serial_in(up, UART_IER);
+	serial_out(up, UART_IER, ier & (~mask));
+
+	if (is_console)
+		serial8250_exit_unsafe(up);
 }
 
 static void mtk8250_enable_intrs(struct uart_8250_port *up, int mask)
 {
-	serial_out(up, UART_IER, serial_in(up, UART_IER) | mask);
+	struct uart_port *port = &up->port;
+	bool is_console;
+	int ier;
+
+	is_console = serial8250_is_console(port);
+
+	if (is_console)
+		serial8250_enter_unsafe(up);
+
+	ier = serial_in(up, UART_IER);
+	serial_out(up, UART_IER, ier | mask);
+
+	if (is_console)
+		serial8250_exit_unsafe(up);
 }
 
 static void mtk8250_set_flow_ctrl(struct uart_8250_port *up, int mode)
