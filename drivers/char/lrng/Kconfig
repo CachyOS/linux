@@ -424,6 +424,63 @@ config LRNG_JENT
 	  time or at runtime with the lrng_base.jitterrng configuration
 	  variable.
 
+choice
+	prompt "Jitter RNG Async Block Number"
+	default LRNG_JENT_ENTROPY_BLOCKS_NO_128
+	depends on LRNG_JENT
+	help
+	  Select the number of Jitter RNG entropy blocks the asynchronous
+	  collection operation will fill. A caller for Jitter RNG entropy
+	  will be given data from the pre-filled blocks if available to
+	  prevent the Jitter RNG from utilizing the CPU too much in a
+	  possible hot code path.
+
+	  The number specifies the number of 256/384 bit blocks that will
+	  be held in memory and asynchronously filled with Jitter RNG data.
+
+	  The asynchronous entropy collection can also be disabled at
+	  kernel startup time when setting the command line option of
+	  lrng_es_jent.jent_async_enabled=0. Also, setting this option at
+	  runtime is allowed via the corresponding SysFS interface. This
+	  option is only available with the options SysFS and
+	  CONFIG_LRNG_RUNTIME_ES_CONFIG enabled.
+
+	config LRNG_JENT_ENTROPY_BLOCKS_DISABLED
+		bool "Async collection disabled"
+
+	# Any block number is allowed, provided it is a power of 2 and
+	# equal or larger than 4 (4 is due to the division in
+	# lrng_jent_async_get when deciding to wake up the monitor).
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_32
+		bool "32 blocks"
+
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_64
+		bool "64 blocks"
+
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_128
+		bool "128 blocks (default)"
+
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_256
+		bool "256 blocks"
+
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_512
+		bool "512 blocks"
+
+	config LRNG_JENT_ENTROPY_BLOCKS_NO_1024
+		bool "1024 blocks"
+
+endchoice
+
+config LRNG_JENT_ENTROPY_BLOCKS
+	int
+	default 0 if LRNG_JENT_ENTROPY_BLOCKS_DISABLED
+	default 32 if LRNG_JENT_ENTROPY_BLOCKS_NO_32
+	default 64 if LRNG_JENT_ENTROPY_BLOCKS_NO_64
+	default 128 if LRNG_JENT_ENTROPY_BLOCKS_NO_128
+	default 256 if LRNG_JENT_ENTROPY_BLOCKS_NO_256
+	default 512 if LRNG_JENT_ENTROPY_BLOCKS_NO_512
+	default 1024 if LRNG_JENT_ENTROPY_BLOCKS_NO_1024
+
 config LRNG_JENT_ENTROPY_RATE
 	int "Jitter RNG Entropy Source Entropy Rate"
 	depends on LRNG_JENT
