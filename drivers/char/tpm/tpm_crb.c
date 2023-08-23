@@ -472,7 +472,8 @@ static int crb_check_flags(struct tpm_chip *chip)
 	if (ret)
 		return ret;
 
-	if (tpm2_get_tpm_pt(chip, TPM2_PT_MANUFACTURER, &val, NULL))
+	ret = tpm2_get_tpm_pt(chip, TPM2_PT_MANUFACTURER, &val, NULL);
+	if (ret)
 		goto release;
 
 	if (val == 0x414D4400U /* AMD */)
