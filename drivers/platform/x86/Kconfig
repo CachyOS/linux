@@ -642,6 +642,16 @@ config THINKPAD_LMI
 	  To compile this driver as a module, choose M here: the module will
 	  be called think-lmi.
 
+config LEGION_LAPTOP
+	tristate "Lenovo Legion Laptop Extras"
+	depends on ACPI
+	depends on ACPI_WMI || ACPI_WMI = n
+	depends on HWMON || HWMON = n
+	select ACPI_PLATFORM_PROFILE
+	help
+	  This is a driver for Lenovo Legion laptops and contains drivers for
+	  hotkey, fan control, and power mode.
+
 source "drivers/platform/x86/intel/Kconfig"
 
 config MSI_EC
@@ -1092,6 +1102,20 @@ config WINMATE_FM07_KEYS
 	  Winmate FM07 and FM07P in-vehicle computers have a row of five
 	  buttons below the display. This module adds an input device
 	  that delivers key events when these buttons are pressed.
+
+config STEAMDECK
+	tristate "Valve Steam Deck platform driver"
+	depends on X86_64
+	help
+	  Driver exposing various bits and pieces of functionality
+	  provided by Steam Deck specific VLV0100 device presented by
+	  EC firmware. This includes but not limited to:
+	     - CPU/device's fan control
+	     - Read-only access to DDIC registers
+	     - Battery tempreature measurements
+	     - Various display related control knobs
+	     - USB Type-C connector event notification
+	  Say N unless you are running on a Steam Deck.
 
 endif # X86_PLATFORM_DEVICES
 
