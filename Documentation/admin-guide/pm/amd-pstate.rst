@@ -391,9 +391,8 @@ Default enable ``AMD Pstate Preferred Core``.
 
 ``amd_prefcore=disable``
 
-If ``amd_prefcore=disable`` is passed to kernel command line option
-then disable ``AMD Pstate Preferred Core`` if platform can support
-the Preferred Core feature.
+``AMD Pstate Preferred Core`` will be enabled if the underlying platform
+supports it. It can be disabled by kernerl parameter: ``amd_prefcore=disable``.
 
 User Space Interface in ``sysfs`` - General
 ===========================================
