@@ -159,8 +159,8 @@ lrng_drng_switch(struct lrng_drng *drng_store, const void *cb, int node)
  * callbacks. The caller must hold the lrng_crypto_cb_update lock.
  */
 static int lrng_switch(const void *cb,
-		       int(*switcher)(struct lrng_drng *drng_store,
-				      const void *cb, int node))
+		       int (*switcher)(struct lrng_drng *drng_store,
+				       const void *cb, int node))
 {
 	struct lrng_drng **lrng_drng = lrng_drng_instances();
 	struct lrng_drng *lrng_drng_init = lrng_drng_init_instance();

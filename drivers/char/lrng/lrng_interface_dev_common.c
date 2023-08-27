@@ -86,11 +86,11 @@ ssize_t lrng_read_seed(char __user *buf, size_t nbytes, unsigned int flags)
 
 	memset(t, 0, sizeof(t));
 	ret = lrng_get_seed(t, min_t(size_t, nbytes, sizeof(t)), flags);
-	if (ret == -EMSGSIZE && copy_to_user(buf, t, sizeof(u64))) {
+	if (ret == -EMSGSIZE && copy_to_user(buf, t, sizeof(u64)))
 		ret = -EFAULT;
-	} else if (ret > 0 && copy_to_user(buf, t, ret)) {
+	else if (ret > 0 && copy_to_user(buf, t, ret))
 		ret = -EFAULT;
-	}
+
 	memzero_explicit(t, sizeof(t));
 
 	return ret;

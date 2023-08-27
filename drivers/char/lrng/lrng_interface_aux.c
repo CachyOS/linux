@@ -139,6 +139,7 @@ EXPORT_SYMBOL(get_random_u8);
 u32 __get_random_u32_below(u32 ceil)
 {
 	u64 mult = (u64)ceil * get_random_u32();
+
 	if (unlikely((u32)mult < ceil)) {
 		u32 bound = -ceil % ceil;
 		while (unlikely((u32)mult < bound))
@@ -168,7 +169,7 @@ int random_prepare_cpu(unsigned int cpu)
 
 int random_online_cpu(unsigned int cpu)
 {
-        return 0;
+	return 0;
 }
 #endif
 

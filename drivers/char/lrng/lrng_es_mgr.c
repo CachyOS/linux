@@ -234,7 +234,7 @@ bool lrng_fully_seeded(bool fully_seeded, u32 collected_entropy,
 
 		for_each_lrng_es(i) {
 			result += (eb ? eb->e_bits[i] :
-				        lrng_es[i]->curr_entropy(ent_thresh)) >=
+					lrng_es[i]->curr_entropy(ent_thresh)) >=
 				  LRNG_AIS2031_NPTRNG_MIN_ENTROPY;
 		}
 

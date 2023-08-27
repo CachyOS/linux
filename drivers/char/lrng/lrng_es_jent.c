@@ -33,7 +33,7 @@ MODULE_PARM_DESC(jent_entropy,
 #endif
 
 static bool lrng_jent_initialized = false;
-static struct crypto_rng* jent;
+static struct crypto_rng *jent;
 
 #if (CONFIG_LRNG_JENT_ENTROPY_BLOCKS != 0)
 
@@ -82,7 +82,7 @@ static u32 lrng_jent_poolsize(void)
 	return lrng_jent_entropylevel(lrng_security_strength());
 }
 
-static void __lrng_jent_get(u8* e, u32* e_bits, u32 requested_bits)
+static void __lrng_jent_get(u8 *e, u32 *e_bits, u32 requested_bits)
 {
 	int ret;
 	u32 ent_bits = lrng_jent_entropylevel(requested_bits);
@@ -117,7 +117,7 @@ err:
  * @eb: entropy buffer to store entropy
  * @requested_bits: requested entropy in bits
  */
-static void lrng_jent_get(struct entropy_buf* eb, u32 requested_bits,
+static void lrng_jent_get(struct entropy_buf *eb, u32 requested_bits,
 			  bool __unused)
 {
 	__lrng_jent_get(eb->e[lrng_ext_es_jitter],
@@ -127,7 +127,7 @@ static void lrng_jent_get(struct entropy_buf* eb, u32 requested_bits,
 #if (CONFIG_LRNG_JENT_ENTROPY_BLOCKS != 0)
 
 /* Fill the Jitter RNG buffer with random data. */
-static void lrng_jent_async_monitor(struct work_struct* __unused)
+static void lrng_jent_async_monitor(struct work_struct *__unused)
 {
 	unsigned int i, requested_bits = lrng_get_seed_entropy_osr(true);
 
@@ -169,7 +169,7 @@ static void lrng_jent_async_fini(void)
 }
 
 /* Get Jitter RNG data from the buffer */
-static void lrng_jent_async_get(struct entropy_buf* eb, uint32_t requested_bits,
+static void lrng_jent_async_get(struct entropy_buf *eb, uint32_t requested_bits,
 				bool __unused)
 {
 	static atomic_t idx = ATOMIC_INIT(-1);
@@ -218,7 +218,7 @@ static void lrng_jent_async_get(struct entropy_buf* eb, uint32_t requested_bits,
 		lrng_jent_async_monitor_schedule();
 }
 
-static void lrng_jent_get_check(struct entropy_buf* eb,
+static void lrng_jent_get_check(struct entropy_buf *eb,
 				uint32_t requested_bits, bool __unused)
 {
 	if (lrng_es_jent_async_enabled &&
@@ -248,8 +248,8 @@ static void lrng_jent_async_init_complete(void)
 
 #if (defined(CONFIG_SYSFS) && defined(CONFIG_LRNG_RUNTIME_ES_CONFIG))
 /* Initialize or deinitialize the Jitter RNG async collection */
-static int lrng_jent_async_sysfs_set(const char* val,
-				     const struct kernel_param* kp)
+static int lrng_jent_async_sysfs_set(const char *val,
+				     const struct kernel_param *kp)
 {
 	static const char val_dflt[] = "1";
 	int ret;
@@ -292,7 +292,7 @@ MODULE_PARM_DESC(lrng_es_jent_async_enabled,
 
 #else /* CONFIG_LRNG_JENT_ENTROPY_BLOCKS */
 
-static void lrng_jent_get_check(struct entropy_buf* eb,
+static void lrng_jent_get_check(struct entropy_buf *eb,
 				uint32_t requested_bits, bool __unused)
 {
 	lrng_jent_get(eb, requested_bits, __unused);
@@ -302,7 +302,7 @@ static inline void __init lrng_jent_async_init_complete(void) { }
 
 #endif /* CONFIG_LRNG_JENT_ENTROPY_BLOCKS */
 
-static void lrng_jent_es_state(unsigned char* buf, size_t buflen)
+static void lrng_jent_es_state(unsigned char *buf, size_t buflen)
 {
 	snprintf(buf, buflen,
 		 " Available entropy: %u\n"

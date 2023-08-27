@@ -720,7 +720,7 @@ static void lrng_irq_es_state(unsigned char *buf, size_t buflen)
 }
 
 struct lrng_es_cb lrng_es_irq = {
-	.name 			= "IRQ",
+	.name			= "IRQ",
 	.get_ent		= lrng_irq_pool_hash,
 	.curr_entropy		= lrng_irq_avail_entropy,
 	.max_entropy		= lrng_irq_avail_pool_size,

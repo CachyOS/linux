@@ -89,7 +89,7 @@ static bool force_seeding = true;
 #ifdef CONFIG_LRNG_RUNTIME_FORCE_SEEDING_DISABLE
 module_param(force_seeding, bool, 0444);
 MODULE_PARM_DESC(force_seeding,
-		 "Allow disabling of the forced seeding when insufficient entropy is availabe\n");
+		 "Allow disabling of the forced seeding when insufficient entropy is available\n");
 #endif
 
 /* Wait queue to wait until the LRNG is initialized - can freely be used */
