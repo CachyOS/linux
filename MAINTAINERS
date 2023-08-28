@@ -12088,6 +12088,13 @@ S:	Supported
 B:	mailto:linux-next@vger.kernel.org and the appropriate development tree
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/
 
+LINUX RANDOM NUMBER GENERATOR (LRNG) DRIVER
+M:	Stephan Mueller <smueller@chronox.de>
+S:	Maintained
+W:	https://www.chronox.de/lrng.html
+F:	drivers/char/lrng/
+F:	include/linux/lrng.h
+
 LIS3LV02D ACCELEROMETER DRIVER
 M:	Eric Piel <eric.piel@tremplin-utc.net>
 S:	Maintained
