@@ -364,10 +364,10 @@ maximum frequency. To find the best process scheduling policy for a given
 scenario, OS needs to know the core ordering informed by the platform through
 highest performance capability register of the CPPC interface.
 
-``AMD Pstate Preferred Core`` enable the scheduler to favor scheduling on cores
-can be get a higher frequency with lower voltage under preferred core.
-And it has the ability to dynamically change the preferred core based on the
-workload and platform conditions and accounting for thermals and aging.
+``AMD Pstate Preferred Core`` enables the scheduler to prefer scheduling on
+cores that can achieve a higher frequency with lower voltage. The preferred
+core rankings can dynamically change based on the workload, platform conditions,
+thermals and ageing.
 
 The priority metric will be initialized by the AMD Pstate driver. The AMD Pstate
 driver will also determine whether or not ``AMD Pstate Preferred Core`` is
@@ -391,8 +391,9 @@ Default enable ``AMD Pstate Preferred Core``.
 
 ``amd_prefcore=disable``
 
-``AMD Pstate Preferred Core`` will be enabled if the underlying platform
-supports it. It can be disabled by kernerl parameter: ``amd_prefcore=disable``.
+for systems that support ``AMD Pstate Preferred Core``, the core rankings will
+always be advertised by the platform. But OS can choose to ignore that via the
+kernel parameter ``amd_prefcore=disable``.
 
 User Space Interface in ``sysfs`` - General
 ===========================================
