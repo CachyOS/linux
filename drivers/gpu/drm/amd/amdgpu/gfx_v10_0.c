@@ -3685,6 +3685,7 @@ static uint64_t gfx_v10_0_get_gpu_clock_counter(struct amdgpu_device *adev);
 static void gfx_v10_0_select_se_sh(struct amdgpu_device *adev, u32 se_num,
 				   u32 sh_num, u32 instance, int xcc_id);
 static u32 gfx_v10_0_get_wgp_active_bitmap_per_sh(struct amdgpu_device *adev);
+static int gfx_v10_0_adev_wait_for_idle(struct amdgpu_device *adev);
 
 static int gfx_v10_0_rlc_backdoor_autoload_buffer_init(struct amdgpu_device *adev);
 static void gfx_v10_0_rlc_backdoor_autoload_buffer_fini(struct amdgpu_device *adev);
@@ -6370,20 +6371,13 @@ static int gfx_v10_0_cp_gfx_load_microcode(struct amdgpu_device *adev)
 	return 0;
 }
 
-static int gfx_v10_0_cp_gfx_start(struct amdgpu_device *adev)
+static int gfx_v10_csib_submit(struct amdgpu_device *adev)
 {
 	struct amdgpu_ring *ring;
 	const struct cs_section_def *sect = NULL;
 	const struct cs_extent_def *ext = NULL;
 	int r, i;
 	int ctx_reg_offset;
-
-	/* init the CP */
-	WREG32_SOC15(GC, 0, mmCP_MAX_CONTEXT,
-		     adev->gfx.config.max_hw_contexts - 1);
-	WREG32_SOC15(GC, 0, mmCP_DEVICE_ID, 1);
-
-	gfx_v10_0_cp_gfx_enable(adev, true);
 
 	ring = &adev->gfx.gfx_ring[0];
 	r = amdgpu_ring_alloc(ring, gfx_v10_0_get_csb_size(adev) + 4);
@@ -6447,6 +6441,25 @@ static int gfx_v10_0_cp_gfx_start(struct amdgpu_device *adev)
 
 		amdgpu_ring_commit(ring);
 	}
+
+	gfx_v10_0_adev_wait_for_idle(adev);
+	adev->csib_initialized = true;
+
+	return 0;
+};
+
+static int gfx_v10_0_cp_gfx_start(struct amdgpu_device *adev)
+{
+	/* init the CP */
+	WREG32_SOC15(GC, 0, mmCP_MAX_CONTEXT,
+		     adev->gfx.config.max_hw_contexts - 1);
+	WREG32_SOC15(GC, 0, mmCP_DEVICE_ID, 1);
+
+	gfx_v10_0_cp_gfx_enable(adev, true);
+
+	if (!adev->csib_initialized)
+		gfx_v10_csib_submit(adev);
+
 	return 0;
 }
 
@@ -7621,11 +7634,10 @@ static bool gfx_v10_0_is_idle(struct amdgpu_ip_block *ip_block)
 		return true;
 }
 
-static int gfx_v10_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
+static int gfx_v10_0_adev_wait_for_idle(struct amdgpu_device *adev)
 {
 	unsigned int i;
 	u32 tmp;
-	struct amdgpu_device *adev = ip_block->adev;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
 		/* read MC_STATUS */
@@ -7637,6 +7649,13 @@ static int gfx_v10_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
 		udelay(1);
 	}
 	return -ETIMEDOUT;
+}
+
+static int gfx_v10_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+
+	return gfx_v10_0_adev_wait_for_idle(adev);
 }
 
 static int gfx_v10_0_soft_reset(struct amdgpu_ip_block *ip_block)
