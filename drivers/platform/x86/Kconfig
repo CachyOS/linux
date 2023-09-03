@@ -643,6 +643,16 @@ config THINKPAD_LMI
 	  To compile this driver as a module, choose M here: the module will
 	  be called think-lmi.
 
+config LEGION_LAPTOP
+	tristate "Lenovo Legion Laptop Extras"
+	depends on ACPI
+	depends on ACPI_WMI || ACPI_WMI = n
+	depends on HWMON || HWMON = n
+	select ACPI_PLATFORM_PROFILE
+	help
+	  This is a driver for Lenovo Legion laptops and contains drivers for
+	  hotkey, fan control, and power mode.
+
 source "drivers/platform/x86/intel/Kconfig"
 
 config MSI_EC
