@@ -68,6 +68,9 @@ static struct cpufreq_driver amd_pstate_epp_driver;
 static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool cppc_enabled;
 
+/*HW preferred Core featue is supported*/
+static bool hw_prefcore = true;
+
 /*Preferred Core featue is supported*/
 static bool prefcore = true;
 
@@ -315,7 +318,7 @@ static int pstate_init_perf(struct amd_cpudata *cpudata)
 	WRITE_ONCE(cpudata->nominal_perf, AMD_CPPC_NOMINAL_PERF(cap1));
 	WRITE_ONCE(cpudata->lowest_nonlinear_perf, AMD_CPPC_LOWNONLIN_PERF(cap1));
 	WRITE_ONCE(cpudata->lowest_perf, AMD_CPPC_LOWEST_PERF(cap1));
-	WRITE_ONCE(cpudata->prefcore_highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
+	WRITE_ONCE(cpudata->cppc_highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
 
 	return 0;
 }
@@ -337,7 +340,7 @@ static int cppc_init_perf(struct amd_cpudata *cpudata)
 	WRITE_ONCE(cpudata->lowest_nonlinear_perf,
 		   cppc_perf.lowest_nonlinear_perf);
 	WRITE_ONCE(cpudata->lowest_perf, cppc_perf.lowest_perf);
-	WRITE_ONCE(cpudata->prefcore_highest_perf, cppc_perf.highest_perf);
+	WRITE_ONCE(cpudata->cppc_highest_perf, cppc_perf.highest_perf);
 
 	if (cppc_state == AMD_PSTATE_ACTIVE)
 		return 0;
@@ -544,7 +547,7 @@ static void amd_pstate_adjust_perf(unsigned int cpu,
 	if (target_perf < capacity)
 		des_perf = DIV_ROUND_UP(cap_perf * target_perf, capacity);
 
-	min_perf = READ_ONCE(cpudata->highest_perf);
+	min_perf = READ_ONCE(cpudata->lowest_perf);
 	if (_min_perf < capacity)
 		min_perf = DIV_ROUND_UP(cap_perf * _min_perf, capacity);
 
@@ -681,7 +684,7 @@ static void amd_perf_ctl_reset(unsigned int cpu)
 }
 
 /*
- * Set AMD Pstate Preferred Core enable can't be done directly from cpufreq callbacks
+ * Set amd-pstate preferred core enable can't be done directly from cpufreq callbacks
  * due to locking, so queue the work for later.
  */
 static void amd_pstste_sched_prefcore_workfn(struct work_struct *work)
@@ -690,7 +693,7 @@ static void amd_pstste_sched_prefcore_workfn(struct work_struct *work)
 }
 static DECLARE_WORK(sched_prefcore_work, amd_pstste_sched_prefcore_workfn);
 
-/**
+/*
  * Get the highest performance register value.
  * @cpu: CPU from which to get highest performance.
  * @highest_perf: Return address.
@@ -699,20 +702,20 @@ static DECLARE_WORK(sched_prefcore_work, amd_pstste_sched_prefcore_workfn);
  */
 static int amd_pstate_get_highest_perf(int cpu, u64 *highest_perf)
 {
-       int ret;
+	int ret;
 
-       if (boot_cpu_has(X86_FEATURE_CPPC)) {
-               u64 cap1;
+	if (boot_cpu_has(X86_FEATURE_CPPC)) {
+		u64 cap1;
 
-               ret = rdmsrl_safe_on_cpu(cpu, MSR_AMD_CPPC_CAP1, &cap1);
-               if (ret)
-                       return ret;
-               WRITE_ONCE(*highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
-       } else {
-               ret = cppc_get_highest_perf(cpu, highest_perf);
-       }
+		ret = rdmsrl_safe_on_cpu(cpu, MSR_AMD_CPPC_CAP1, &cap1);
+		if (ret)
+			return ret;
+		WRITE_ONCE(*highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
+	} else {
+		ret = cppc_get_highest_perf(cpu, highest_perf);
+	}
 
-       return (ret);
+	return (ret);
 }
 
 static void amd_pstate_init_prefcore(void)
@@ -732,6 +735,7 @@ static void amd_pstate_init_prefcore(void)
 
 		/* check if CPPC preferred core feature is enabled*/
 		if (highest_perf == AMD_PSTATE_MAX_CPPC_PERF) {
+			hw_prefcore = false;
 			prefcore = false;
 			return;
 		}
@@ -764,10 +768,10 @@ static void amd_pstate_update_highest_perf(unsigned int cpu)
 	policy = cpufreq_cpu_get(cpu);
 	cpudata = policy->driver_data;
 	cur_high = highest_perf;
-	prev_high = READ_ONCE(cpudata->prefcore_highest_perf);
+	prev_high = READ_ONCE(cpudata->cppc_highest_perf);
 
 	if (prev_high != cur_high) {
-		WRITE_ONCE(cpudata->prefcore_highest_perf, cur_high);
+		WRITE_ONCE(cpudata->cppc_highest_perf, cur_high);
 		sched_set_itmt_core_prio(cur_high, cpu);
 	}
 
@@ -938,7 +942,7 @@ static ssize_t show_amd_pstate_highest_perf(struct cpufreq_policy *policy,
 	u32 perf;
 	struct amd_cpudata *cpudata = policy->driver_data;
 
-	perf = READ_ONCE(cpudata->highest_perf);
+	perf = READ_ONCE(cpudata->cppc_highest_perf);
 
 	return sysfs_emit(buf, "%u\n", perf);
 }
@@ -1135,8 +1139,14 @@ static ssize_t status_store(struct device *a, struct device_attribute *b,
 	return ret < 0 ? ret : count;
 }
 
+static ssize_t hw_prefcore_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", hw_prefcore ? "supported" : "unsupported");
+}
+
 static ssize_t prefcore_show(struct device *dev,
-				   struct device_attribute *attr, char *buf)
+			     struct device_attribute *attr, char *buf)
 {
 	return sysfs_emit(buf, "%s\n", prefcore ? "enabled" : "disabled");
 }
@@ -1148,6 +1158,7 @@ cpufreq_freq_attr_ro(amd_pstate_highest_perf);
 cpufreq_freq_attr_rw(energy_performance_preference);
 cpufreq_freq_attr_ro(energy_performance_available_preferences);
 static DEVICE_ATTR_RW(status);
+static DEVICE_ATTR_RO(hw_prefcore);
 static DEVICE_ATTR_RO(prefcore);
 
 static struct freq_attr *amd_pstate_attr[] = {

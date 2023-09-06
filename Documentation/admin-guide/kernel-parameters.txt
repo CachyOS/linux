@@ -366,7 +366,7 @@
 	amd_prefcore=
 			[X86]
 			disable
-			  Disable AMD Pstate Preferred Core.
+			  Disable amd-pstate preferred core.
 
 	amijoy.map=	[HW,JOY] Amiga joystick support
 			Map of devices attached to JOY0DAT and JOY1DAT
