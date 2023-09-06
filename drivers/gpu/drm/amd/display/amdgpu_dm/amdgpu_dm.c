@@ -10343,6 +10343,13 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		struct dc_stream_update stream_update;
 	} *bundle;
 
+	/*
+	 * Hack: Make unconditional.
+	 * TODO: rework with flag to gate this or keep in in active period
+	 * based on userland selection.
+	 */
+	vrr_active = true;
+
 	bundle = kzalloc_obj(*bundle);
 
 	if (!bundle) {
