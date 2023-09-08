@@ -301,7 +301,7 @@ efficiency frequency management method on AMD processors.
 
 
 ``amd-pstate`` Driver Operation Modes
-=================================
+======================================
 
 ``amd_pstate`` CPPC has 3 operation modes: autonomous (active) mode,
 non-autonomous (passive) mode and guided autonomous (guided) mode.
@@ -391,7 +391,7 @@ Default enable ``amd-pstate`` preferred core.
 
 ``amd_prefcore=disable``
 
-for systems that support ``amd-pstate`` preferred core, the core rankings will
+For systems that support ``amd-pstate`` preferred core, the core rankings will
 always be advertised by the platform. But OS can choose to ignore that via the
 kernel parameter ``amd_prefcore=disable``.
 
@@ -426,18 +426,6 @@ control its functionality at the system level.  They are located in the
         these values to the sysfs file will cause the driver to switch over
         to the operation mode represented by that string - or to be
         unregistered in the "disable" case.
-
-``hw_prefcore``
-	Preferred core state of hardware: "supported" or "unsupported".
-
-	"supported"
-		The processor and power firmware support preferred core.
-
-	"unsupported"
-		The processor and power firmware don't support preferred core.
-
-
-        This attribute is read-only to check the state of hardware preferred core.
 
 ``prefcore``
 	Preferred core state of the driver: "enabled" or "disabled".
