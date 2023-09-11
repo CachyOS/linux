@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause */
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -105,3 +105,21 @@ static uint64_t ZSTD_div64(uint64_t dividend, uint32_t divisor) {
 
 #endif /* ZSTD_DEPS_IO */
 #endif /* ZSTD_DEPS_NEED_IO */
+
+/*
+ * Only requested when MSAN is enabled.
+ * Need:
+ * intptr_t
+ */
+#ifdef ZSTD_DEPS_NEED_STDINT
+#ifndef ZSTD_DEPS_STDINT
+#define ZSTD_DEPS_STDINT
+
+/*
+ * The Linux Kernel doesn't provide intptr_t, only uintptr_t, which
+ * is an unsigned long.
+ */
+typedef long intptr_t;
+
+#endif /* ZSTD_DEPS_STDINT */
+#endif /* ZSTD_DEPS_NEED_STDINT */
