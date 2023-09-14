@@ -35,6 +35,17 @@ SCHED_FEAT(GENTLE_SLEEPER, true)
  * recommended.
  */
 SCHED_FEAT(EVDF, false)
+/*
+ * Delay dequeueing tasks until they get selected or woken.
+ *
+ * By delaying the dequeue for non-eligible tasks, they remain in the
+ * competition and can burn off their negative lag. When they get selected
+ * they'll have positive lag by definition.
+ *
+ * GENTLE_DELAY clips the lag on dequeue (or wakeup) to 0.
+ */
+SCHED_FEAT(DELAY_DEQUEUE, true)
+SCHED_FEAT(GENTLE_DELAY, true)
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed

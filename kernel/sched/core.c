@@ -3839,12 +3839,23 @@ static int ttwu_runnable(struct task_struct *p, int wake_flags)
 
 	rq = __task_rq_lock(p, &rf);
 	if (task_on_rq_queued(p)) {
+		update_rq_clock(rq);
+		if (unlikely(p->sched_delayed)) {
+			p->sched_delayed = 0;
+			/* mustn't run a delayed task */
+			WARN_ON_ONCE(task_on_cpu(rq, p));
+			if (sched_feat(GENTLE_DELAY)) {
+				dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+				if (p->se.vlag > 0)
+					p->se.vlag = 0;
+				enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+			}
+		}
 		if (!task_on_cpu(rq, p)) {
 			/*
 			 * When on_rq && !on_cpu the task is preempted, see if
 			 * it should preempt the task that is current now.
 			 */
-			update_rq_clock(rq);
 			wakeup_preempt(rq, p, wake_flags);
 		}
 		ttwu_do_wakeup(p);
@@ -6552,6 +6563,24 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
+static void deschedule_task(struct rq *rq, struct task_struct *p, unsigned long prev_state)
+{
+	p->sched_contributes_to_load =
+		(prev_state & TASK_UNINTERRUPTIBLE) &&
+		!(prev_state & TASK_NOLOAD) &&
+		!(prev_state & TASK_FROZEN);
+
+	if (p->sched_contributes_to_load)
+		rq->nr_uninterruptible++;
+
+	deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+
+	if (p->in_iowait) {
+		atomic_inc(&rq->nr_iowait);
+		delayacct_blkio_start();
+	}
+}
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -6636,6 +6665,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 
 	switch_count = &prev->nivcsw;
 
+	WARN_ON_ONCE(prev->sched_delayed);
+
 	/*
 	 * We must load prev->state once (task_struct::state is volatile), such
 	 * that we form a control dependency vs deactivate_task() below.
@@ -6645,14 +6676,6 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		if (signal_pending_state(prev_state, prev)) {
 			WRITE_ONCE(prev->__state, TASK_RUNNING);
 		} else {
-			prev->sched_contributes_to_load =
-				(prev_state & TASK_UNINTERRUPTIBLE) &&
-				!(prev_state & TASK_NOLOAD) &&
-				!(prev_state & TASK_FROZEN);
-
-			if (prev->sched_contributes_to_load)
-				rq->nr_uninterruptible++;
-
 			/*
 			 * __schedule()			ttwu()
 			 *   prev_state = prev->state;    if (p->on_rq && ...)
@@ -6664,17 +6687,50 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			 *
 			 * After this, schedule() must not care about p->state any more.
 			 */
-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
-
-			if (prev->in_iowait) {
-				atomic_inc(&rq->nr_iowait);
-				delayacct_blkio_start();
-			}
+			if (sched_feat(DELAY_DEQUEUE) &&
+			    prev->sched_class->delay_dequeue_task &&
+			    prev->sched_class->delay_dequeue_task(rq, prev))
+				prev->sched_delayed = 1;
+			else
+				deschedule_task(rq, prev, prev_state);
 		}
 		switch_count = &prev->nvcsw;
 	}
 
-	next = pick_next_task(rq, prev, &rf);
+	for (struct task_struct *tmp = prev;;) {
+		unsigned long tmp_state;
+
+		next = pick_next_task(rq, tmp, &rf);
+		if (unlikely(tmp != prev))
+			finish_task(tmp);
+
+		if (likely(!next->sched_delayed))
+			break;
+
+		next->sched_delayed = 0;
+
+		/*
+		 * A sched_delayed task must not be runnable at this point, see
+		 * ttwu_runnable().
+		 */
+		tmp_state = READ_ONCE(next->__state);
+		if (WARN_ON_ONCE(!tmp_state))
+			break;
+
+		prepare_task(next);
+		/*
+		 * Order ->on_cpu and ->on_rq, see the comments in
+		 * try_to_wake_up(). Normally this is smp_mb__after_spinlock()
+		 * above.
+		 */
+		smp_wmb();
+		deschedule_task(rq, next, tmp_state);
+		if (sched_feat(GENTLE_DELAY) && next->se.vlag > 0)
+			next->se.vlag = 0;
+
+		tmp = next;
+	}
+
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
