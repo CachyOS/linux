@@ -6559,6 +6559,16 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 # define SM_MASK_PREEMPT	SM_PREEMPT
 #endif
 
+static void __deschedule_task(struct rq *rq, struct task_struct *p)
+{
+	deactivate_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+
+	if (p->in_iowait) {
+		atomic_inc(&rq->nr_iowait);
+		delayacct_blkio_start();
+	}
+}
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -6671,17 +6681,36 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 			 *
 			 * After this, schedule() must not care about p->state any more.
 			 */
-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
-
-			if (prev->in_iowait) {
-				atomic_inc(&rq->nr_iowait);
-				delayacct_blkio_start();
-			}
+			if (!(sched_feat(DELAY_DEQUEUE) &&
+			      prev->sched_class->eligible_task &&
+			      !prev->sched_class->eligible_task(rq, prev)))
+				__deschedule_task(rq, prev);
+			else
+				prev->sched_delayed = 1;
 		}
 		switch_count = &prev->nvcsw;
 	}
 
-	next = pick_next_task(rq, prev, &rf);
+	for (struct task_struct *tmp = prev;;) {
+
+		next = pick_next_task(rq, tmp, &rf);
+		if (unlikely(tmp != prev))
+			finish_task(tmp);
+
+		if (sched_feat(DELAY_DEQUEUE) && unlikely(next->sched_delayed)) {
+			next->sched_delayed = 0;
+			if (READ_ONCE(next->__state)) {
+				prepare_task(next);
+				smp_wmb();
+				__deschedule_task(rq, next);
+				tmp = next;
+				continue;
+			}
+		}
+
+		break;
+	}
+
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
