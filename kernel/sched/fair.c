@@ -642,7 +642,6 @@ avg_vruntime_add(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	s64 key = entity_key(cfs_rq, se);
 
 	cfs_rq->avg_vruntime += key * weight;
-	cfs_rq->avg_slice += se->slice * weight;
 	cfs_rq->avg_load += weight;
 }
 
@@ -653,7 +652,6 @@ avg_vruntime_sub(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	s64 key = entity_key(cfs_rq, se);
 
 	cfs_rq->avg_vruntime -= key * weight;
-	cfs_rq->avg_slice -= se->slice * weight;
 	cfs_rq->avg_load -= weight;
 }
 
@@ -4925,30 +4923,6 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq) {}
 
 #endif /* CONFIG_SMP */
 
-static inline bool
-entity_has_slept(struct cfs_rq *cfs_rq, struct sched_entity *se, u64 vslice, int flags)
-{
-	u64 now, vdelta;
-	s64 delta;
-
-	if (!(flags & ENQUEUE_WAKEUP))
-		return false;
-
-	if (flags & ENQUEUE_MIGRATED)
-		return true;
-
-	now = rq_clock_task(rq_of(cfs_rq));
-	delta = now - se->exec_start;
-	if (delta < 0)
-		return false;
-
-	vdelta = __calc_delta(delta, NICE_0_LOAD, &cfs_rq->load);
-	if (vdelta < vslice)
-		return false;
-
-	return true;
-}
-
 static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
@@ -4971,19 +4945,6 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		unsigned long load;
 
 		lag = se->vlag;
-
-		/*
-		 * For latency sensitive tasks; those that have a shorter than
-		 * average slice and do not fully consume the slice, transition
-		 * to EEVDF placement strategy #2.
-		 */
-		if (sched_feat(PLACE_FUDGE) &&
-		    (cfs_rq->avg_slice > se->slice * cfs_rq->avg_load) &&
-		    entity_has_slept(cfs_rq, se, vslice, flags)) {
-			lag += vslice;
-			if (lag > 0)
-				lag = 0;
-		}
 
 		/*
 		 * If we want to place a task and preserve lag, we have to
