@@ -700,9 +700,10 @@ static DECLARE_WORK(sched_prefcore_work, amd_pstste_sched_prefcore_workfn);
  *
  * Return: 0 for success, -EIO otherwise.
  */
-static int amd_pstate_get_highest_perf(int cpu, u64 *highest_perf)
+static int amd_pstate_get_highest_perf(int cpu, u32 *highest_perf)
 {
 	int ret;
+	u64 cppc_highest_perf;
 
 	if (boot_cpu_has(X86_FEATURE_CPPC)) {
 		u64 cap1;
@@ -712,52 +713,18 @@ static int amd_pstate_get_highest_perf(int cpu, u64 *highest_perf)
 			return ret;
 		WRITE_ONCE(*highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
 	} else {
-		ret = cppc_get_highest_perf(cpu, highest_perf);
+		ret = cppc_get_highest_perf(cpu, &cppc_highest_perf);
+		*highest_perf = (u32)(cppc_highest_perf & 0xFFFF);
 	}
 
 	return (ret);
 }
 
-static void amd_pstate_init_prefcore(void)
+static void amd_pstate_init_prefcore(unsigned int cpu)
 {
-	int cpu, ret;
-	u64 highest_perf;
-
-	if (!prefcore)
-		return;
-
-	for_each_online_cpu(cpu) {
-		ret = amd_pstate_get_highest_perf(cpu, &highest_perf);
-		if (ret)
-			break;
-
-		sched_set_itmt_core_prio(highest_perf, cpu);
-
-		/* check if CPPC preferred core feature is enabled*/
-		if (highest_perf == AMD_PSTATE_MAX_CPPC_PERF) {
-			pr_debug("AMD CPPC preferred core is unsupported!\n");
-			hw_prefcore = false;
-			prefcore = false;
-			return;
-		}
-	}
-
-	/*
-	 * This code can be run during CPU online under the
-	 * CPU hotplug locks, so sched_set_amd_prefcore_support()
-	 * cannot be called from here.  Queue up a work item
-	 * to invoke it.
-	 */
-	schedule_work(&sched_prefcore_work);
-}
-
-static void amd_pstate_update_highest_perf(unsigned int cpu)
-{
-	struct cpufreq_policy *policy;
-	struct amd_cpudata *cpudata;
-	u32 prev_high = 0, cur_high = 0;
-	u64 highest_perf;
 	int ret;
+	u32 highest_perf;
+	static u32 max_highest_perf = 0, min_highest_perf = U32_MAX;
 
 	if (!prefcore)
 		return;
@@ -766,9 +733,56 @@ static void amd_pstate_update_highest_perf(unsigned int cpu)
 	if (ret)
 		return;
 
+	/*
+	 * The priorities can be set regardless of whether or not
+	 * sched_set_itmt_support(true) has been called and it is valid to
+	 * update them at any time after it has been called.
+	 */
+	sched_set_itmt_core_prio(highest_perf, cpu);
+
+	/* check if CPPC preferred core feature is enabled*/
+	if (highest_perf == AMD_PSTATE_MAX_CPPC_PERF) {
+		pr_debug("AMD CPPC preferred core is unsupported!\n");
+		hw_prefcore = false;
+		prefcore = false;
+		return;
+	}
+
+	if (max_highest_perf <= min_highest_perf) {
+		if (highest_perf > max_highest_perf)
+			max_highest_perf = highest_perf;
+
+		if (highest_perf < min_highest_perf)
+			min_highest_perf = highest_perf;
+
+		if (max_highest_perf > min_highest_perf) {
+			/*
+			 * This code can be run during CPU online under the
+			 * CPU hotplug locks, so sched_set_itmt_support()
+			 * cannot be called from here.  Queue up a work item
+			 * to invoke it.
+			 */
+			schedule_work(&sched_prefcore_work);
+		}
+	}
+}
+
+static void amd_pstate_update_highest_perf(unsigned int cpu)
+{
+	struct cpufreq_policy *policy;
+	struct amd_cpudata *cpudata;
+	u32 prev_high = 0, cur_high = 0;
+	int ret;
+
+	if (!prefcore)
+		return;
+
+	ret = amd_pstate_get_highest_perf(cpu, &cur_high);
+	if (ret)
+		return;
+
 	policy = cpufreq_cpu_get(cpu);
 	cpudata = policy->driver_data;
-	cur_high = highest_perf;
 	prev_high = READ_ONCE(cpudata->prefcore_ranking);
 
 	if (prev_high != cur_high) {
@@ -799,6 +813,8 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 		return -ENOMEM;
 
 	cpudata->cpu = policy->cpu;
+
+	amd_pstate_init_prefcore(policy->cpu);
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
@@ -864,6 +880,22 @@ free_cpudata2:
 free_cpudata1:
 	kfree(cpudata);
 	return ret;
+}
+
+static int amd_pstate_cpu_online(struct cpufreq_policy *policy)
+{
+	struct amd_cpudata *cpudata = policy->driver_data;
+
+	pr_debug("CPU %d going online\n", cpudata->cpu);
+
+	amd_pstate_init_prefcore(cpudata->cpu);
+
+	return 0;
+}
+
+static int amd_pstate_cpu_offline(struct cpufreq_policy *policy)
+{
+	return 0;
 }
 
 static int amd_pstate_cpu_exit(struct cpufreq_policy *policy)
@@ -1225,6 +1257,8 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	cpudata->cpu = policy->cpu;
 	cpudata->epp_policy = 0;
 
+	amd_pstate_init_prefcore(policy->cpu);
+
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
 		goto free_cpudata1;
@@ -1396,6 +1430,8 @@ static int amd_pstate_epp_cpu_online(struct cpufreq_policy *policy)
 
 	pr_debug("AMD CPU Core %d going online\n", cpudata->cpu);
 
+	amd_pstate_init_prefcore(cpudata->cpu);
+
 	if (cppc_state == AMD_PSTATE_ACTIVE) {
 		amd_pstate_epp_reenable(cpudata);
 		cpudata->suspended = false;
@@ -1500,6 +1536,8 @@ static struct cpufreq_driver amd_pstate_driver = {
 	.fast_switch    = amd_pstate_fast_switch,
 	.init		= amd_pstate_cpu_init,
 	.exit		= amd_pstate_cpu_exit,
+	.offline	= amd_pstate_cpu_offline,
+	.online		= amd_pstate_cpu_online,
 	.suspend	= amd_pstate_cpu_suspend,
 	.resume		= amd_pstate_cpu_resume,
 	.set_boost	= amd_pstate_set_boost,
@@ -1618,8 +1656,6 @@ static int __init amd_pstate_init(void)
 			goto global_attr_free;
 		}
 	}
-
-	amd_pstate_init_prefcore();
 
 	return ret;
 
