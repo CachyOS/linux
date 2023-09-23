@@ -2590,12 +2590,11 @@ static int console_cpu_notify(unsigned int cpu)
 }
 
 /*
- * Return true if a panic is in progress on a remote CPU.
- *
- * On true, the local CPU should immediately release any printing resources
- * that may be needed by the panic CPU.
+ * Return true when this CPU should unlock console_sem without pushing all
+ * messages to the console. This reduces the chance that the console is
+ * locked when the panic CPU tries to use it.
  */
-bool other_cpu_in_panic(void)
+static bool abandon_console_lock_in_panic(void)
 {
 	if (!panic_in_progress())
 		return false;
@@ -2622,7 +2621,7 @@ void console_lock(void)
 	might_sleep();
 
 	/* On panic, the console_lock must be left to the panic cpu. */
-	while (other_cpu_in_panic())
+	while (abandon_console_lock_in_panic())
 		msleep(1000);
 
 	down_console_sem();
@@ -2644,7 +2643,7 @@ EXPORT_SYMBOL(console_lock);
 int console_trylock(void)
 {
 	/* On panic, the console_lock must be left to the panic cpu. */
-	if (other_cpu_in_panic())
+	if (abandon_console_lock_in_panic())
 		return 0;
 	if (down_trylock_console_sem())
 		return 0;
@@ -2960,7 +2959,7 @@ static bool console_flush_all(bool do_cond_resched, u64 *next_seq, bool *handove
 			any_progress = true;
 
 			/* Allow panic_cpu to take over the consoles safely. */
-			if (other_cpu_in_panic())
+			if (abandon_console_lock_in_panic())
 				goto abandon;
 
 			if (do_cond_resched)
