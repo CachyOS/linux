@@ -18,6 +18,12 @@ SCHED_FEAT(RUN_TO_PARITY, true)
  * Allow tasks with a shorter slice to disregard RUN_TO_PARITY
  */
 SCHED_FEAT(PREEMPT_SHORT, true)
+/*
+ * Let sleepers earn back lag, but not more than 0-lag. GENTLE_SLEEPERS earn at
+ * half the speed.
+ */
+SCHED_FEAT(PLACE_SLEEPER, false)
+SCHED_FEAT(GENTLE_SLEEPER, true)
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed

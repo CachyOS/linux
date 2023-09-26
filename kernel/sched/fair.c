@@ -4956,6 +4956,33 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq) {}
 
 #endif /* CONFIG_SMP */
 
+static inline u64
+entity_vlag_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+{
+	u64 now, vdelta;
+	s64 delta;
+
+	if (!(flags & ENQUEUE_WAKEUP))
+		return se->vlag;
+
+	if (flags & ENQUEUE_MIGRATED)
+		return 0;
+
+	now = rq_clock_task(rq_of(cfs_rq));
+	delta = now - se->exec_start;
+	if (delta < 0)
+		return se->vlag;
+
+	if (sched_feat(GENTLE_SLEEPER))
+		delta /= 2;
+
+	vdelta = __calc_delta(delta, NICE_0_LOAD, &cfs_rq->load);
+	if (vdelta < -se->vlag)
+		return se->vlag + vdelta;
+
+	return 0;
+}
+
 static void
 place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
@@ -4979,6 +5006,15 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		unsigned long load;
 
 		lag = se->vlag;
+
+		/*
+		 * Allow tasks that have received too much service (negative
+		 * lag) to (re)gain parity (zero lag) by sleeping for the
+		 * equivalent duration. This ensures they will be readily
+		 * eligible.
+		 */
+		if (sched_feat(PLACE_SLEEPER) && lag < 0)
+			lag = entity_vlag_sleeper(cfs_rq, se, flags);
 
 		/*
 		 * If we want to place a task and preserve lag, we have to
