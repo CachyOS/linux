@@ -14,6 +14,10 @@ SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
  * 0-lag point or until is has exhausted it's slice.
  */
 SCHED_FEAT(RUN_TO_PARITY, true)
+/*
+ * Allow tasks with a shorter slice to disregard RUN_TO_PARITY
+ */
+SCHED_FEAT(PREEMPT_SHORT, true)
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed
