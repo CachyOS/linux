@@ -24,6 +24,17 @@ SCHED_FEAT(PREEMPT_SHORT, true)
  */
 SCHED_FEAT(PLACE_SLEEPER, false)
 SCHED_FEAT(GENTLE_SLEEPER, true)
+/*
+ * Disable the eligibility check -- always true.
+ *
+ * Selecting this allows short tasks, in the presence of a long task, to walk
+ * far past 0-lag and create a window where newly placed tasks will come in and
+ * starve the long task.
+ *
+ * Behaves quite terrible for mixed slice workloads as a result, very much not
+ * recommended.
+ */
+SCHED_FEAT(EVDF, false)
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed

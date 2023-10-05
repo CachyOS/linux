@@ -724,6 +724,9 @@ void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
  */
 int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
+	if (sched_feat(EVDF))
+		return true;
+
 	struct sched_entity *curr = cfs_rq->curr;
 	s64 avg = cfs_rq->avg_vruntime;
 	long load = cfs_rq->avg_load;
