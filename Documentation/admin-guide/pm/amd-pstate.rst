@@ -437,7 +437,8 @@ control its functionality at the system level.  They are located in the
 		Disable the ``amd-pstate`` preferred core
 
 
-        This attribute is read-only to check the state of preferred core.
+        This attribute is read-only to check the state of preferred core set
+        by the kernel parameter.
 
 ``cpupower`` tool support for ``amd-pstate``
 ===============================================

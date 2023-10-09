@@ -67,12 +67,7 @@ static struct cpufreq_driver amd_pstate_driver;
 static struct cpufreq_driver amd_pstate_epp_driver;
 static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool cppc_enabled;
-
-/*HW preferred Core featue is supported*/
-static bool hw_prefcore = true;
-
-/*Preferred Core featue is supported*/
-static bool prefcore = true;
+static bool amd_pstate_prefcore = true;
 
 /*
  * AMD Energy Preference Performance (EPP)
@@ -310,7 +305,7 @@ static int pstate_init_perf(struct amd_cpudata *cpudata)
 	 * calculated wrongly. we take the AMD_CPPC_HIGHEST_PERF(cap1) value as
 	 * the default max perf.
 	 */
-	if (hw_prefcore)
+	if (cpudata->hw_prefcore)
 		WRITE_ONCE(cpudata->highest_perf, AMD_PSTATE_PREFCORE_THRESHOLD);
 	else
 		WRITE_ONCE(cpudata->highest_perf, AMD_CPPC_HIGHEST_PERF(cap1));
@@ -331,7 +326,7 @@ static int cppc_init_perf(struct amd_cpudata *cpudata)
 	if (ret)
 		return ret;
 
-	if (hw_prefcore)
+	if (cpudata->hw_prefcore)
 		WRITE_ONCE(cpudata->highest_perf, AMD_PSTATE_PREFCORE_THRESHOLD);
 	else
 		WRITE_ONCE(cpudata->highest_perf, cppc_perf.highest_perf);
@@ -720,17 +715,25 @@ static int amd_pstate_get_highest_perf(int cpu, u32 *highest_perf)
 	return (ret);
 }
 
-static void amd_pstate_init_prefcore(unsigned int cpu)
+static void amd_pstate_init_prefcore(struct amd_cpudata *cpudata)
 {
 	int ret;
 	u32 highest_perf;
 	static u32 max_highest_perf = 0, min_highest_perf = U32_MAX;
 
-	if (!prefcore)
+	ret = amd_pstate_get_highest_perf(cpudata->cpu, &highest_perf);
+	if (ret)
 		return;
 
-	ret = amd_pstate_get_highest_perf(cpu, &highest_perf);
-	if (ret)
+	cpudata->hw_prefcore = true;
+	/* check if CPPC preferred core feature is enabled*/
+	if (highest_perf == AMD_PSTATE_MAX_CPPC_PERF) {
+		pr_debug("AMD CPPC preferred core is unsupported!\n");
+		cpudata->hw_prefcore = false;
+		return;
+	}
+
+	if (!amd_pstate_prefcore)
 		return;
 
 	/*
@@ -738,15 +741,7 @@ static void amd_pstate_init_prefcore(unsigned int cpu)
 	 * sched_set_itmt_support(true) has been called and it is valid to
 	 * update them at any time after it has been called.
 	 */
-	sched_set_itmt_core_prio(highest_perf, cpu);
-
-	/* check if CPPC preferred core feature is enabled*/
-	if (highest_perf == AMD_PSTATE_MAX_CPPC_PERF) {
-		pr_debug("AMD CPPC preferred core is unsupported!\n");
-		hw_prefcore = false;
-		prefcore = false;
-		return;
-	}
+	sched_set_itmt_core_prio(highest_perf, cpudata->cpu);
 
 	if (max_highest_perf <= min_highest_perf) {
 		if (highest_perf > max_highest_perf)
@@ -774,7 +769,7 @@ static void amd_pstate_update_highest_perf(unsigned int cpu)
 	u32 prev_high = 0, cur_high = 0;
 	int ret;
 
-	if (!prefcore)
+	if ((!amd_pstate_prefcore) || (!cpudata->hw_prefcore))
 		return;
 
 	ret = amd_pstate_get_highest_perf(cpu, &cur_high);
@@ -814,7 +809,7 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 
 	cpudata->cpu = policy->cpu;
 
-	amd_pstate_init_prefcore(policy->cpu);
+	amd_pstate_init_prefcore(cpudata);
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
@@ -880,22 +875,6 @@ free_cpudata2:
 free_cpudata1:
 	kfree(cpudata);
 	return ret;
-}
-
-static int amd_pstate_cpu_online(struct cpufreq_policy *policy)
-{
-	struct amd_cpudata *cpudata = policy->driver_data;
-
-	pr_debug("CPU %d going online\n", cpudata->cpu);
-
-	amd_pstate_init_prefcore(cpudata->cpu);
-
-	return 0;
-}
-
-static int amd_pstate_cpu_offline(struct cpufreq_policy *policy)
-{
-	return 0;
 }
 
 static int amd_pstate_cpu_exit(struct cpufreq_policy *policy)
@@ -978,6 +957,17 @@ static ssize_t show_amd_pstate_highest_perf(struct cpufreq_policy *policy,
 	perf = READ_ONCE(cpudata->prefcore_ranking);
 
 	return sysfs_emit(buf, "%u\n", perf);
+}
+
+static ssize_t show_amd_pstate_hw_prefcore(struct cpufreq_policy *policy,
+					   char *buf)
+{
+	bool hw_prefcore;
+	struct amd_cpudata *cpudata = policy->driver_data;
+
+	hw_prefcore = READ_ONCE(cpudata->hw_prefcore);
+
+	return sysfs_emit(buf, "%s\n", hw_prefcore ? "supported" : "unsupported");
 }
 
 static ssize_t show_energy_performance_available_preferences(
@@ -1175,13 +1165,14 @@ static ssize_t status_store(struct device *a, struct device_attribute *b,
 static ssize_t prefcore_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%s\n", prefcore ? "enabled" : "disabled");
+	return sysfs_emit(buf, "%s\n", amd_pstate_prefcore ? "enabled" : "disabled");
 }
 
 cpufreq_freq_attr_ro(amd_pstate_max_freq);
 cpufreq_freq_attr_ro(amd_pstate_lowest_nonlinear_freq);
 
 cpufreq_freq_attr_ro(amd_pstate_highest_perf);
+cpufreq_freq_attr_ro(amd_pstate_hw_prefcore);
 cpufreq_freq_attr_rw(energy_performance_preference);
 cpufreq_freq_attr_ro(energy_performance_available_preferences);
 static DEVICE_ATTR_RW(status);
@@ -1191,6 +1182,7 @@ static struct freq_attr *amd_pstate_attr[] = {
 	&amd_pstate_max_freq,
 	&amd_pstate_lowest_nonlinear_freq,
 	&amd_pstate_highest_perf,
+	&amd_pstate_hw_prefcore,
 	NULL,
 };
 
@@ -1198,6 +1190,7 @@ static struct freq_attr *amd_pstate_epp_attr[] = {
 	&amd_pstate_max_freq,
 	&amd_pstate_lowest_nonlinear_freq,
 	&amd_pstate_highest_perf,
+	&amd_pstate_hw_prefcore,
 	&energy_performance_preference,
 	&energy_performance_available_preferences,
 	NULL,
@@ -1257,7 +1250,7 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	cpudata->cpu = policy->cpu;
 	cpudata->epp_policy = 0;
 
-	amd_pstate_init_prefcore(policy->cpu);
+	amd_pstate_init_prefcore(cpudata);
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
@@ -1430,8 +1423,6 @@ static int amd_pstate_epp_cpu_online(struct cpufreq_policy *policy)
 
 	pr_debug("AMD CPU Core %d going online\n", cpudata->cpu);
 
-	amd_pstate_init_prefcore(cpudata->cpu);
-
 	if (cppc_state == AMD_PSTATE_ACTIVE) {
 		amd_pstate_epp_reenable(cpudata);
 		cpudata->suspended = false;
@@ -1536,8 +1527,6 @@ static struct cpufreq_driver amd_pstate_driver = {
 	.fast_switch    = amd_pstate_fast_switch,
 	.init		= amd_pstate_cpu_init,
 	.exit		= amd_pstate_cpu_exit,
-	.offline	= amd_pstate_cpu_offline,
-	.online		= amd_pstate_cpu_online,
 	.suspend	= amd_pstate_cpu_suspend,
 	.resume		= amd_pstate_cpu_resume,
 	.set_boost	= amd_pstate_set_boost,
@@ -1682,7 +1671,7 @@ static int __init amd_pstate_param(char *str)
 static int __init amd_prefcore_param(char *str)
 {
 	if (!strcmp(str, "disable"))
-		prefcore = false;
+		amd_pstate_prefcore = false;
 
 	return 0;
 }
