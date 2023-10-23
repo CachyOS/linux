@@ -13,17 +13,30 @@ SCHED_FEAT(PLACE_DEADLINE_INITIAL, true)
  * Inhibit (wakeup) preemption until the current task has either matched the
  * 0-lag point or until is has exhausted it's slice.
  */
+#ifdef CONFIG_SCHED_BORE
+SCHED_FEAT(RUN_TO_PARITY, false)
+#else // CONFIG_SCHED_BORE
 SCHED_FEAT(RUN_TO_PARITY, true)
+#endif // CONFIG_SCHED_BORE
 /*
  * Allow tasks with a shorter slice to disregard RUN_TO_PARITY
  */
+#ifdef CONFIG_SCHED_BORE
+SCHED_FEAT(PREEMPT_SHORT, false)
+#else // CONFIG_SCHED_BORE
 SCHED_FEAT(PREEMPT_SHORT, true)
+#endif // CONFIG_SCHED_BORE
 /*
  * Let sleepers earn back lag, but not more than 0-lag. GENTLE_SLEEPERS earn at
  * half the speed.
  */
+#ifdef CONFIG_SCHED_BORE
+SCHED_FEAT(PLACE_SLEEPER, true)
+SCHED_FEAT(GENTLE_SLEEPER, false)
+#else // CONFIG_SCHED_BORE
 SCHED_FEAT(PLACE_SLEEPER, false)
 SCHED_FEAT(GENTLE_SLEEPER, true)
+#endif // CONFIG_SCHED_BORE
 /*
  * Disable the eligibility check -- always true.
  *
@@ -44,8 +57,13 @@ SCHED_FEAT(EVDF, false)
  *
  * GENTLE_DELAY clips the lag on dequeue (or wakeup) to 0.
  */
+#ifdef CONFIG_SCHED_BORE
+SCHED_FEAT(DELAY_DEQUEUE, false)
+SCHED_FEAT(GENTLE_DELAY, false)
+#else // CONFIG_SCHED_BORE
 SCHED_FEAT(DELAY_DEQUEUE, true)
 SCHED_FEAT(GENTLE_DELAY, true)
+#endif // CONFIG_SCHED_BORE
 
 /*
  * Prefer to schedule the task we woke last (assuming it failed
