@@ -31,6 +31,7 @@
 #include <linux/compiler.h>
 #include <linux/moduleparam.h>
 #include <linux/fs.h>
+#include <linux/dmi.h>
 
 #include "power.h"
 
@@ -61,6 +62,7 @@ static DECLARE_SWAIT_QUEUE_HEAD(s2idle_wait_head);
 
 enum s2idle_states __read_mostly s2idle_state;
 static DEFINE_RAW_SPINLOCK(s2idle_lock);
+static bool s2idle_unsupported;
 
 /**
  * pm_suspend_default_s2idle - Check if suspend-to-idle is the default suspend.
@@ -187,6 +189,8 @@ static bool valid_state(suspend_state_t state)
 
 void __init pm_states_init(void)
 {
+	const char *sys_vendor, *product_name;
+
 	/* "mem" and "freeze" are always present in /sys/power/state. */
 	pm_states[PM_SUSPEND_MEM] = pm_labels[PM_SUSPEND_MEM];
 	pm_states[PM_SUSPEND_TO_IDLE] = pm_labels[PM_SUSPEND_TO_IDLE];
@@ -195,6 +199,20 @@ void __init pm_states_init(void)
 	 * initialize mem_sleep_states[] accordingly here.
 	 */
 	mem_sleep_states[PM_SUSPEND_TO_IDLE] = mem_sleep_labels[PM_SUSPEND_TO_IDLE];
+
+	/*
+	 * Identify here if we're running on Steam Deck - if so, we shouldn't
+	 * support s2idle mem_sleep mode, since this mode doesn't work on Deck.
+	 */
+
+	sys_vendor = dmi_get_system_info(DMI_SYS_VENDOR);
+	product_name = dmi_get_system_info(DMI_PRODUCT_NAME);
+
+	if (sys_vendor && (!strncmp("Valve", sys_vendor, 5)) &&
+	    product_name && (!strncmp("Jupiter", product_name, 7))) {
+		s2idle_unsupported = true;
+		pr_info("Steam Deck quirk - no s2idle allowed!\n");
+	}
 }
 
 static int __init mem_sleep_default_setup(char *str)
@@ -585,6 +603,10 @@ static int enter_state(suspend_state_t state)
 			return -EAGAIN;
 		}
 #endif
+		if (s2idle_unsupported) {
+			pr_info("s2idle sleep is not supported\n");
+			return -EINVAL;
+		}
 	} else if (!valid_state(state)) {
 		return -EINVAL;
 	}
