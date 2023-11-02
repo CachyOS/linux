@@ -1031,8 +1031,15 @@ amdgpu_dm_plane_set_color_properties(struct drm_plane_state *plane_state,
 	int ret;
 
 	/* We have nothing to do here, return */
+	/*
+	 * JoshA: WE HAVE TO DO THIS EVERY TIME.
+	 * It's on a new dc_plane_state allocation, none of this data is here!
+	 * !!!!!!!!
+	 * This was always true before we duped properties due to LUCK and the
+	 * properties matching.
 	if (!plane_state->color_mgmt_changed)
 		return 0;
+	*/
 
 	dc_plane_state->hdr_mult = dc_fixpt_from_s3132(dm_plane_state->hdr_mult);
 
