@@ -4850,7 +4850,7 @@ static u32 convert_brightness_from_user(const struct amdgpu_dm_backlight_caps *c
 	}
 
 	// Rescale 0..255 to min..max
-	return min + DIV_ROUND_CLOSEST((max - min) * brightness,
+	return min + DIV_ROUND_CLOSEST_ULL((u64)(max - min) * brightness,
 				       AMDGPU_MAX_BL_LEVEL);
 }
 
@@ -4865,7 +4865,7 @@ static u32 convert_brightness_to_user(const struct amdgpu_dm_backlight_caps *cap
 	if (brightness < min)
 		return 0;
 	// Rescale min..max to 0..255
-	return DIV_ROUND_CLOSEST(AMDGPU_MAX_BL_LEVEL * (brightness - min),
+	return DIV_ROUND_CLOSEST_ULL((u64)AMDGPU_MAX_BL_LEVEL * (brightness - min),
 				 max - min);
 }
 
