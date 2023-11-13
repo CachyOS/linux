@@ -186,7 +186,11 @@ struct scan_control {
 /*
  * From 0 .. 200.  Higher means more swappy.
  */
+#ifdef CONFIG_CACHY
+int vm_swappiness = 20;
+#else
 int vm_swappiness = 60;
+#endif
 
 LIST_HEAD(shrinker_list);
 DECLARE_RWSEM(shrinker_rwsem);
