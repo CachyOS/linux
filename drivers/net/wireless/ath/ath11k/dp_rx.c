@@ -2560,7 +2560,7 @@ static int ath11k_dp_rx_process_msdu(struct ath11k *ar,
 	lrx_desc = (struct hal_rx_desc *)last_buf->data;
 	rx_attention = ath11k_dp_rx_get_attention(ab, lrx_desc);
 	if (!ath11k_dp_rx_h_attn_msdu_done(rx_attention)) {
-		ath11k_warn(ab, "msdu_done bit in attention is not set\n");
+		ath11k_dbg(ab, ATH11K_DBG_DATA, "msdu_done bit in attention is not set\n");
 		ret = -EIO;
 		goto free_out;
 	}
