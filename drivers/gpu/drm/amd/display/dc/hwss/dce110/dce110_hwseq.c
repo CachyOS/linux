@@ -95,6 +95,8 @@
 #define FN(reg_name, field_name) \
 	hws->shifts->field_name, hws->masks->field_name
 
+static const uint8_t DP_SINK_BRANCH_DEV_NAME_KT50X0[] = "KT50X0!";
+
 struct dce110_hw_seq_reg_offsets {
 	uint32_t crtc;
 };
@@ -3243,6 +3245,13 @@ void dce110_enable_dp_link_output(
 			link->dc->res_pool->dp_clock_source;
 	const struct link_hwss *link_hwss = get_link_hwss(link, link_res);
 	unsigned int i;
+	if (link->ctx->dce_version == DCN_VERSION_3_01 &&
+	    link->dpcd_caps.sink_dev_id == DP_BRANCH_DEVICE_ID_0060AD &&
+	    memcmp(&link->dpcd_caps.branch_dev_name,
+		   DP_SINK_BRANCH_DEV_NAME_KT50X0,
+		   sizeof(link->dpcd_caps.branch_dev_name)) == 0) {
+		msleep(2000);
+	}
 
 	/*
 	 * Add the logic to extract BOTH power up and power down sequences
