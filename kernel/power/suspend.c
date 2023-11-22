@@ -209,7 +209,8 @@ void __init pm_states_init(void)
 	product_name = dmi_get_system_info(DMI_PRODUCT_NAME);
 
 	if (sys_vendor && (!strncmp("Valve", sys_vendor, 5)) &&
-	    product_name && (!strncmp("Jupiter", product_name, 7))) {
+	    ((product_name && (!strncmp("Jupiter", product_name, 7))) ||
+	    (product_name && (!strncmp("Galileo", product_name, 7))))) {
 		s2idle_unsupported = true;
 		pr_info("Steam Deck quirk - no s2idle allowed!\n");
 	}
