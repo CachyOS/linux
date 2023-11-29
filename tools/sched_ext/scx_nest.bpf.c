@@ -333,7 +333,7 @@ void BPF_STRUCT_OPS(nest_enqueue, struct task_struct *p, u64 enq_flags)
 		 * another timer to check in timeout + 1us.
 		 */
 		bpf_timer_start(&pcpu_ctx->timer, p_remove_ns + 1000,
-				BPF_F_TIMER_CPU_PIN);
+				0 /*BPF_F_TIMER_CPU_PIN*/);
 		tctx->promoted = false;
 	}
 
@@ -481,7 +481,7 @@ static int check_primary_remove(void *map, int *key, struct bpf_timer *timer)
 		 * another timer to check in timeout + 1us.
 		 */
 		bpf_timer_start(&pcpu_ctx->timer, p_remove_ns + 1000,
-				BPF_F_TIMER_CPU_PIN);
+				0 /*BPF_F_TIMER_CPU_PIN*/);
 	}
 
 	return 0;
