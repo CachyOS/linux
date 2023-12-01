@@ -194,7 +194,11 @@ static int uinput_request_submit(struct uinput_device *udev,
 	if (retval)
 		goto out;
 
-	if (!wait_for_completion_timeout(&request->done, 30 * HZ)) {
+	retval = wait_for_completion_interruptible_timeout(&request->done, 30 * HZ);
+	if (retval == -ERESTARTSYS)
+		goto out;
+
+	if (!retval) {
 		retval = -ETIMEDOUT;
 		goto out;
 	}
