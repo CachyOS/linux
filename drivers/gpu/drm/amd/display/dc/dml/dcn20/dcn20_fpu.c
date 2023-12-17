@@ -1910,7 +1910,7 @@ void dcn20_patch_bounding_box(struct dc *dc, struct _vcs_dpi_soc_bounding_box_st
 }
 
 static bool dcn20_validate_bandwidth_internal(struct dc *dc, struct dc_state *context,
-		bool fast_validate)
+		bool fast_validate, display_e2e_pipe_params_st *pipes)
 {
 	bool out = false;
 
@@ -1919,7 +1919,6 @@ static bool dcn20_validate_bandwidth_internal(struct dc *dc, struct dc_state *co
 	int vlevel = 0;
 	int pipe_split_from[MAX_PIPES];
 	int pipe_cnt = 0;
-	display_e2e_pipe_params_st *pipes = kzalloc(dc->res_pool->pipe_count * sizeof(display_e2e_pipe_params_st), GFP_ATOMIC);
 	DC_LOGGER_INIT(dc->ctx->logger);
 
 	BW_VAL_TRACE_COUNT();
@@ -1954,16 +1953,14 @@ validate_fail:
 	out = false;
 
 validate_out:
-	kfree(pipes);
 
 	BW_VAL_TRACE_FINISH();
 
 	return out;
 }
 
-bool dcn20_validate_bandwidth_fp(struct dc *dc,
-				 struct dc_state *context,
-				 bool fast_validate)
+bool dcn20_validate_bandwidth_fp(struct dc *dc, struct dc_state *context,
+				 bool fast_validate, display_e2e_pipe_params_st *pipes)
 {
 	bool voltage_supported = false;
 	bool full_pstate_supported = false;
@@ -1982,11 +1979,11 @@ bool dcn20_validate_bandwidth_fp(struct dc *dc,
 	ASSERT(context != dc->current_state);
 
 	if (fast_validate) {
-		return dcn20_validate_bandwidth_internal(dc, context, true);
+		return dcn20_validate_bandwidth_internal(dc, context, true, pipes);
 	}
 
 	// Best case, we support full UCLK switch latency
-	voltage_supported = dcn20_validate_bandwidth_internal(dc, context, false);
+	voltage_supported = dcn20_validate_bandwidth_internal(dc, context, false, pipes);
 	full_pstate_supported = context->bw_ctx.bw.dcn.clk.p_state_change_support;
 
 	if (context->bw_ctx.dml.soc.dummy_pstate_latency_us == 0 ||
@@ -1998,7 +1995,8 @@ bool dcn20_validate_bandwidth_fp(struct dc *dc,
 	// Fallback: Try to only support G6 temperature read latency
 	context->bw_ctx.dml.soc.dram_clock_change_latency_us = context->bw_ctx.dml.soc.dummy_pstate_latency_us;
 
-	voltage_supported = dcn20_validate_bandwidth_internal(dc, context, false);
+	memset(pipes, 0, dc->res_pool->pipe_count * sizeof(display_e2e_pipe_params_st));
+	voltage_supported = dcn20_validate_bandwidth_internal(dc, context, false, pipes);
 	dummy_pstate_supported = context->bw_ctx.bw.dcn.clk.p_state_change_support;
 
 	if (voltage_supported && (dummy_pstate_supported || !(context->stream_count))) {
@@ -2203,9 +2201,8 @@ static void dcn21_calculate_wm(struct dc *dc, struct dc_state *context,
 						&context->bw_ctx.dml, pipes, pipe_cnt);
 }
 
-bool dcn21_validate_bandwidth_fp(struct dc *dc,
-				 struct dc_state *context,
-				 bool fast_validate)
+bool dcn21_validate_bandwidth_fp(struct dc *dc, struct dc_state *context,
+				 bool fast_validate, display_e2e_pipe_params_st *pipes)
 {
 	bool out = false;
 
@@ -2214,7 +2211,6 @@ bool dcn21_validate_bandwidth_fp(struct dc *dc,
 	int vlevel = 0;
 	int pipe_split_from[MAX_PIPES];
 	int pipe_cnt = 0;
-	display_e2e_pipe_params_st *pipes = kzalloc(dc->res_pool->pipe_count * sizeof(display_e2e_pipe_params_st), GFP_ATOMIC);
 	DC_LOGGER_INIT(dc->ctx->logger);
 
 	BW_VAL_TRACE_COUNT();
@@ -2254,7 +2250,6 @@ validate_fail:
 	out = false;
 
 validate_out:
-	kfree(pipes);
 
 	BW_VAL_TRACE_FINISH();
 
