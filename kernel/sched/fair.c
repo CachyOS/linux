@@ -698,12 +698,13 @@ u64 avg_vruntime(struct cfs_rq *cfs_rq)
  */
 static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	s64 lag, limit;
+	s64 lag, limit, quanta;
 
 	SCHED_WARN_ON(!se->on_rq);
 	lag = avg_vruntime(cfs_rq) - se->vruntime;
 
-	limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
+	quanta = max_t(u64, TICK_NSEC, sysctl_sched_base_slice);
+	limit = calc_delta_fair(max_t(u64, 2*se->slice, quanta), se);
 	se->vlag = clamp(lag, -limit, limit);
 }
 
@@ -977,25 +978,47 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se);
  */
 static void update_deadline(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	if ((s64)(se->vruntime - se->deadline) < 0)
+	u64 delta_exec;
+
+	/*
+	 * To allow wakeup preemption to happen in time, we check to
+	 * push deadlines forward by each call.
+	 */
+	if ((s64)(se->vruntime - se->deadline) >= 0) {
+		/*
+		 * For EEVDF the virtual time slope is determined by w_i (iow.
+		 * nice) while the request time r_i is determined by
+		 * sysctl_sched_base_slice.
+		 */
+		se->slice = sysctl_sched_base_slice;
+		/*
+		 * EEVDF: vd_i = ve_i + r_i / w_i
+		 */
+		se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
+	}
+	/*
+	 * Make sysctl_sched_base_slice as the size of a 'quantum' in EEVDF
+	 * so as to avoid overscheduling or underscheduling with arbitrary
+	 * request lengths users specify.
+	 *
+	 * IOW, we now change to make scheduling decisions at per
+	 * max(TICK, sysctl_sched_base_slice) boundary.
+	 */
+	delta_exec = se->sum_exec_runtime - se->prev_sum_exec_runtime;
+	if (delta_exec < sysctl_sched_base_slice)
 		return;
 
 	/*
-	 * For EEVDF the virtual time slope is determined by w_i (iow.
-	 * nice) while the request time r_i is determined by
-	 * sysctl_sched_base_slice.
+	 * We can come here with TIF_NEED_RESCHED already set from wakeup path.
+	 * Check to see if we can save a call to pick_eevdf if it's set already.
 	 */
-	se->slice = sysctl_sched_base_slice;
+	if (entity_is_task(se) && test_tsk_need_resched(task_of(se)))
+		return;
 
 	/*
-	 * EEVDF: vd_i = ve_i + r_i / w_i
+	 * The task has consumed a quantum, check and reschedule.
 	 */
-	se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
-
-	/*
-	 * The task has consumed its request, reschedule.
-	 */
-	if (cfs_rq->nr_running > 1) {
+	if (cfs_rq->nr_running > 1 && pick_eevdf(cfs_rq) != se) {
 		resched_curr(rq_of(cfs_rq));
 		clear_buddies(cfs_rq, se);
 	}
