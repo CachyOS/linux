@@ -85,7 +85,7 @@ static void acpi_processor_notify(acpi_handle handle, u32 event, void *data)
 						  dev_name(&device->dev), event, 0);
 		break;
 	case ACPI_PROCESSOR_NOTIFY_HIGEST_PERF_CHANGED:
-		cpufreq_update_highest_perf(pr->id);
+		cpufreq_update_limits(pr->id);
 		acpi_bus_generate_netlink_event(device->pnp.device_class,
 						  dev_name(&device->dev), event, 0);
 		break;

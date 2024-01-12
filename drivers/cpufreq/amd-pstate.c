@@ -787,13 +787,15 @@ static void amd_pstate_init_prefcore(struct amd_cpudata *cpudata)
 	schedule_work(&sched_prefcore_work);
 }
 
-static void amd_pstate_update_highest_perf(unsigned int cpu)
+static void amd_pstate_update_limits(unsigned int cpu)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
 	struct amd_cpudata *cpudata = policy->driver_data;
 	u32 prev_high = 0, cur_high = 0;
 	int ret;
+	bool highest_perf_changed = false;
 
+	mutex_lock(&amd_pstate_driver_lock);
 	if ((!amd_pstate_prefcore) || (!cpudata->hw_prefcore))
 		goto free_cpufreq_put;
 
@@ -803,6 +805,7 @@ static void amd_pstate_update_highest_perf(unsigned int cpu)
 
 	prev_high = READ_ONCE(cpudata->prefcore_ranking);
 	if (prev_high != cur_high) {
+		highest_perf_changed = true;
 		WRITE_ONCE(cpudata->prefcore_ranking, cur_high);
 
 		if (cur_high < CPPC_MAX_PERF)
@@ -811,6 +814,11 @@ static void amd_pstate_update_highest_perf(unsigned int cpu)
 
 free_cpufreq_put:
 	cpufreq_cpu_put(policy);
+
+	if (!highest_perf_changed)
+		cpufreq_update_policy(cpu);
+
+	mutex_unlock(&amd_pstate_driver_lock);
 }
 
 static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
@@ -1580,7 +1588,7 @@ static struct cpufreq_driver amd_pstate_driver = {
 	.suspend	= amd_pstate_cpu_suspend,
 	.resume		= amd_pstate_cpu_resume,
 	.set_boost	= amd_pstate_set_boost,
-	.update_highest_perf	= amd_pstate_update_highest_perf,
+	.update_limits	= amd_pstate_update_limits,
 	.name		= "amd-pstate",
 	.attr		= amd_pstate_attr,
 };
@@ -1595,7 +1603,7 @@ static struct cpufreq_driver amd_pstate_epp_driver = {
 	.online		= amd_pstate_epp_cpu_online,
 	.suspend	= amd_pstate_epp_suspend,
 	.resume		= amd_pstate_epp_resume,
-	.update_highest_perf	= amd_pstate_update_highest_perf,
+	.update_limits	= amd_pstate_update_limits,
 	.name		= "amd-pstate-epp",
 	.attr		= amd_pstate_epp_attr,
 };
