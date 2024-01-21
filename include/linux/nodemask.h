@@ -99,47 +99,6 @@
 typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
 extern nodemask_t _unused_nodemask_arg_;
 
-#if MAX_NUMNODES > 1
-extern unsigned int nr_node_ids;
-#else
-#define nr_node_ids		1U
-#endif
-
-/*
- * We have several different "preferred sizes" for the nodemask operations,
- * depending on operation.
- *
- * For example, the bitmap scanning and operating operations have optimized
- * routines that work for the single-word case, but only when the size is
- * constant. So if MAX_NUMNODES fits in one single word, we are better off
- * using that small constant, in order to trigger the optimized bit finding.
- * That is 'small_nodemask_size'.
- *
- * The clearing and copying operations will similarly perform better with a
- * constant size, but we limit that size arbitrarily to four words. We call
- * this 'large_nodemask_size'.
- *
- * Finally, some operations just want the exact limit, either because they set
- * bits or just don't have any faster fixed-sized versions. We call this just
- * 'nr_node_ids'.
- *
- * Note that these optional constants are always guaranteed to be at least as
- * big as 'nr_node_ids' itself is, and all our nodemask allocations are at
- * least that size. The optimization comes from being able to potentially use
- * a compile-time constant instead of a run-time generated exact number of
- * nodes.
- */
-#if MAX_NUMNODES <= BITS_PER_LONG
-  #define small_nodemask_bits ((unsigned int)MAX_NUMNODES)
-  #define large_nodemask_bits ((unsigned int)MAX_NUMNODES)
-#elif MAX_NUMNODES <= 4*BITS_PER_LONG
-  #define small_nodemask_bits nr_node_ids
-  #define large_nodemask_bits ((unsigned int)MAX_NUMNODES)
-#else
-  #define small_nodemask_bits nr_node_ids
-  #define large_nodemask_bits nr_node_ids
-#endif
-
 /**
  * nodemask_pr_args - printf args to output a nodemask
  * @maskp: nodemask to be printed
@@ -150,7 +109,7 @@ extern unsigned int nr_node_ids;
 				__nodemask_pr_bits(maskp)
 static inline unsigned int __nodemask_pr_numnodes(const nodemask_t *m)
 {
-	return m ? nr_node_ids : 0;
+	return m ? MAX_NUMNODES : 0;
 }
 static inline const unsigned long *__nodemask_pr_bits(const nodemask_t *m)
 {
@@ -178,13 +137,13 @@ static inline void __node_clear(int node, volatile nodemask_t *dstp)
 	clear_bit(node, dstp->bits);
 }
 
-#define nodes_setall(dst) __nodes_setall(&(dst), large_nodemask_bits)
+#define nodes_setall(dst) __nodes_setall(&(dst), MAX_NUMNODES)
 static inline void __nodes_setall(nodemask_t *dstp, unsigned int nbits)
 {
 	bitmap_fill(dstp->bits, nbits);
 }
 
-#define nodes_clear(dst) __nodes_clear(&(dst), large_nodemask_bits)
+#define nodes_clear(dst) __nodes_clear(&(dst), MAX_NUMNODES)
 static inline void __nodes_clear(nodemask_t *dstp, unsigned int nbits)
 {
 	bitmap_zero(dstp->bits, nbits);
@@ -201,7 +160,7 @@ static inline bool __node_test_and_set(int node, nodemask_t *addr)
 }
 
 #define nodes_and(dst, src1, src2) \
-			__nodes_and(&(dst), &(src1), &(src2), small_nodemask_bits)
+			__nodes_and(&(dst), &(src1), &(src2), MAX_NUMNODES)
 static inline void __nodes_and(nodemask_t *dstp, const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -209,7 +168,7 @@ static inline void __nodes_and(nodemask_t *dstp, const nodemask_t *src1p,
 }
 
 #define nodes_or(dst, src1, src2) \
-			__nodes_or(&(dst), &(src1), &(src2), small_nodemask_bits)
+			__nodes_or(&(dst), &(src1), &(src2), MAX_NUMNODES)
 static inline void __nodes_or(nodemask_t *dstp, const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -217,7 +176,7 @@ static inline void __nodes_or(nodemask_t *dstp, const nodemask_t *src1p,
 }
 
 #define nodes_xor(dst, src1, src2) \
-			__nodes_xor(&(dst), &(src1), &(src2), small_nodemask_bits)
+			__nodes_xor(&(dst), &(src1), &(src2), MAX_NUMNODES)
 static inline void __nodes_xor(nodemask_t *dstp, const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -225,7 +184,7 @@ static inline void __nodes_xor(nodemask_t *dstp, const nodemask_t *src1p,
 }
 
 #define nodes_andnot(dst, src1, src2) \
-			__nodes_andnot(&(dst), &(src1), &(src2), small_nodemask_bits)
+			__nodes_andnot(&(dst), &(src1), &(src2), MAX_NUMNODES)
 static inline void __nodes_andnot(nodemask_t *dstp, const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -233,7 +192,7 @@ static inline void __nodes_andnot(nodemask_t *dstp, const nodemask_t *src1p,
 }
 
 #define nodes_complement(dst, src) \
-			__nodes_complement(&(dst), &(src), small_nodemask_bits)
+			__nodes_complement(&(dst), &(src), MAX_NUMNODES)
 static inline void __nodes_complement(nodemask_t *dstp,
 					const nodemask_t *srcp, unsigned int nbits)
 {
@@ -241,7 +200,7 @@ static inline void __nodes_complement(nodemask_t *dstp,
 }
 
 #define nodes_equal(src1, src2) \
-			__nodes_equal(&(src1), &(src2), small_nodemask_bits)
+			__nodes_equal(&(src1), &(src2), MAX_NUMNODES)
 static inline bool __nodes_equal(const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -249,7 +208,7 @@ static inline bool __nodes_equal(const nodemask_t *src1p,
 }
 
 #define nodes_intersects(src1, src2) \
-			__nodes_intersects(&(src1), &(src2), small_nodemask_bits)
+			__nodes_intersects(&(src1), &(src2), MAX_NUMNODES)
 static inline bool __nodes_intersects(const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
@@ -257,33 +216,33 @@ static inline bool __nodes_intersects(const nodemask_t *src1p,
 }
 
 #define nodes_subset(src1, src2) \
-			__nodes_subset(&(src1), &(src2), small_nodemask_bits)
+			__nodes_subset(&(src1), &(src2), MAX_NUMNODES)
 static inline bool __nodes_subset(const nodemask_t *src1p,
 					const nodemask_t *src2p, unsigned int nbits)
 {
 	return bitmap_subset(src1p->bits, src2p->bits, nbits);
 }
 
-#define nodes_empty(src) __nodes_empty(&(src), small_nodemask_bits)
+#define nodes_empty(src) __nodes_empty(&(src), MAX_NUMNODES)
 static inline bool __nodes_empty(const nodemask_t *srcp, unsigned int nbits)
 {
 	return bitmap_empty(srcp->bits, nbits);
 }
 
-#define nodes_full(nodemask) __nodes_full(&(nodemask), small_nodemask_bits)
+#define nodes_full(nodemask) __nodes_full(&(nodemask), MAX_NUMNODES)
 static inline bool __nodes_full(const nodemask_t *srcp, unsigned int nbits)
 {
 	return bitmap_full(srcp->bits, nbits);
 }
 
-#define nodes_weight(nodemask) __nodes_weight(&(nodemask), small_nodemask_bits)
+#define nodes_weight(nodemask) __nodes_weight(&(nodemask), MAX_NUMNODES)
 static inline int __nodes_weight(const nodemask_t *srcp, unsigned int nbits)
 {
 	return bitmap_weight(srcp->bits, nbits);
 }
 
 #define nodes_shift_right(dst, src, n) \
-			__nodes_shift_right(&(dst), &(src), (n), small_nodemask_bits)
+			__nodes_shift_right(&(dst), &(src), (n), MAX_NUMNODES)
 static inline void __nodes_shift_right(nodemask_t *dstp,
 					const nodemask_t *srcp, int n, int nbits)
 {
@@ -291,38 +250,26 @@ static inline void __nodes_shift_right(nodemask_t *dstp,
 }
 
 #define nodes_shift_left(dst, src, n) \
-			__nodes_shift_left(&(dst), &(src), (n), small_nodemask_bits)
+			__nodes_shift_left(&(dst), &(src), (n), MAX_NUMNODES)
 static inline void __nodes_shift_left(nodemask_t *dstp,
 					const nodemask_t *srcp, int n, int nbits)
 {
 	bitmap_shift_left(dstp->bits, srcp->bits, n, nbits);
 }
 
-/*
- * FIXME: audit tree to move end-of-nodemask to >= nr_node_ids;
- *        for now, map it to >= MAX_NUMNODES.
- */
+/* FIXME: better would be to fix all architectures to never return
+          > MAX_NUMNODES, then the silly min_ts could be dropped. */
 
 #define first_node(src) __first_node(&(src))
 static inline unsigned int __first_node(const nodemask_t *srcp)
 {
-	unsigned int bit = find_first_bit(srcp->bits, small_nodemask_bits);
-
-	if (bit >= nr_node_ids)
-		bit = MAX_NUMNODES;
-
-	return bit;
+	return min_t(unsigned int, MAX_NUMNODES, find_first_bit(srcp->bits, MAX_NUMNODES));
 }
 
 #define next_node(n, src) __next_node((n), &(src))
 static inline unsigned int __next_node(int n, const nodemask_t *srcp)
 {
-	unsigned int bit = find_next_bit(srcp->bits, small_nodemask_bits, n+1);
-
-	if (bit >= nr_node_ids)
-		bit = MAX_NUMNODES;
-
-	return bit;
+	return min_t(unsigned int, MAX_NUMNODES, find_next_bit(srcp->bits, MAX_NUMNODES, n+1));
 }
 
 /*
@@ -336,7 +283,6 @@ static inline unsigned int __next_node_in(int node, const nodemask_t *srcp)
 
 	if (ret == MAX_NUMNODES)
 		ret = __first_node(srcp);
-
 	return ret;
 }
 
@@ -360,12 +306,8 @@ static inline void init_nodemask_of_node(nodemask_t *mask, int node)
 #define first_unset_node(mask) __first_unset_node(&(mask))
 static inline unsigned int __first_unset_node(const nodemask_t *maskp)
 {
-	unsigned int bit = find_first_zero_bit(maskp->bits, small_nodemask_bits);
-
-	if (bit >= nr_node_ids)
-		bit = MAX_NUMNODES;
-
-	return bit;
+	return min_t(unsigned int, MAX_NUMNODES,
+			find_first_zero_bit(maskp->bits, MAX_NUMNODES));
 }
 
 #define NODE_MASK_LAST_WORD BITMAP_LAST_WORD_MASK(MAX_NUMNODES)
@@ -395,21 +337,21 @@ static inline unsigned int __first_unset_node(const nodemask_t *maskp)
 #define nodes_addr(src) ((src).bits)
 
 #define nodemask_parse_user(ubuf, ulen, dst) \
-		__nodemask_parse_user((ubuf), (ulen), &(dst), nr_node_ids)
+		__nodemask_parse_user((ubuf), (ulen), &(dst), MAX_NUMNODES)
 static inline int __nodemask_parse_user(const char __user *buf, int len,
 					nodemask_t *dstp, int nbits)
 {
 	return bitmap_parse_user(buf, len, dstp->bits, nbits);
 }
 
-#define nodelist_parse(buf, dst) __nodelist_parse((buf), &(dst), nr_node_ids)
+#define nodelist_parse(buf, dst) __nodelist_parse((buf), &(dst), MAX_NUMNODES)
 static inline int __nodelist_parse(const char *buf, nodemask_t *dstp, int nbits)
 {
 	return bitmap_parselist(buf, dstp->bits, nbits);
 }
 
 #define node_remap(oldbit, old, new) \
-		__node_remap((oldbit), &(old), &(new), nr_node_ids)
+		__node_remap((oldbit), &(old), &(new), MAX_NUMNODES)
 static inline int __node_remap(int oldbit,
 		const nodemask_t *oldp, const nodemask_t *newp, int nbits)
 {
@@ -417,7 +359,7 @@ static inline int __node_remap(int oldbit,
 }
 
 #define nodes_remap(dst, src, old, new) \
-		__nodes_remap(&(dst), &(src), &(old), &(new), nr_node_ids)
+		__nodes_remap(&(dst), &(src), &(old), &(new), MAX_NUMNODES)
 static inline void __nodes_remap(nodemask_t *dstp, const nodemask_t *srcp,
 		const nodemask_t *oldp, const nodemask_t *newp, int nbits)
 {
@@ -425,7 +367,7 @@ static inline void __nodes_remap(nodemask_t *dstp, const nodemask_t *srcp,
 }
 
 #define nodes_onto(dst, orig, relmap) \
-		__nodes_onto(&(dst), &(orig), &(relmap), nr_node_ids)
+		__nodes_onto(&(dst), &(orig), &(relmap), MAX_NUMNODES)
 static inline void __nodes_onto(nodemask_t *dstp, const nodemask_t *origp,
 		const nodemask_t *relmapp, int nbits)
 {
@@ -433,7 +375,7 @@ static inline void __nodes_onto(nodemask_t *dstp, const nodemask_t *origp,
 }
 
 #define nodes_fold(dst, orig, sz) \
-		__nodes_fold(&(dst), &(orig), sz, nr_node_ids)
+		__nodes_fold(&(dst), &(orig), sz, MAX_NUMNODES)
 static inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *origp,
 		int sz, int nbits)
 {
@@ -443,7 +385,7 @@ static inline void __nodes_fold(nodemask_t *dstp, const nodemask_t *origp,
 #if MAX_NUMNODES > 1
 #define for_each_node_mask(node, mask)				    \
 	for ((node) = first_node(mask);				    \
-	     (node) < nr_node_ids;				    \
+	     (node) < MAX_NUMNODES;				    \
 	     (node) = next_node((node), (mask)))
 #else /* MAX_NUMNODES == 1 */
 #define for_each_node_mask(node, mask)                                  \
@@ -510,6 +452,7 @@ static inline unsigned int next_memory_node(int nid)
 	return next_node(nid, node_states[N_MEMORY]);
 }
 
+extern unsigned int nr_node_ids;
 extern unsigned int nr_online_nodes;
 
 static inline void node_set_online(int nid)
@@ -551,6 +494,7 @@ static inline int num_node_state(enum node_states state)
 #define first_memory_node	0
 #define next_online_node(nid)	(MAX_NUMNODES)
 #define next_memory_node(nid)	(MAX_NUMNODES)
+#define nr_node_ids		1U
 #define nr_online_nodes		1U
 
 #define node_set_online(node)	   node_set_state((node), N_ONLINE)
@@ -572,7 +516,7 @@ static inline int node_random(const nodemask_t *maskp)
 		bit = first_node(*maskp);
 		break;
 	default:
-		bit = find_nth_bit(maskp->bits, nr_node_ids, get_random_u32_below(w));
+		bit = find_nth_bit(maskp->bits, MAX_NUMNODES, get_random_u32_below(w));
 		break;
 	}
 	return bit;
