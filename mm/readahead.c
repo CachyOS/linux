@@ -600,16 +600,8 @@ static void ondemand_readahead(struct readahead_control *ractl,
 				max_pages);
 		rcu_read_unlock();
 
-		if (!start || start - index - 1 > max_pages)
+		if (!start || start - index > max_pages)
 			return;
-
-		/*
-		 * If no gaps in the range, page_cache_next_miss() returns
-		 * index beyond range. Adjust it back to make sure
-		 * ractl->_index is updated correctly later.
-		 */
-		if ((start - index - 1) == max_pages)
-			start--;
 
 		ra->start = start;
 		ra->size = start - index;	/* old async_size */
