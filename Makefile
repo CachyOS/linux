@@ -1143,9 +1143,9 @@ KBUILD_CFLAGS	+= -fno-strict-overflow
 # Make sure -fstack-check isn't enabled (like gentoo apparently did)
 KBUILD_CFLAGS  += -fno-stack-check
 
-# conserve stack if available
+# conserve stack, ivopts and modulo-sched if available
 ifdef CONFIG_CC_IS_GCC
-KBUILD_CFLAGS   += -fconserve-stack
+KBUILD_CFLAGS   += -fconserve-stack -fivopts -fmodulo-sched
 endif
 
 # change __FILE__ to the relative path from the srctree
