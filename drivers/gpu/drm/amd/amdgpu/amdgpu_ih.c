@@ -210,6 +210,7 @@ int amdgpu_ih_process(struct amdgpu_device *adev, struct amdgpu_ih_ring *ih)
 {
 	unsigned int count;
 	u32 wptr;
+	int i;
 
 	if (!ih->enabled || adev->shutdown)
 		return IRQ_NONE;
@@ -239,12 +240,26 @@ restart_ih:
 		if (!ih->overflow)
 			goto restart_ih;
 
-	if (ih->overflow)
+	if (ih->overflow) {
 		if (amdgpu_sriov_runtime(adev))
 			WARN_ONCE(!amdgpu_reset_domain_schedule(adev->reset_domain,
 				   &adev->virt.flr_work),
 				  "Failed to queue work! at %s",
 				  __func__);
+
+		/* If the ring buffer overflowed, we might have lost some fence
+		 * signal interrupts. Check if there was any activity so the signal
+		 * doesn't get lost.
+		 */
+		for (i = 0; i < AMDGPU_MAX_RINGS; ++i) {
+			struct amdgpu_ring *ring = adev->rings[i];
+
+			if (!ring || !ring->fence_drv.initialized)
+				continue;
+			amdgpu_fence_process(ring);
+		}
+		ih->overflow = false;
+	}
 
 	return IRQ_HANDLED;
 }

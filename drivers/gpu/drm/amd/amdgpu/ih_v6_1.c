@@ -439,6 +439,7 @@ static u32 ih_v6_1_get_wptr(struct amdgpu_device *adev,
 	 */
 	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 0);
 	WREG32_NO_KIQ(ih_regs->ih_rb_cntl, tmp);
+	ih->overflow = true;
 
 out:
 	return (wptr & ih->ptr_mask);

@@ -226,6 +226,7 @@ static u32 iceland_ih_get_wptr(struct amdgpu_device *adev,
 	 */
 	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 0);
 	WREG32(mmIH_RB_CNTL, tmp);
+	ih->overflow = true;
 
 out:
 	return (wptr & ih->ptr_mask);
