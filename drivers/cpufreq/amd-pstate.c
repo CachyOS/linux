@@ -934,22 +934,60 @@ static int amd_pstate_cpu_exit(struct cpufreq_policy *policy)
 
 static int amd_pstate_cpu_resume(struct cpufreq_policy *policy)
 {
+	struct cppc_perf_ctrls perf_ctrls;
+	struct amd_cpudata *cpudata = policy->driver_data;
+	u64 value, max_perf;
 	int ret;
 
-	ret = amd_pstate_enable(true);
-	if (ret)
-		pr_err("failed to enable amd-pstate during resume, return %d\n", ret);
+	if (cpudata->suspended) {
+		mutex_lock(&amd_pstate_driver_lock);
 
-	return ret;
+		ret = amd_pstate_enable(true);
+		if (ret) {
+			pr_err("failed to enable amd-pstate during resume, return %d\n", ret);
+			mutex_unlock(&amd_pstate_driver_lock);
+			return ret;
+		}
+
+		value = READ_ONCE(cpudata->cppc_req_cached);
+		max_perf = READ_ONCE(cpudata->highest_perf);
+
+		if (boot_cpu_has(X86_FEATURE_CPPC)) {
+			wrmsrl_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, value);
+		} else {
+			perf_ctrls.max_perf = max_perf;
+			cppc_set_perf(cpudata->cpu, &perf_ctrls);
+		}
+
+		cpudata->suspended = false;
+		mutex_unlock(&amd_pstate_driver_lock);
+	}
+
+	return 0;
 }
 
 static int amd_pstate_cpu_suspend(struct cpufreq_policy *policy)
 {
+	struct amd_cpudata *cpudata = policy->driver_data;
 	int ret;
+
+	/* avoid suspending when EPP is not enabled */
+	if (cppc_state != AMD_PSTATE_PASSIVE)
+		return 0;
+
+	mutex_lock(&amd_pstate_driver_lock);
+
+	/* set this flag to avoid calling core offline function
+	 * when system is suspending, use this flag to skip offline function
+	 * called
+	 */
+	cpudata->suspended = true;
 
 	ret = amd_pstate_enable(false);
 	if (ret)
 		pr_err("failed to disable amd-pstate during suspend, return %d\n", ret);
+
+	mutex_unlock(&amd_pstate_driver_lock);
 
 	return ret;
 }
@@ -1656,7 +1694,7 @@ static int amd_pstate_epp_suspend(struct cpufreq_policy *policy)
 	if (cppc_state != AMD_PSTATE_ACTIVE)
 		return 0;
 
-	/* set this flag to avoid setting core offline*/
+	/* set this flag to avoid setting core offline */
 	cpudata->suspended = true;
 
 	/* disable CPPC in lowlevel firmware */
