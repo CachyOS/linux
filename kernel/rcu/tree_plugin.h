@@ -406,7 +406,7 @@ void __rcu_read_lock(void)
 		WRITE_ONCE(current->rcu_read_unlock_special.b.need_qs, true);
 	barrier();  /* critical section after entry code. */
 }
-EXPORT_SYMBOL_GPL(__rcu_read_lock);
+EXPORT_SYMBOL(__rcu_read_lock);
 
 /*
  * Preemptible RCU implementation for rcu_read_unlock().
@@ -431,7 +431,7 @@ void __rcu_read_unlock(void)
 		WARN_ON_ONCE(rrln < 0 || rrln > RCU_NEST_PMAX);
 	}
 }
-EXPORT_SYMBOL_GPL(__rcu_read_unlock);
+EXPORT_SYMBOL(__rcu_read_unlock);
 
 /*
  * Advance a ->blkd_tasks-list pointer to the next entry, instead
