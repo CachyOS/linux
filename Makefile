@@ -1145,6 +1145,9 @@ KBUILD_CFLAGS += $(call cc-option, -fstrict-flex-arrays=3)
 KBUILD_CFLAGS-$(CONFIG_CC_NO_STRINGOP_OVERFLOW) += $(call cc-option, -Wno-stringop-overflow)
 KBUILD_CFLAGS-$(CONFIG_CC_STRINGOP_OVERFLOW) += $(call cc-option, -Wstringop-overflow)
 
+# disable GCC vectorization on trees
+KBUILD_CFLAGS	+= $(call cc-option, -fno-tree-vectorize)
+
 # disable invalid "can't wrap" optimizations for signed / pointers
 KBUILD_CFLAGS	+= -fno-strict-overflow
 
