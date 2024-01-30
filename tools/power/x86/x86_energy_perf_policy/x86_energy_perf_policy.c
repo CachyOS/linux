@@ -105,13 +105,18 @@ void usage(void)
 {
 	fprintf(stderr, "%s [options] [scope][field value]\n", progname);
 	fprintf(stderr, "scope: --cpu cpu-list [--hwp-use-pkg #] | --pkg pkg-list\n");
-	fprintf(stderr, "field: --all | --epb | --hwp-epp | --hwp-min | --hwp-max | --hwp-desired\n");
+
+	if (genuine_intel)
+		fprintf(stderr, "field: --all | --epb | --hwp-epp | --hwp-min | --hwp-max | --hwp-desired\n");
+	else if (authentic_amd)
+		fprintf(stderr, "field: --all | --hwp-epp | --hwp-min | --hwp-max | --hwp-desired\n");
+
 	fprintf(stderr, "other: --hwp-enable | --turbo-enable (0 | 1) | --help | --force\n");
 	fprintf(stderr,
 		"value: ( # | \"normal\" | \"performance\" | \"balance-performance\" | \"balance-power\"| \"power\")\n");
 	fprintf(stderr, "--hwp-window usec\n");
-
-	fprintf(stderr, "Specify only Energy Performance BIAS (legacy usage):\n");
+	if (genuine_intel)
+		fprintf(stderr, "Specify only Energy Performance BIAS (legacy usage):\n");
 	fprintf(stderr, "%s: [-c cpu] [-v] (-r | policy-value )\n", progname);
 
 	exit(1);
@@ -1309,7 +1314,7 @@ int update_cpu_msrs(int cpu)
 	unsigned long long msr;
 	int epb;
 
-	if (update_epb) {
+	if (update_epb && genuine_intel) {
 		epb = get_epb(cpu);
 		set_epb(cpu, new_epb);
 
@@ -1318,7 +1323,7 @@ int update_cpu_msrs(int cpu)
 				cpu, epb, (unsigned int) new_epb);
 	}
 
-	if (update_turbo) {
+	if (update_turbo && genuine_intel) {
 		int turbo_is_present_and_disabled;
 
 		intel_get_msr(cpu, MSR_IA32_MISC_ENABLE, &msr);
