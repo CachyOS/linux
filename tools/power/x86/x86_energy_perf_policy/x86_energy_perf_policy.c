@@ -38,6 +38,8 @@ struct msr_hwp_cap {
 	unsigned char guaranteed;
 	unsigned char efficient;
 	unsigned char lowest;
+	unsigned char nominal_perf;
+	unsigned char lowest_nonlinear_perf;
 };
 
 struct msr_hwp_request {
@@ -820,8 +822,13 @@ void print_hwp_cap(int cpu, struct msr_hwp_cap *cap, char *str)
 	if (cpu != -1)
 		printf("cpu%d: ", cpu);
 
-	printf("HWP_CAP: low %d eff %d guar %d high %d\n",
-		cap->lowest, cap->efficient, cap->guaranteed, cap->highest);
+	if (genuine_intel) {
+		printf("HWP_CAP: low %d eff %d guar %d high %d\n",
+			cap->lowest, cap->efficient, cap->guaranteed, cap->highest);
+	} else if (authentic_amd) {
+		printf("[AMD HWP_CAP]: low %d lowest_non %d nominal %d highest %d\n\n",
+			cap->lowest, cap->lowest_nonlinear_perf, cap->nominal_perf, cap->highest);
+	}
 }
 void read_hwp_cap(int cpu, struct msr_hwp_cap *cap, unsigned int msr_offset)
 {
@@ -840,6 +847,8 @@ void read_hwp_cap(int cpu, struct msr_hwp_cap *cap, unsigned int msr_offset)
 			errx(-1, "failed to get msr with return %d", ret);
 		cap->highest = msr_perf_2_ratio(AMD_CPPC_HIGHEST_PERF(msr));
 		cap->lowest = msr_perf_2_ratio(AMD_CPPC_LOWEST_PERF(msr));
+		cap->nominal_perf = msr_perf_2_ratio(AMD_CPPC_NOMINAL_PERF(msr));
+		cap->lowest_nonlinear_perf = msr_perf_2_ratio(AMD_CPPC_LOWNONLIN_PERF(msr));
 	}
 }
 
