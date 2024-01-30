@@ -902,14 +902,23 @@ void write_hwp_request(int cpu, struct msr_hwp_request *hwp_req, unsigned int ms
 			hwp_req->hwp_desired, hwp_req->hwp_epp,
 			hwp_req->hwp_window, hwp_req->hwp_use_pkg);
 
-	msr |= HWP_MIN_PERF(ratio_2_msr_perf(hwp_req->hwp_min));
-	msr |= HWP_MAX_PERF(ratio_2_msr_perf(hwp_req->hwp_max));
-	msr |= HWP_DESIRED_PERF(ratio_2_msr_perf(hwp_req->hwp_desired));
-	msr |= HWP_ENERGY_PERF_PREFERENCE(hwp_req->hwp_epp);
-	msr |= HWP_ACTIVITY_WINDOW(hwp_req->hwp_window);
-	msr |= HWP_PACKAGE_CONTROL(hwp_req->hwp_use_pkg);
-
-	put_msr(cpu, msr_offset, msr);
+	if (genuine_intel) {
+		msr |= HWP_MIN_PERF(ratio_2_msr_perf(hwp_req->hwp_min));
+		msr |= HWP_MAX_PERF(ratio_2_msr_perf(hwp_req->hwp_max));
+		msr |= HWP_DESIRED_PERF(ratio_2_msr_perf(hwp_req->hwp_desired));
+		msr |= HWP_ENERGY_PERF_PREFERENCE(hwp_req->hwp_epp);
+		msr |= HWP_ACTIVITY_WINDOW(hwp_req->hwp_window);
+		msr |= HWP_PACKAGE_CONTROL(hwp_req->hwp_use_pkg);
+		put_msr(cpu, msr_offset, msr);
+	} else if (authentic_amd) {
+		/* AMD EPP need to set desired perf with zero */
+		hwp_req->hwp_desired = 0;
+		msr |= AMD_CPPC_MIN_PERF(hwp_req->hwp_min);
+		msr |= AMD_CPPC_MAX_PERF(hwp_req->hwp_max);
+		msr |= AMD_CPPC_DES_PERF(hwp_req->hwp_desired);
+		msr |= AMD_CPPC_ENERGY_PERF_PREF(hwp_req->hwp_epp);
+		amd_put_msr(cpu, msr_offset, (unsigned int)msr);
+	}
 }
 
 static int get_epb(int cpu)
@@ -1157,8 +1166,12 @@ int update_hwp_request(int cpu)
 {
 	struct msr_hwp_request req;
 	struct msr_hwp_cap cap;
+	int msr_offset = 0;
 
-	int msr_offset = MSR_HWP_REQUEST;
+	if (genuine_intel)
+		msr_offset = MSR_HWP_REQUEST;
+	else if (authentic_amd)
+		msr_offset = MSR_AMD_CPPC_REQ;
 
 	read_hwp_request(cpu, &req, msr_offset);
 	if (debug)
@@ -1181,7 +1194,11 @@ int update_hwp_request(int cpu)
 
 	req.hwp_use_pkg = req_update.hwp_use_pkg;
 
-	read_hwp_cap(cpu, &cap, MSR_HWP_CAPABILITIES);
+	if (genuine_intel)
+		read_hwp_cap(cpu, &cap, MSR_HWP_CAPABILITIES);
+	else if (authentic_amd)
+		read_hwp_cap(cpu, &cap, MSR_AMD_CPPC_CAP1);
+
 	if (debug)
 		print_hwp_cap(cpu, &cap, "");
 
@@ -1203,8 +1220,12 @@ int update_hwp_request_pkg(int pkg)
 	struct msr_hwp_request req;
 	struct msr_hwp_cap cap;
 	int cpu = first_cpu_in_pkg[pkg];
+	int msr_offset = 0;
 
-	int msr_offset = MSR_HWP_REQUEST_PKG;
+	if (genuine_intel)
+		msr_offset = MSR_HWP_REQUEST_PKG;
+	else if (authentic_amd)
+		msr_offset = MSR_AMD_CPPC_REQ;
 
 	read_hwp_request(cpu, &req, msr_offset);
 	if (debug)
@@ -1225,7 +1246,11 @@ int update_hwp_request_pkg(int pkg)
 	if (update_hwp_epp)
 		req.hwp_epp = req_update.hwp_epp;
 
-	read_hwp_cap(cpu, &cap, MSR_HWP_CAPABILITIES);
+	if (genuine_intel)
+		read_hwp_cap(cpu, &cap, MSR_HWP_CAPABILITIES);
+	else if (authentic_amd)
+		read_hwp_cap(cpu, &cap, MSR_AMD_CPPC_CAP1);
+
 	if (debug)
 		print_hwp_cap(cpu, &cap, "");
 
@@ -1246,12 +1271,26 @@ int update_hwp_request_pkg(int pkg)
 int enable_hwp_on_cpu(int cpu)
 {
 	unsigned long long msr;
+	int ret;
 
-	get_msr(cpu, MSR_PM_ENABLE, &msr);
-	put_msr(cpu, MSR_PM_ENABLE, 1);
+	if (genuine_intel) {
+		get_msr(cpu, MSR_PM_ENABLE, &msr);
+		put_msr(cpu, MSR_PM_ENABLE, 1);
+	} else if (authentic_amd) {
+		ret = amd_get_msr(cpu, MSR_AMD_CPPC_ENABLE, (unsigned long *)(&msr));
+		if (ret < 0)
+			errx(-1, "failed to get msr with return %d", ret);
 
-	if (verbose)
+		ret = amd_put_msr(cpu, MSR_AMD_CPPC_ENABLE, 1);
+		if (ret < 0)
+			errx(-1, "failed to put msr with return %d", ret);
+	}
+
+	if (verbose && genuine_intel)
 		printf("cpu%d: MSR_PM_ENABLE old: %d new: %d\n", cpu, (unsigned int) msr, 1);
+
+	if (verbose && authentic_amd)
+		printf("cpu%d: MSR_AMD_CPPC_ENABLE old: %d new: %d\n", cpu, (unsigned int) msr, 1);
 
 	return 0;
 }
