@@ -686,7 +686,7 @@ void err_on_hypervisor(void)
 		    "not supported on this virtual machine");
 }
 
-int intel_get_msr(int cpu, int offset, unsigned long long *msr)
+static int intel_get_msr(int cpu, int offset, unsigned long long *msr)
 {
 	int retval;
 	char pathname[32];
@@ -710,7 +710,7 @@ int intel_get_msr(int cpu, int offset, unsigned long long *msr)
 	return 0;
 }
 
-int intel_put_msr(int cpu, int offset, unsigned long long new_msr)
+static int intel_put_msr(int cpu, int offset, unsigned long long new_msr)
 {
 	char pathname[32];
 	int retval;
