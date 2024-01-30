@@ -864,10 +864,15 @@ void print_hwp_request(int cpu, struct msr_hwp_request *h, char *str)
 
 	if (str)
 		printf("%s", str);
+	if (genuine_intel)
+		printf("HWP_REQ: min %d max %d des %d epp %d window 0x%x (%d*10^%dus) use_pkg %d\n",
+			h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
+			h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7, h->hwp_use_pkg);
+	else if (authentic_amd)
+		printf("[AMD HWP_REQ]: lowest %d highest %d desired %d epp %d window 0x%x (%d*10^%dus) use_pkg %d\n",
+			h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
+			h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7, h->hwp_use_pkg);
 
-	printf("HWP_REQ: min %d max %d des %d epp %d window 0x%x (%d*10^%dus) use_pkg %d\n",
-		h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
-		h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7, h->hwp_use_pkg);
 }
 void print_hwp_request_pkg(int pkg, struct msr_hwp_request *h, char *str)
 {
@@ -876,9 +881,15 @@ void print_hwp_request_pkg(int pkg, struct msr_hwp_request *h, char *str)
 	if (str)
 		printf("%s", str);
 
-	printf("HWP_REQ_PKG: min %d max %d des %d epp %d window 0x%x (%d*10^%dus)\n",
-		h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
-		h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7);
+	if (genuine_intel) {
+		printf("HWP_REQ_PKG: min %d max %d des %d epp %d window 0x%x (%d*10^%dus)\n",
+			h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
+			h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7);
+	} else if (authentic_amd) {
+		printf("AMD HWP_REQ_PKG: lowest %d highest %d desired %d epp %d window 0x%x (%d*10^%dus)\n",
+			h->hwp_min, h->hwp_max, h->hwp_desired, h->hwp_epp,
+			h->hwp_window, h->hwp_window & 0x7F, (h->hwp_window >> 7) & 0x7);
+	}
 }
 void read_hwp_request(int cpu, struct msr_hwp_request *hwp_req, unsigned int msr_offset)
 {
