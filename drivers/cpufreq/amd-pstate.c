@@ -130,17 +130,27 @@ static struct quirk_entry quirk_amd_7k62 = {
 	.lowest_freq = 550,
 };
 
-static int __init dmi_matched(const struct dmi_system_id *dmi)
+static int __init dmi_matched_7k62_bios_bug(const struct dmi_system_id *dmi)
 {
-	quirks = dmi->driver_data;
-	pr_info("hardware type %s found\n", dmi->ident);
+	/**
+	 * match the broken bios for family 17h, model 31h processor
+	 * broken BIOS lack of nominal_freq and lowest_freq capabilities
+	 * definition in ACPI tables
+	 */
+	if (boot_cpu_data.x86 == 0x17 && boot_cpu_data.x86_model == 0x31 &&
+			boot_cpu_has(X86_FEATURE_ZEN2)) {
+		quirks = dmi->driver_data;
+		pr_info("hardware type %s found\n", dmi->ident);
+		return 1;
+	}
 
-	return 1;
+
+	return 0;
 }
 
 static const struct dmi_system_id amd_pstate_quirks_table[] __initconst = {
 	{
-		.callback = dmi_matched,
+		.callback = dmi_matched_7k62_bios_bug,
 		.ident = "AMD EPYC 7K62",
 		.matches = {
 			DMI_MATCH(DMI_BIOS_VERSION, "5.14"),
