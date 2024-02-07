@@ -448,8 +448,8 @@ control its functionality at the system level.  They are located in the
         allow user to change all cores frequency boosting state. It supports both
         ``active``, ``passive`` and ``guided`` mode control with below value write to it.
 
-        "0" Disable Core performance Boosting
-        "1" Enable  Core performance Boosting
+        "0" Disable Core Performance Boosting
+        "1" Enable  Core Performance Boosting
 
 ``cpupower`` tool support for ``amd-pstate``
 ===============================================

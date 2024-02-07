@@ -226,6 +226,22 @@ static void amd_pstate_ut_check_freq(u32 index)
 			goto skip_test;
 		}
 
+		if (global.cpb_supported) {
+			if ((policy->max == cpudata->max_freq) ||
+					(policy->max == cpudata->nominal_freq))
+				amd_pstate_ut_cases[index].result = AMD_PSTATE_UT_RESULT_PASS;
+			else {
+				amd_pstate_ut_cases[index].result = AMD_PSTATE_UT_RESULT_FAIL;
+				pr_err("%s cpu%d policy_max=%d should be equal cpu_max=%d or cpu_nominal=%d !\n",
+					__func__, cpu, policy->max, cpudata->max_freq,
+					cpudata->nominal_freq);
+				goto skip_test;
+			}
+		} else {
+			amd_pstate_ut_cases[index].result = AMD_PSTATE_UT_RESULT_FAIL;
+			pr_err("%s cpu%d must support boost!\n", __func__, cpu);
+			goto skip_test;
+		}
 		cpufreq_cpu_put(policy);
 	}
 

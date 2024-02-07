@@ -68,19 +68,7 @@ static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool cppc_enabled;
 static bool amd_pstate_prefcore = true;
 static struct quirk_entry *quirks;
-
-/**
- * struct global_params - Global parameters, mostly tunable via sysfs.
- * @cpb_boost:		Whether or not to use boost CPU P-states.
- * @cpb_supported:	Whether or not CPU boost P-states are available
- *			based on the MSR_K7_HWCR bit[25] state
- */
-struct global_params {
-	bool cpb_boost;
-	bool cpb_supported;
-};
-
-static struct global_params global;
+struct global_params global;
 
 /*
  * AMD Energy Preference Performance (EPP)
