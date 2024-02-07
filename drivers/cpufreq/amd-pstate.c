@@ -68,7 +68,8 @@ static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool cppc_enabled;
 static bool amd_pstate_prefcore = true;
 static struct quirk_entry *quirks;
-struct global_params global;
+struct amd_pstate_global_params amd_pstate_global_params;
+EXPORT_SYMBOL_GPL(amd_pstate_global_params);
 
 /*
  * AMD Energy Preference Performance (EPP)
@@ -496,7 +497,7 @@ static void amd_pstate_update(struct amd_cpudata *cpudata, u32 min_perf,
 	value |= AMD_CPPC_DES_PERF(des_perf);
 
 	/* limit the max perf when core performance boost feature is disabled */
-	if (!global.cpb_boost)
+	if (!amd_pstate_global_params.cpb_boost)
 		max_perf = min_t(unsigned long, nominal_perf, max_perf);
 
 	value &= ~AMD_CPPC_MAX_PERF(~0L);
@@ -672,7 +673,7 @@ static int amd_get_max_freq(struct amd_cpudata *cpudata)
 	max_perf = READ_ONCE(cpudata->highest_perf);
 
 	/* when boost is off, the highest perf will be limited to nominal_perf */
-	if (!global.cpb_boost)
+	if (!amd_pstate_global_params.cpb_boost)
 		max_perf = nominal_perf;
 
 	boost_ratio = div_u64(max_perf << SCHED_CAPACITY_SHIFT,
@@ -737,8 +738,8 @@ static int amd_pstate_boost_init(struct amd_cpudata *cpudata)
 		return ret;
 	}
 
-	global.cpb_supported = !((boost_val >> 25) & 0x1);
-	global.cpb_boost = global.cpb_supported;
+	amd_pstate_global_params.cpb_supported = !((boost_val >> 25) & 0x1);
+	amd_pstate_global_params.cpb_boost = amd_pstate_global_params.cpb_supported;
 
 	return ret;
 }
@@ -1337,7 +1338,7 @@ static int amd_cpu_boost_update(struct amd_cpudata *cpudata, u32 on)
 static ssize_t cpb_boost_show(struct device *dev,
 			   struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%u\n", global.cpb_boost);
+	return sysfs_emit(buf, "%u\n", amd_pstate_global_params.cpb_boost);
 }
 
 static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
@@ -1348,7 +1349,7 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 	int cpu;
 
 	mutex_lock(&amd_pstate_driver_lock);
-	if (!global.cpb_supported) {
+	if (!amd_pstate_global_params.cpb_supported) {
 		pr_err("Boost mode is not supported by this processor or SBIOS\n");
 		return -EINVAL;
 	}
@@ -1357,7 +1358,7 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 	if (ret)
 		return -EINVAL;
 
-	global.cpb_boost = !!new_state;
+	amd_pstate_global_params.cpb_boost = !!new_state;
 
 	for_each_possible_cpu(cpu) {
 
@@ -1371,7 +1372,7 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 			goto err_exit;
 		}
 
-		amd_cpu_boost_update(cpudata, global.cpb_boost);
+		amd_cpu_boost_update(cpudata, amd_pstate_global_params.cpb_boost);
 		refresh_frequency_limits(policy);
 		cpufreq_cpu_put(policy);
 	}
