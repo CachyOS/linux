@@ -58,7 +58,7 @@ struct dmub_notification;
 /**
  * MAX_SURFACES - representative of the upper bound of surfaces that can be piped to a single CRTC
  */
-#define MAX_SURFACES 4
+#define MAX_SURFACES 6
 /**
  * MAX_PLANES - representative of the upper bound of planes that are supported by the HW
  */
