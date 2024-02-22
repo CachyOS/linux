@@ -724,7 +724,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
 		.name = "qca2066 hw2.1",
 		.hw_rev = ATH11K_HW_QCA2066_HW21,
 		.fw = {
-			.dir = "QCA2066/hw2.1",
+			.dir = "QCA206X/hw2.1",
 			.board_size = 256 * 1024,
 			.cal_offset = 128 * 1024,
 		},
