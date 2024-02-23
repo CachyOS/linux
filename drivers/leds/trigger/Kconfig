@@ -152,4 +152,13 @@ config LEDS_TRIGGER_TTY
 
 	  When build as a module this driver will be called ledtrig-tty.
 
+config LEDS_TRIGGER_BLKDEV
+	tristate "LED Trigger for block devices"
+	depends on BLOCK
+	help
+	  The blkdev LED trigger allows LEDs to be controlled by block device
+	  activity (reads and writes).
+
+	  See Documentation/leds/ledtrig-blkdev.rst.
+
 endif # LEDS_TRIGGERS
