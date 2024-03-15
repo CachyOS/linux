@@ -735,7 +735,7 @@ static int amd_pstate_boost_init(struct amd_cpudata *cpudata)
 		return ret;
 	}
 
-	amd_pstate_global_params.cpb_supported = !((boost_val >> 25) & 0x1);
+	amd_pstate_global_params.cpb_supported = !(boost_val & MSR_K7_HWCR_CPB_DIS);
 	amd_pstate_global_params.cpb_boost = amd_pstate_global_params.cpb_supported;
 
 	return ret;
