@@ -478,10 +478,17 @@ bool dc_stream_set_cursor_attributes(
 	struct dc_stream_state *stream,
 	const struct dc_cursor_attributes *attributes);
 
+bool dc_stream_program_cursor_attributes(
+	struct dc_stream_state *stream,
+	const struct dc_cursor_attributes *attributes);
+
 bool dc_stream_set_cursor_position(
 	struct dc_stream_state *stream,
 	const struct dc_cursor_position *position);
 
+bool dc_stream_program_cursor_position(
+	struct dc_stream_state *stream,
+	const struct dc_cursor_position *position);
 
 bool dc_stream_adjust_vmin_vmax(struct dc *dc,
 				struct dc_stream_state *stream,
