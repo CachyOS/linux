@@ -3188,6 +3188,83 @@ fail:
 
 }
 
+static void program_cursor_attributes(
+	struct dc *dc,
+	struct dc_stream_state *stream)
+{
+	int i;
+	struct resource_context *res_ctx;
+	struct pipe_ctx *pipe_to_program = NULL;
+
+	if (!stream)
+		return;
+
+	res_ctx = &dc->current_state->res_ctx;
+
+	for (i = 0; i < MAX_PIPES; i++) {
+		struct pipe_ctx *pipe_ctx = &res_ctx->pipe_ctx[i];
+
+		if (pipe_ctx->stream != stream)
+			continue;
+
+		if (!pipe_to_program) {
+			pipe_to_program = pipe_ctx;
+			dc->hwss.cursor_lock(dc, pipe_to_program, true);
+			if (pipe_to_program->next_odm_pipe)
+				dc->hwss.cursor_lock(dc, pipe_to_program->next_odm_pipe, true);
+		}
+
+		dc->hwss.set_cursor_attribute(pipe_ctx);
+		if (dc->ctx->dmub_srv)
+			dc_send_update_cursor_info_to_dmu(pipe_ctx, i);
+		if (dc->hwss.set_cursor_sdr_white_level)
+			dc->hwss.set_cursor_sdr_white_level(pipe_ctx);
+	}
+
+	if (pipe_to_program) {
+		dc->hwss.cursor_lock(dc, pipe_to_program, false);
+		if (pipe_to_program->next_odm_pipe)
+			dc->hwss.cursor_lock(dc, pipe_to_program->next_odm_pipe, false);
+	}
+}
+
+static void program_cursor_position(
+	struct dc *dc,
+	struct dc_stream_state *stream)
+{
+	int i;
+	struct resource_context *res_ctx;
+	struct pipe_ctx *pipe_to_program = NULL;
+
+	if (!stream)
+		return;
+
+	res_ctx = &dc->current_state->res_ctx;
+
+	for (i = 0; i < MAX_PIPES; i++) {
+		struct pipe_ctx *pipe_ctx = &res_ctx->pipe_ctx[i];
+
+		if (pipe_ctx->stream != stream ||
+				(!pipe_ctx->plane_res.mi  && !pipe_ctx->plane_res.hubp) ||
+				!pipe_ctx->plane_state ||
+				(!pipe_ctx->plane_res.xfm && !pipe_ctx->plane_res.dpp) ||
+				(!pipe_ctx->plane_res.ipp && !pipe_ctx->plane_res.dpp))
+			continue;
+
+		if (!pipe_to_program) {
+			pipe_to_program = pipe_ctx;
+			dc->hwss.cursor_lock(dc, pipe_to_program, true);
+		}
+
+		dc->hwss.set_cursor_position(pipe_ctx);
+		if (dc->ctx->dmub_srv)
+			dc_send_update_cursor_info_to_dmu(pipe_ctx, i);
+	}
+
+	if (pipe_to_program)
+		dc->hwss.cursor_lock(dc, pipe_to_program, false);
+}
+
 static void commit_planes_do_stream_update(struct dc *dc,
 		struct dc_stream_state *stream,
 		struct dc_stream_update *stream_update,
@@ -3248,6 +3325,13 @@ static void commit_planes_do_stream_update(struct dc *dc,
 				}
 			}
 
+			if (stream_update->cursor_attributes) {
+				program_cursor_attributes(dc, stream);
+			}
+
+			if (stream_update->cursor_position) {
+				program_cursor_position(dc, stream);
+			}
 
 			/* Full fe update*/
 			if (update_type == UPDATE_TYPE_FAST)

@@ -327,6 +327,9 @@ struct dc_stream_update {
 
 	struct test_pattern *pending_test_pattern;
 	struct dc_crtc_timing_adjust *crtc_timing_adjust;
+
+	struct dc_cursor_attributes *cursor_attributes;
+	struct dc_cursor_position *cursor_position;
 };
 
 bool dc_is_stream_unchanged(
