@@ -8466,6 +8466,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 	bool cursor_update = false;
 	bool pflip_present = false;
 	bool dirty_rects_changed = false;
+	bool updated_planes_and_streams = false;
 	struct {
 		struct dc_surface_update surface_updates[MAX_SURFACES];
 		struct dc_plane_info plane_infos[MAX_SURFACES];
@@ -8480,6 +8481,14 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 		drm_err(dev, "Failed to allocate update bundle\n");
 		goto cleanup;
 	}
+
+	/*
+	 * Disable the cursor first if we're disabling all the planes.
+	 * It'll remain on the screen after the planes are re-enabled
+	 * if we don't.
+	 */
+	if (acrtc_state->active_planes == 0)
+		amdgpu_dm_commit_cursors(state);
 
 	/* update planes when needed */
 	for_each_oldnew_plane_in_state(state, plane, old_plane_state, new_plane_state, i) {
@@ -8770,6 +8779,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 					 acrtc_state->stream,
 					 &bundle->stream_update,
 					 bundle->surface_updates);
+		updated_planes_and_streams = true;
 
 		/**
 		 * Enable or disable the interrupts on the backend.
@@ -8841,6 +8851,14 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_state *state,
 
 		mutex_unlock(&dm->dc_lock);
 	}
+
+	/*
+	 * Update cursor state *after* programming all the planes.
+	 * This avoids redundant programming in the case where we're going
+	 * to be disabling a single plane - those pipes are being disabled.
+	 */
+	if (acrtc_state->active_planes && !updated_planes_and_streams)
+		amdgpu_dm_commit_cursors(state);
 
 cleanup:
 	kfree(bundle);
