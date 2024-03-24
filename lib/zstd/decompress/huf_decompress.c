@@ -161,17 +161,18 @@ static size_t HUF_initFastDStream(BYTE const* ip) {
  * op [in/out] - The output pointers, must be updated to reflect what is written.
  * bits [in/out] - The bitstream containers, must be updated to reflect the current state.
  * dt [in] - The decoding table.
- * ilimit [in] - The input limit, stop when any input pointer is below ilimit.
+ * ilowest [in] - The beginning of the valid range of the input. Decoders may read
+ *                down to this pointer. It may be below iend[0].
  * oend [in] - The end of the output stream. op[3] must not cross oend.
  * iend [in] - The end of each input stream. ip[i] may cross iend[i],
- *             as long as it is above ilimit, but that indicates corruption.
+ *             as long as it is above ilowest, but that indicates corruption.
  */
 typedef struct {
     BYTE const* ip[4];
     BYTE* op[4];
     U64 bits[4];
     void const* dt;
-    BYTE const* ilimit;
+    BYTE const* ilowest;
     BYTE* oend;
     BYTE const* iend[4];
 } HUF_DecompressFastArgs;
@@ -189,15 +190,20 @@ static size_t HUF_DecompressFastArgs_init(HUF_DecompressFastArgs* args, void* ds
     void const* dt = DTable + 1;
     U32 const dtLog = HUF_getDTableDesc(DTable).tableLog;
 
-    const BYTE* const ilimit = (const BYTE*)src + 6 + 8;
+    const BYTE* const istart = (const BYTE*)src;
 
-    BYTE* const oend = (BYTE*)dst + dstSize;
+    BYTE* const oend = ZSTD_maybeNullPtrAdd((BYTE*)dst, dstSize);
 
     /* The fast decoding loop assumes 64-bit little-endian.
      * This condition is false on x32.
      */
     if (!MEM_isLittleEndian() || MEM_32bits())
         return 0;
+
+    /* Avoid nullptr addition */
+    if (dstSize == 0)
+        return 0;
+    assert(dst != NULL);
 
     /* strict minimum : jump table + 1 byte per stream */
     if (srcSize < 10)
@@ -212,7 +218,6 @@ static size_t HUF_DecompressFastArgs_init(HUF_DecompressFastArgs* args, void* ds
 
     /* Read the jump table. */
     {
-        const BYTE* const istart = (const BYTE*)src;
         size_t const length1 = MEM_readLE16(istart);
         size_t const length2 = MEM_readLE16(istart+2);
         size_t const length3 = MEM_readLE16(istart+4);
@@ -224,10 +229,8 @@ static size_t HUF_DecompressFastArgs_init(HUF_DecompressFastArgs* args, void* ds
 
         /* HUF_initFastDStream() requires this, and this small of an input
          * won't benefit from the ASM loop anyways.
-         * length1 must be >= 16 so that ip[0] >= ilimit before the loop
-         * starts.
          */
-        if (length1 < 16 || length2 < 8 || length3 < 8 || length4 < 8)
+        if (length1 < 8 || length2 < 8 || length3 < 8 || length4 < 8)
             return 0;
         if (length4 > srcSize) return ERROR(corruption_detected);   /* overflow */
     }
@@ -259,11 +262,12 @@ static size_t HUF_DecompressFastArgs_init(HUF_DecompressFastArgs* args, void* ds
     args->bits[2] = HUF_initFastDStream(args->ip[2]);
     args->bits[3] = HUF_initFastDStream(args->ip[3]);
 
-    /* If ip[] >= ilimit, it is guaranteed to be safe to
-        * reload bits[]. It may be beyond its section, but is
-        * guaranteed to be valid (>= istart).
-        */
-    args->ilimit = ilimit;
+    /* The decoders must be sure to never read beyond ilowest.
+     * This is lower than iend[0], but allowing decoders to read
+     * down to ilowest can allow an extra iteration or two in the
+     * fast loop.
+     */
+    args->ilowest = istart;
 
     args->oend = oend;
     args->dt = dt;
@@ -288,7 +292,7 @@ static size_t HUF_initRemainingDStream(BIT_DStream_t* bit, HUF_DecompressFastArg
     assert(sizeof(size_t) == 8);
     bit->bitContainer = MEM_readLEST(args->ip[stream]);
     bit->bitsConsumed = ZSTD_countTrailingZeros64(args->bits[stream]);
-    bit->start = (const char*)args->iend[0];
+    bit->start = (const char*)args->ilowest;
     bit->limitPtr = bit->start + sizeof(size_t);
     bit->ptr = (const char*)args->ip[stream];
 
@@ -297,21 +301,21 @@ static size_t HUF_initRemainingDStream(BIT_DStream_t* bit, HUF_DecompressFastArg
 
 /* Calls X(N) for each stream 0, 1, 2, 3. */
 #define HUF_4X_FOR_EACH_STREAM(X) \
-    {                             \
-        X(0)                      \
-        X(1)                      \
-        X(2)                      \
-        X(3)                      \
-    }
+    do {                          \
+        X(0);                     \
+        X(1);                     \
+        X(2);                     \
+        X(3);                     \
+    } while (0)
 
 /* Calls X(N, var) for each stream 0, 1, 2, 3. */
 #define HUF_4X_FOR_EACH_STREAM_WITH_VAR(X, var) \
-    {                                           \
-        X(0, (var))                             \
-        X(1, (var))                             \
-        X(2, (var))                             \
-        X(3, (var))                             \
-    }
+    do {                                        \
+        X(0, (var));                            \
+        X(1, (var));                            \
+        X(2, (var));                            \
+        X(3, (var));                            \
+    } while (0)
 
 
 #ifndef HUF_FORCE_DECOMPRESS_X2
@@ -521,15 +525,19 @@ HUF_decodeSymbolX1(BIT_DStream_t* Dstream, const HUF_DEltX1* dt, const U32 dtLog
 }
 
 #define HUF_DECODE_SYMBOLX1_0(ptr, DStreamPtr) \
-    *ptr++ = HUF_decodeSymbolX1(DStreamPtr, dt, dtLog)
+    do { *ptr++ = HUF_decodeSymbolX1(DStreamPtr, dt, dtLog); } while (0)
 
-#define HUF_DECODE_SYMBOLX1_1(ptr, DStreamPtr)  \
-    if (MEM_64bits() || (HUF_TABLELOG_MAX<=12)) \
-        HUF_DECODE_SYMBOLX1_0(ptr, DStreamPtr)
+#define HUF_DECODE_SYMBOLX1_1(ptr, DStreamPtr)      \
+    do {                                            \
+        if (MEM_64bits() || (HUF_TABLELOG_MAX<=12)) \
+            HUF_DECODE_SYMBOLX1_0(ptr, DStreamPtr); \
+    } while (0)
 
-#define HUF_DECODE_SYMBOLX1_2(ptr, DStreamPtr) \
-    if (MEM_64bits()) \
-        HUF_DECODE_SYMBOLX1_0(ptr, DStreamPtr)
+#define HUF_DECODE_SYMBOLX1_2(ptr, DStreamPtr)      \
+    do {                                            \
+        if (MEM_64bits())                           \
+            HUF_DECODE_SYMBOLX1_0(ptr, DStreamPtr); \
+    } while (0)
 
 HINT_INLINE size_t
 HUF_decodeStreamX1(BYTE* p, BIT_DStream_t* const bitDPtr, BYTE* const pEnd, const HUF_DEltX1* const dt, const U32 dtLog)
@@ -567,7 +575,7 @@ HUF_decompress1X1_usingDTable_internal_body(
     const HUF_DTable* DTable)
 {
     BYTE* op = (BYTE*)dst;
-    BYTE* const oend = op + dstSize;
+    BYTE* const oend = ZSTD_maybeNullPtrAdd(op, dstSize);
     const void* dtPtr = DTable + 1;
     const HUF_DEltX1* const dt = (const HUF_DEltX1*)dtPtr;
     BIT_DStream_t bitD;
@@ -595,6 +603,7 @@ HUF_decompress4X1_usingDTable_internal_body(
 {
     /* Check */
     if (cSrcSize < 10) return ERROR(corruption_detected);  /* strict minimum : jump table + 1 byte per stream */
+    if (dstSize < 6) return ERROR(corruption_detected);         /* stream 4-split doesn't work */
 
     {   const BYTE* const istart = (const BYTE*) cSrc;
         BYTE* const ostart = (BYTE*) dst;
@@ -630,7 +639,7 @@ HUF_decompress4X1_usingDTable_internal_body(
 
         if (length4 > cSrcSize) return ERROR(corruption_detected);   /* overflow */
         if (opStart4 > oend) return ERROR(corruption_detected);      /* overflow */
-        if (dstSize < 6) return ERROR(corruption_detected);         /* stream 4-split doesn't work */
+        assert(dstSize >= 6); /* validated above */
         CHECK_F( BIT_initDStream(&bitD1, istart1, length1) );
         CHECK_F( BIT_initDStream(&bitD2, istart2, length2) );
         CHECK_F( BIT_initDStream(&bitD3, istart3, length3) );
@@ -713,7 +722,7 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
     BYTE* op[4];
     U16 const* const dtable = (U16 const*)args->dt;
     BYTE* const oend = args->oend;
-    BYTE const* const ilimit = args->ilimit;
+    BYTE const* const ilowest = args->ilowest;
 
     /* Copy the arguments to local variables */
     ZSTD_memcpy(&bits, &args->bits, sizeof(bits));
@@ -731,7 +740,7 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
 #ifndef NDEBUG
         for (stream = 0; stream < 4; ++stream) {
             assert(op[stream] <= (stream == 3 ? oend : op[stream + 1]));
-            assert(ip[stream] >= ilimit);
+            assert(ip[stream] >= ilowest);
         }
 #endif
         /* Compute olimit */
@@ -741,7 +750,7 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
             /* Each iteration consumes up to 11 bits * 5 = 55 bits < 7 bytes
              * per stream.
              */
-            size_t const iiters = (size_t)(ip[0] - ilimit) / 7;
+            size_t const iiters = (size_t)(ip[0] - ilowest) / 7;
             /* We can safely run iters iterations before running bounds checks */
             size_t const iters = MIN(oiters, iiters);
             size_t const symbols = iters * 5;
@@ -752,8 +761,8 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
              */
             olimit = op[3] + symbols;
 
-            /* Exit fast decoding loop once we get close to the end. */
-            if (op[3] + 20 > olimit)
+            /* Exit fast decoding loop once we reach the end. */
+            if (op[3] == olimit)
                 break;
 
             /* Exit the decoding loop if any input pointer has crossed the
@@ -773,15 +782,15 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
 #endif
 
 #define HUF_4X1_DECODE_SYMBOL(_stream, _symbol)                 \
-    {                                                           \
+    do {                                                        \
         int const index = (int)(bits[(_stream)] >> 53);         \
         int const entry = (int)dtable[index];                   \
         bits[(_stream)] <<= (entry & 0x3F);                     \
         op[(_stream)][(_symbol)] = (BYTE)((entry >> 8) & 0xFF); \
-    }
+    } while (0)
 
 #define HUF_4X1_RELOAD_STREAM(_stream)                              \
-    {                                                               \
+    do {                                                            \
         int const ctz = ZSTD_countTrailingZeros64(bits[(_stream)]); \
         int const nbBits = ctz & 7;                                 \
         int const nbBytes = ctz >> 3;                               \
@@ -789,21 +798,21 @@ void HUF_decompress4X1_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
         ip[(_stream)] -= nbBytes;                                   \
         bits[(_stream)] = MEM_read64(ip[(_stream)]) | 1;            \
         bits[(_stream)] <<= nbBits;                                 \
-    }
+    } while (0)
 
         /* Manually unroll the loop because compilers don't consistently
          * unroll the inner loops, which destroys performance.
          */
         do {
             /* Decode 5 symbols in each of the 4 streams */
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 0)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 1)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 2)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 3)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 4)
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 0);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 1);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 2);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 3);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X1_DECODE_SYMBOL, 4);
 
             /* Reload each of the 4 the bitstreams */
-            HUF_4X_FOR_EACH_STREAM(HUF_4X1_RELOAD_STREAM)
+            HUF_4X_FOR_EACH_STREAM(HUF_4X1_RELOAD_STREAM);
         } while (op[3] < olimit);
 
 #undef HUF_4X1_DECODE_SYMBOL
@@ -832,8 +841,8 @@ HUF_decompress4X1_usingDTable_internal_fast(
     HUF_DecompressFastLoopFn loopFn)
 {
     void const* dt = DTable + 1;
-    const BYTE* const iend = (const BYTE*)cSrc + 6;
-    BYTE* const oend = (BYTE*)dst + dstSize;
+    BYTE const* const ilowest = (BYTE const*)cSrc;
+    BYTE* const oend = ZSTD_maybeNullPtrAdd((BYTE*)dst, dstSize);
     HUF_DecompressFastArgs args;
     {   size_t const ret = HUF_DecompressFastArgs_init(&args, dst, dstSize, cSrc, cSrcSize, DTable);
         FORWARD_IF_ERROR(ret, "Failed to init fast loop args");
@@ -841,18 +850,22 @@ HUF_decompress4X1_usingDTable_internal_fast(
             return 0;
     }
 
-    assert(args.ip[0] >= args.ilimit);
+    assert(args.ip[0] >= args.ilowest);
     loopFn(&args);
 
-    /* Our loop guarantees that ip[] >= ilimit and that we haven't
+    /* Our loop guarantees that ip[] >= ilowest and that we haven't
     * overwritten any op[].
     */
-    assert(args.ip[0] >= iend);
-    assert(args.ip[1] >= iend);
-    assert(args.ip[2] >= iend);
-    assert(args.ip[3] >= iend);
+    assert(args.ip[0] >= ilowest);
+    assert(args.ip[0] >= ilowest);
+    assert(args.ip[1] >= ilowest);
+    assert(args.ip[2] >= ilowest);
+    assert(args.ip[3] >= ilowest);
     assert(args.op[3] <= oend);
-    (void)iend;
+
+    assert(ilowest == args.ilowest);
+    assert(ilowest + 6 == args.iend[0]);
+    (void)ilowest;
 
     /* finish bit streams one by one. */
     {   size_t const segmentSize = (dstSize+3) / 4;
@@ -1274,15 +1287,19 @@ HUF_decodeLastSymbolX2(void* op, BIT_DStream_t* DStream, const HUF_DEltX2* dt, c
 }
 
 #define HUF_DECODE_SYMBOLX2_0(ptr, DStreamPtr) \
-    ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog)
+    do { ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog); } while (0)
 
-#define HUF_DECODE_SYMBOLX2_1(ptr, DStreamPtr) \
-    if (MEM_64bits() || (HUF_TABLELOG_MAX<=12)) \
-        ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog)
+#define HUF_DECODE_SYMBOLX2_1(ptr, DStreamPtr)                     \
+    do {                                                           \
+        if (MEM_64bits() || (HUF_TABLELOG_MAX<=12))                \
+            ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog); \
+    } while (0)
 
-#define HUF_DECODE_SYMBOLX2_2(ptr, DStreamPtr) \
-    if (MEM_64bits()) \
-        ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog)
+#define HUF_DECODE_SYMBOLX2_2(ptr, DStreamPtr)                     \
+    do {                                                           \
+        if (MEM_64bits())                                          \
+            ptr += HUF_decodeSymbolX2(ptr, DStreamPtr, dt, dtLog); \
+    } while (0)
 
 HINT_INLINE size_t
 HUF_decodeStreamX2(BYTE* p, BIT_DStream_t* bitDPtr, BYTE* const pEnd,
@@ -1342,7 +1359,7 @@ HUF_decompress1X2_usingDTable_internal_body(
 
     /* decode */
     {   BYTE* const ostart = (BYTE*) dst;
-        BYTE* const oend = ostart + dstSize;
+        BYTE* const oend = ZSTD_maybeNullPtrAdd(ostart, dstSize);
         const void* const dtPtr = DTable+1;   /* force compiler to not use strict-aliasing */
         const HUF_DEltX2* const dt = (const HUF_DEltX2*)dtPtr;
         DTableDesc const dtd = HUF_getDTableDesc(DTable);
@@ -1367,6 +1384,7 @@ HUF_decompress4X2_usingDTable_internal_body(
     const HUF_DTable* DTable)
 {
     if (cSrcSize < 10) return ERROR(corruption_detected);   /* strict minimum : jump table + 1 byte per stream */
+    if (dstSize < 6) return ERROR(corruption_detected);         /* stream 4-split doesn't work */
 
     {   const BYTE* const istart = (const BYTE*) cSrc;
         BYTE* const ostart = (BYTE*) dst;
@@ -1402,7 +1420,7 @@ HUF_decompress4X2_usingDTable_internal_body(
 
         if (length4 > cSrcSize) return ERROR(corruption_detected);  /* overflow */
         if (opStart4 > oend) return ERROR(corruption_detected);     /* overflow */
-        if (dstSize < 6) return ERROR(corruption_detected);         /* stream 4-split doesn't work */
+        assert(dstSize >= 6 /* validated above */);
         CHECK_F( BIT_initDStream(&bitD1, istart1, length1) );
         CHECK_F( BIT_initDStream(&bitD2, istart2, length2) );
         CHECK_F( BIT_initDStream(&bitD3, istart3, length3) );
@@ -1507,7 +1525,7 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
     BYTE* op[4];
     BYTE* oend[4];
     HUF_DEltX2 const* const dtable = (HUF_DEltX2 const*)args->dt;
-    BYTE const* const ilimit = args->ilimit;
+    BYTE const* const ilowest = args->ilowest;
 
     /* Copy the arguments to local registers. */
     ZSTD_memcpy(&bits, &args->bits, sizeof(bits));
@@ -1530,7 +1548,7 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
 #ifndef NDEBUG
         for (stream = 0; stream < 4; ++stream) {
             assert(op[stream] <= oend[stream]);
-            assert(ip[stream] >= ilimit);
+            assert(ip[stream] >= ilowest);
         }
 #endif
         /* Compute olimit */
@@ -1543,7 +1561,7 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
              * We also know that each input pointer is >= ip[0]. So we can run
              * iters loops before running out of input.
              */
-            size_t iters = (size_t)(ip[0] - ilimit) / 7;
+            size_t iters = (size_t)(ip[0] - ilowest) / 7;
             /* Each iteration can produce up to 10 bytes of output per stream.
              * Each output stream my advance at different rates. So take the
              * minimum number of safe iterations among all the output streams.
@@ -1561,8 +1579,8 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
              */
             olimit = op[3] + (iters * 5);
 
-            /* Exit the fast decoding loop if we are too close to the end. */
-            if (op[3] + 10 > olimit)
+            /* Exit the fast decoding loop once we reach the end. */
+            if (op[3] == olimit)
                 break;
 
             /* Exit the decoding loop if any input pointer has crossed the
@@ -1581,18 +1599,20 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
         }
 #endif
 
-#define HUF_4X2_DECODE_SYMBOL(_stream, _decode3)        \
-    if ((_decode3) || (_stream) != 3) {                 \
-        int const index = (int)(bits[(_stream)] >> 53); \
-        HUF_DEltX2 const entry = dtable[index];         \
-        MEM_write16(op[(_stream)], entry.sequence);     \
-        bits[(_stream)] <<= (entry.nbBits) & 0x3F;      \
-        op[(_stream)] += (entry.length);                \
-    }
+#define HUF_4X2_DECODE_SYMBOL(_stream, _decode3)                      \
+    do {                                                              \
+        if ((_decode3) || (_stream) != 3) {                           \
+            int const index = (int)(bits[(_stream)] >> 53);           \
+            HUF_DEltX2 const entry = dtable[index];                   \
+            MEM_write16(op[(_stream)], entry.sequence); \
+            bits[(_stream)] <<= (entry.nbBits) & 0x3F;                \
+            op[(_stream)] += (entry.length);                          \
+        }                                                             \
+    } while (0)
 
 #define HUF_4X2_RELOAD_STREAM(_stream)                                  \
-    {                                                                   \
-        HUF_4X2_DECODE_SYMBOL(3, 1)                                     \
+    do {                                                                \
+        HUF_4X2_DECODE_SYMBOL(3, 1);                                    \
         {                                                               \
             int const ctz = ZSTD_countTrailingZeros64(bits[(_stream)]); \
             int const nbBits = ctz & 7;                                 \
@@ -1601,7 +1621,7 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
             bits[(_stream)] = MEM_read64(ip[(_stream)]) | 1;            \
             bits[(_stream)] <<= nbBits;                                 \
         }                                                               \
-    }
+    } while (0)
 
         /* Manually unroll the loop because compilers don't consistently
          * unroll the inner loops, which destroys performance.
@@ -1611,20 +1631,20 @@ void HUF_decompress4X2_usingDTable_internal_fast_c_loop(HUF_DecompressFastArgs* 
              * The final stream will be decoded during the reload phase
              * to reduce register pressure.
              */
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0)
-            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0)
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0);
+            HUF_4X_FOR_EACH_STREAM_WITH_VAR(HUF_4X2_DECODE_SYMBOL, 0);
 
             /* Decode one symbol from the final stream */
-            HUF_4X2_DECODE_SYMBOL(3, 1)
+            HUF_4X2_DECODE_SYMBOL(3, 1);
 
             /* Decode 4 symbols from the final stream & reload bitstreams.
              * The final stream is reloaded last, meaning that all 5 symbols
              * are decoded from the final stream before it is reloaded.
              */
-            HUF_4X_FOR_EACH_STREAM(HUF_4X2_RELOAD_STREAM)
+            HUF_4X_FOR_EACH_STREAM(HUF_4X2_RELOAD_STREAM);
         } while (op[3] < olimit);
     }
 
@@ -1647,8 +1667,8 @@ HUF_decompress4X2_usingDTable_internal_fast(
     const HUF_DTable* DTable,
     HUF_DecompressFastLoopFn loopFn) {
     void const* dt = DTable + 1;
-    const BYTE* const iend = (const BYTE*)cSrc + 6;
-    BYTE* const oend = (BYTE*)dst + dstSize;
+    const BYTE* const ilowest = (const BYTE*)cSrc;
+    BYTE* const oend = ZSTD_maybeNullPtrAdd((BYTE*)dst, dstSize);
     HUF_DecompressFastArgs args;
     {
         size_t const ret = HUF_DecompressFastArgs_init(&args, dst, dstSize, cSrc, cSrcSize, DTable);
@@ -1657,16 +1677,19 @@ HUF_decompress4X2_usingDTable_internal_fast(
             return 0;
     }
 
-    assert(args.ip[0] >= args.ilimit);
+    assert(args.ip[0] >= args.ilowest);
     loopFn(&args);
 
     /* note : op4 already verified within main loop */
-    assert(args.ip[0] >= iend);
-    assert(args.ip[1] >= iend);
-    assert(args.ip[2] >= iend);
-    assert(args.ip[3] >= iend);
+    assert(args.ip[0] >= ilowest);
+    assert(args.ip[1] >= ilowest);
+    assert(args.ip[2] >= ilowest);
+    assert(args.ip[3] >= ilowest);
     assert(args.op[3] <= oend);
-    (void)iend;
+
+    assert(ilowest == args.ilowest);
+    assert(ilowest + 6 == args.iend[0]);
+    (void)ilowest;
 
     /* finish bitStreams one by one */
     {
