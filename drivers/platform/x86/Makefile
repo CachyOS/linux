@@ -65,6 +65,7 @@ obj-$(CONFIG_LENOVO_YMC)	+= lenovo-ymc.o
 obj-$(CONFIG_SENSORS_HDAPS)	+= hdaps.o
 obj-$(CONFIG_THINKPAD_ACPI)	+= thinkpad_acpi.o
 obj-$(CONFIG_THINKPAD_LMI)	+= think-lmi.o
+obj-$(CONFIG_LEGION_LAPTOP)	+= legion-laptop.o
 obj-$(CONFIG_YOGABOOK)		+= lenovo-yogabook.o
 
 # Intel
@@ -144,3 +145,6 @@ obj-$(CONFIG_WINMATE_FM07_KEYS)		+= winmate-fm07-keys.o
 
 # SEL
 obj-$(CONFIG_SEL3350_PLATFORM)		+= sel3350-platform.o
+
+# Steam Deck
+obj-$(CONFIG_STEAMDECK)			+= steamdeck.o
