@@ -206,6 +206,7 @@ struct ath11k_hw_params {
 	bool fw_wmi_diag_event;
 	bool current_cc_support;
 	bool dbr_debug_support;
+	bool coex_isolation;
 	bool global_reset;
 	const struct cfg80211_sar_capa *bios_sar_capa;
 	bool m3_fw_support;
