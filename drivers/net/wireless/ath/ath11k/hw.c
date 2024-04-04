@@ -100,6 +100,7 @@ static void ath11k_init_wmi_config_qca6390(struct ath11k_base *ab,
 	config->num_wow_filters = 0x16;
 	config->num_keep_alive_pattern = 0;
 	config->flag1 |= WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64;
+	config->host_service_flags |= WMI_RSRC_CFG_HOST_SERVICE_FLAG_NAN_IFACE_SUPPORT;
 }
 
 static void ath11k_hw_ipq8074_reo_setup(struct ath11k_base *ab)
