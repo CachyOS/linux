@@ -275,6 +275,26 @@ int intel_crtc_scanline_to_hw(struct intel_crtc *crtc, int scanline)
  * all register accesses to the same cacheline to be serialized,
  * otherwise they may hang.
  */
+static void intel_vblank_section_enter_irqsave(struct drm_i915_private *i915, unsigned long *flags)
+	__acquires(i915->uncore.lock)
+{
+#ifdef I915
+	spin_lock_irqsave(&i915->uncore.lock, *flags);
+#else
+	*flags = 0;
+#endif
+}
+
+static void intel_vblank_section_exit_irqrestore(struct drm_i915_private *i915, unsigned long flags)
+	__releases(i915->uncore.lock)
+{
+#ifdef I915
+	spin_unlock_irqrestore(&i915->uncore.lock, flags);
+#else
+	if (flags)
+		return;
+#endif
+}
 static void intel_vblank_section_enter(struct drm_i915_private *i915)
 	__acquires(i915->uncore.lock)
 {
@@ -332,10 +352,10 @@ static bool i915_get_crtc_scanoutpos(struct drm_crtc *_crtc,
 	 * timing critical raw register reads, potentially with
 	 * preemption disabled, so the following code must not block.
 	 */
-	local_irq_save(irqflags);
-	intel_vblank_section_enter(dev_priv);
+	intel_vblank_section_enter_irqsave(dev_priv, &irqflags);
 
-	/* preempt_disable_rt() should go right here in PREEMPT_RT patchset. */
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_disable();
 
 	/* Get optional system timestamp before query. */
 	if (stime)
@@ -399,10 +419,10 @@ static bool i915_get_crtc_scanoutpos(struct drm_crtc *_crtc,
 	if (etime)
 		*etime = ktime_get();
 
-	/* preempt_enable_rt() should go right here in PREEMPT_RT patchset. */
+	if (IS_ENABLED(CONFIG_PREEMPT_RT))
+		preempt_enable();
 
-	intel_vblank_section_exit(dev_priv);
-	local_irq_restore(irqflags);
+	intel_vblank_section_exit_irqrestore(dev_priv, irqflags);
 
 	/*
 	 * While in vblank, position will be negative
@@ -440,13 +460,11 @@ int intel_get_crtc_scanline(struct intel_crtc *crtc)
 	unsigned long irqflags;
 	int position;
 
-	local_irq_save(irqflags);
-	intel_vblank_section_enter(dev_priv);
+	intel_vblank_section_enter_irqsave(dev_priv, &irqflags);
 
 	position = __intel_get_crtc_scanline(crtc);
 
-	intel_vblank_section_exit(dev_priv);
-	local_irq_restore(irqflags);
+	intel_vblank_section_exit_irqrestore(dev_priv, irqflags);
 
 	return position;
 }

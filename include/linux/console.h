@@ -16,7 +16,9 @@
 
 #include <linux/atomic.h>
 #include <linux/bits.h>
+#include <linux/irq_work.h>
 #include <linux/rculist.h>
+#include <linux/rcuwait.h>
 #include <linux/types.h>
 
 struct vc_data;
@@ -137,7 +139,7 @@ static inline int con_debug_leave(void)
  */
 
 /**
- * cons_flags - General console flags
+ * enum cons_flags - General console flags
  * @CON_PRINTBUFFER:	Used by newly registered consoles to avoid duplicate
  *			output of messages that were already shown by boot
  *			consoles or read by userspace via syslog() syscall.
@@ -218,7 +220,7 @@ struct nbcon_state {
 static_assert(sizeof(struct nbcon_state) <= sizeof(int));
 
 /**
- * nbcon_prio - console owner priority for nbcon consoles
+ * enum nbcon_prio - console owner priority for nbcon consoles
  * @NBCON_PRIO_NONE:		Unused
  * @NBCON_PRIO_NORMAL:		Normal (non-emergency) usage
  * @NBCON_PRIO_EMERGENCY:	Emergency output (WARN/OOPS...)
@@ -283,9 +285,28 @@ struct nbcon_write_context {
 };
 
 /**
+ * struct nbcon_drvdata - Data to allow nbcon acquire in non-print context
+ * @ctxt:		The core console context
+ * @srcu_cookie:	Storage for a console_srcu_lock cookie, if needed
+ * @owner_index:	Storage for the owning console index, if needed
+ * @locked:		Storage for the locked state, if needed
+ *
+ * All fields (except for @ctxt) are available exclusively to the driver to
+ * use as needed. They are not used by the printk subsystem.
+ */
+struct nbcon_drvdata {
+	struct nbcon_context	__private ctxt;
+
+	/* reserved for driver use */
+	int			srcu_cookie;
+	short			owner_index;
+	bool			locked;
+};
+
+/**
  * struct console - The console descriptor structure
  * @name:		The name of the console driver
- * @write:		Write callback to output messages (Optional)
+ * @write:		Legacy write callback to output messages (Optional)
  * @read:		Read callback for console input (Optional)
  * @device:		The underlying TTY device driver (Optional)
  * @unblank:		Callback to unblank the console (Optional)
@@ -302,10 +323,13 @@ struct nbcon_write_context {
  * @data:		Driver private data
  * @node:		hlist node for the console list
  *
- * @write_atomic:	Write callback for atomic context
  * @nbcon_state:	State for nbcon consoles
  * @nbcon_seq:		Sequence number of the next record for nbcon to print
+ * @nbcon_prev_seq:	Seq num the previous nbcon owner was assigned to print
  * @pbufs:		Pointer to nbcon private buffer
+ * @kthread:		Printer kthread for this console
+ * @rcuwait:		RCU-safe wait object for @kthread waking
+ * @irq_work:		Defer @kthread waking to IRQ work context
  */
 struct console {
 	char			name[16];
@@ -327,11 +351,122 @@ struct console {
 	struct hlist_node	node;
 
 	/* nbcon console specific members */
-	bool			(*write_atomic)(struct console *con,
-						struct nbcon_write_context *wctxt);
+
+	/**
+	 * @write_atomic:
+	 *
+	 * NBCON callback to write out text in any context.
+	 *
+	 * This callback is called with the console already acquired. The
+	 * callback can use nbcon_can_proceed() at any time to verify that
+	 * it is still the owner of the console. In the case that it has
+	 * lost ownership, it is no longer allowed to go forward. In this
+	 * case it must back out immediately and carefully. The buffer
+	 * content is also no longer trusted since it no longer belongs to
+	 * the context.
+	 *
+	 * If the callback needs to perform actions where ownership is not
+	 * allowed to be taken over, nbcon_enter_unsafe() and
+	 * nbcon_exit_unsafe() can be used to mark such sections. These
+	 * functions are also points of possible ownership transfer. If
+	 * either function returns false, ownership has been lost.
+	 *
+	 * If the driver must reacquire ownership in order to finalize or
+	 * revert hardware changes, nbcon_reacquire() can be used. However,
+	 * on reacquire the buffer content is no longer available. A
+	 * reacquire cannot be used to resume printing.
+	 *
+	 * This callback can be called from any context (including NMI).
+	 * Therefore it must avoid usage of any locking and instead rely
+	 * on the console ownership for synchronization.
+	 */
+	void (*write_atomic)(struct console *con, struct nbcon_write_context *wctxt);
+
+	/**
+	 * @write_thread:
+	 *
+	 * NBCON callback to write out text in task context. (Optional)
+	 *
+	 * This callback is called with the console already acquired. Any
+	 * additional driver synchronization should have been performed by
+	 * device_lock().
+	 *
+	 * This callback is always called from task context but with migration
+	 * disabled.
+	 *
+	 * The same criteria for console ownership verification and unsafe
+	 * sections applies as with write_atomic(). The difference between
+	 * this callback and write_atomic() is that this callback is used
+	 * during normal operation and is always called from task context.
+	 * This provides drivers with a relatively relaxed locking context
+	 * for synchronizing output to the hardware.
+	 */
+	void (*write_thread)(struct console *con, struct nbcon_write_context *wctxt);
+
+	/**
+	 * @device_lock:
+	 *
+	 * NBCON callback to begin synchronization with driver code.
+	 *
+	 * Console drivers typically must deal with access to the hardware
+	 * via user input/output (such as an interactive login shell) and
+	 * output of kernel messages via printk() calls. This callback is
+	 * called by the printk-subsystem whenever it needs to synchronize
+	 * with hardware access by the driver. It should be implemented to
+	 * use whatever synchronization mechanism the driver is using for
+	 * itself (for example, the port lock for uart serial consoles).
+	 *
+	 * This callback is always called from task context. It may use any
+	 * synchronization method required by the driver. BUT this callback
+	 * MUST also disable migration. The console driver may be using a
+	 * synchronization mechanism that already takes care of this (such as
+	 * spinlocks). Otherwise this function must explicitly call
+	 * migrate_disable().
+	 *
+	 * The flags argument is provided as a convenience to the driver. It
+	 * will be passed again to device_unlock(). It can be ignored if the
+	 * driver does not need it.
+	 */
+	void (*device_lock)(struct console *con, unsigned long *flags);
+
+	/**
+	 * @device_unlock:
+	 *
+	 * NBCON callback to finish synchronization with driver code.
+	 *
+	 * It is the counterpart to device_lock().
+	 *
+	 * This callback is always called from task context. It must
+	 * appropriately re-enable migration (depending on how device_lock()
+	 * disabled migration).
+	 *
+	 * The flags argument is the value of the same variable that was
+	 * passed to device_lock().
+	 */
+	void (*device_unlock)(struct console *con, unsigned long flags);
+
 	atomic_t		__private nbcon_state;
 	atomic_long_t		__private nbcon_seq;
+	atomic_long_t           __private nbcon_prev_seq;
+
+	/**
+	 * @nbcon_drvdata:
+	 *
+	 * Data for nbcon ownership tracking to allow acquiring nbcon consoles
+	 * in non-printing contexts.
+	 *
+	 * Drivers may need to acquire nbcon consoles in non-printing
+	 * contexts. This is achieved by providing a struct nbcon_drvdata.
+	 * Then the driver can call nbcon_driver_acquire() and
+	 * nbcon_driver_release(). The struct does not require any special
+	 * initialization.
+	 */
+	struct nbcon_drvdata	*nbcon_drvdata;
+
 	struct printk_buffers	*pbufs;
+	struct task_struct	*kthread;
+	struct rcuwait		rcuwait;
+	struct irq_work		irq_work;
 };
 
 #ifdef CONFIG_LOCKDEP
@@ -360,28 +495,29 @@ extern void console_list_unlock(void) __releases(console_mutex);
 extern struct hlist_head console_list;
 
 /**
- * console_srcu_read_flags - Locklessly read the console flags
+ * console_srcu_read_flags - Locklessly read flags of a possibly registered
+ *				console
  * @con:	struct console pointer of console to read flags from
  *
- * This function provides the necessary READ_ONCE() and data_race()
- * notation for locklessly reading the console flags. The READ_ONCE()
- * in this function matches the WRITE_ONCE() when @flags are modified
- * for registered consoles with console_srcu_write_flags().
+ * Locklessly reading @con->flags provides a consistent read value because
+ * there is at most one CPU modifying @con->flags and that CPU is using only
+ * read-modify-write operations to do so.
  *
- * Only use this function to read console flags when locklessly
- * iterating the console list via srcu.
+ * Requires console_srcu_read_lock to be held, which implies that @con might
+ * be a registered console. If the caller is holding the console_list_lock or
+ * it is certain that the console is not registered, the caller may read
+ * @con->flags directly instead.
  *
  * Context: Any context.
+ * Return: The current value of the @con->flags field.
  */
 static inline short console_srcu_read_flags(const struct console *con)
 {
 	WARN_ON_ONCE(!console_srcu_read_lock_is_held());
 
 	/*
-	 * Locklessly reading console->flags provides a consistent
-	 * read value because there is at most one CPU modifying
-	 * console->flags and that CPU is using only read-modify-write
-	 * operations to do so.
+	 * The READ_ONCE() matches the WRITE_ONCE() when @flags are modified
+	 * for registered consoles with console_srcu_write_flags().
 	 */
 	return data_race(READ_ONCE(con->flags));
 }
@@ -459,13 +595,19 @@ static inline bool console_is_registered(const struct console *con)
 	hlist_for_each_entry(con, &console_list, node)
 
 #ifdef CONFIG_PRINTK
+extern void nbcon_cpu_emergency_enter(void);
+extern void nbcon_cpu_emergency_exit(void);
 extern bool nbcon_can_proceed(struct nbcon_write_context *wctxt);
 extern bool nbcon_enter_unsafe(struct nbcon_write_context *wctxt);
 extern bool nbcon_exit_unsafe(struct nbcon_write_context *wctxt);
+extern void nbcon_reacquire(struct nbcon_write_context *wctxt);
 #else
+static inline void nbcon_cpu_emergency_enter(void) { }
+static inline void nbcon_cpu_emergency_exit(void) { }
 static inline bool nbcon_can_proceed(struct nbcon_write_context *wctxt) { return false; }
 static inline bool nbcon_enter_unsafe(struct nbcon_write_context *wctxt) { return false; }
 static inline bool nbcon_exit_unsafe(struct nbcon_write_context *wctxt) { return false; }
+static inline void nbcon_reacquire(struct nbcon_write_context *wctxt) { }
 #endif
 
 extern int console_set_on_cmdline;

@@ -8,10 +8,13 @@
 #define LINUX_SERIAL_CORE_H
 
 #include <linux/bitops.h>
+#include <linux/bug.h>
 #include <linux/compiler.h>
 #include <linux/console.h>
 #include <linux/interrupt.h>
 #include <linux/circ_buf.h>
+#include <linux/lockdep.h>
+#include <linux/printk.h>
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 #include <linux/tty.h>
@@ -588,6 +591,101 @@ struct uart_port {
 	void			*private_data;		/* generic platform data pointer */
 };
 
+/*
+ * Only for console->device_lock()/_unlock() callbacks and internal
+ * port lock wrapper synchronization.
+ */
+static inline void __uart_port_lock_irqsave(struct uart_port *up, unsigned long *flags)
+{
+	spin_lock_irqsave(&up->lock, *flags);
+}
+
+/*
+ * Only for console->device_lock()/_unlock() callbacks and internal
+ * port lock wrapper synchronization.
+ */
+static inline void __uart_port_unlock_irqrestore(struct uart_port *up, unsigned long flags)
+{
+	spin_unlock_irqrestore(&up->lock, flags);
+}
+
+/**
+ * uart_port_set_cons - Safely set the @cons field for a uart
+ * @up:		The uart port to set
+ * @con:	The new console to set to
+ *
+ * This function must be used to set @up->cons. It uses the port lock to
+ * synchronize with the port lock wrappers in order to ensure that the console
+ * cannot change or disappear while another context is holding the port lock.
+ */
+static inline void uart_port_set_cons(struct uart_port *up, struct console *con)
+{
+	unsigned long flags;
+
+	__uart_port_lock_irqsave(up, &flags);
+	up->cons = con;
+	__uart_port_unlock_irqrestore(up, flags);
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline void __uart_port_nbcon_acquire(struct uart_port *up)
+{
+	lockdep_assert_held_once(&up->lock);
+
+	if (likely(!uart_console(up)))
+		return;
+
+	if (up->cons->nbcon_drvdata) {
+		/*
+		 * If @up->cons is registered, prevent it from fully
+		 * unregistering until this context releases the nbcon.
+		 */
+		int cookie = console_srcu_read_lock();
+
+		/* Ensure console is registered and is an nbcon console. */
+		if (!hlist_unhashed_lockless(&up->cons->node) &&
+		    (console_srcu_read_flags(up->cons) & CON_NBCON)) {
+			WARN_ON_ONCE(up->cons->nbcon_drvdata->locked);
+
+			nbcon_driver_acquire(up->cons);
+
+			/*
+			 * Record @up->line to be used during release because
+			 * @up->cons->index can change while the port and
+			 * nbcon are locked.
+			 */
+			up->cons->nbcon_drvdata->owner_index = up->line;
+			up->cons->nbcon_drvdata->srcu_cookie = cookie;
+			up->cons->nbcon_drvdata->locked = true;
+		} else {
+			console_srcu_read_unlock(cookie);
+		}
+	}
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline void __uart_port_nbcon_release(struct uart_port *up)
+{
+	lockdep_assert_held_once(&up->lock);
+
+	/*
+	 * uart_console() cannot be used here because @up->cons->index might
+	 * have changed. Check against @up->cons->nbcon_drvdata->owner_index
+	 * instead.
+	 */
+
+	if (unlikely(up->cons &&
+		     up->cons->nbcon_drvdata &&
+		     up->cons->nbcon_drvdata->locked &&
+		     up->cons->nbcon_drvdata->owner_index == up->line)) {
+		WARN_ON_ONCE(!up->cons->nbcon_drvdata->locked);
+
+		up->cons->nbcon_drvdata->locked = false;
+		nbcon_driver_release(up->cons);
+		console_srcu_read_unlock(up->cons->nbcon_drvdata->srcu_cookie);
+	}
+}
+
 /**
  * uart_port_lock - Lock the UART port
  * @up:		Pointer to UART port structure
@@ -595,6 +693,7 @@ struct uart_port {
 static inline void uart_port_lock(struct uart_port *up)
 {
 	spin_lock(&up->lock);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -604,6 +703,7 @@ static inline void uart_port_lock(struct uart_port *up)
 static inline void uart_port_lock_irq(struct uart_port *up)
 {
 	spin_lock_irq(&up->lock);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -614,6 +714,7 @@ static inline void uart_port_lock_irq(struct uart_port *up)
 static inline void uart_port_lock_irqsave(struct uart_port *up, unsigned long *flags)
 {
 	spin_lock_irqsave(&up->lock, *flags);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -624,7 +725,11 @@ static inline void uart_port_lock_irqsave(struct uart_port *up, unsigned long *f
  */
 static inline bool uart_port_trylock(struct uart_port *up)
 {
-	return spin_trylock(&up->lock);
+	if (!spin_trylock(&up->lock))
+		return false;
+
+	__uart_port_nbcon_acquire(up);
+	return true;
 }
 
 /**
@@ -636,7 +741,11 @@ static inline bool uart_port_trylock(struct uart_port *up)
  */
 static inline bool uart_port_trylock_irqsave(struct uart_port *up, unsigned long *flags)
 {
-	return spin_trylock_irqsave(&up->lock, *flags);
+	if (!spin_trylock_irqsave(&up->lock, *flags))
+		return false;
+
+	__uart_port_nbcon_acquire(up);
+	return true;
 }
 
 /**
@@ -645,6 +754,7 @@ static inline bool uart_port_trylock_irqsave(struct uart_port *up, unsigned long
  */
 static inline void uart_port_unlock(struct uart_port *up)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock(&up->lock);
 }
 
@@ -654,6 +764,7 @@ static inline void uart_port_unlock(struct uart_port *up)
  */
 static inline void uart_port_unlock_irq(struct uart_port *up)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock_irq(&up->lock);
 }
 
@@ -664,6 +775,7 @@ static inline void uart_port_unlock_irq(struct uart_port *up)
  */
 static inline void uart_port_unlock_irqrestore(struct uart_port *up, unsigned long flags)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock_irqrestore(&up->lock, flags);
 }
 
