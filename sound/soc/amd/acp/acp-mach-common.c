@@ -26,6 +26,7 @@
 #include "../../codecs/rt5682s.h"
 #include "../../codecs/nau8825.h"
 #include "../../codecs/nau8821.h"
+#include "../../codecs/cs35l41.h"
 #include "acp-mach.h"
 
 #define PCO_PLAT_CLK 48000000
@@ -1282,6 +1283,78 @@ SND_SOC_DAILINK_DEF(nau8821,
 		    DAILINK_COMP_ARRAY(COMP_CODEC("i2c-NVTN2020:00",
 						  NAU8821_CODEC_DAI)));
 
+static int acp_cs35l41_init(struct snd_soc_pcm_runtime *rtd)
+{
+	return 0;
+}
+
+static int acp_cs35l41_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+
+	runtime->hw.channels_max = DUAL_CHANNEL;
+	snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_CHANNELS,
+				   &constraints_channels);
+	snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
+				   &constraints_rates);
+	return 0;
+}
+
+static int acp_cs35l41_hw_params(struct snd_pcm_substream *substream,
+				   struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_card *card = rtd->card;
+	struct snd_soc_dai *codec_dai;
+	int ret, i;
+	unsigned int num_codecs = rtd->dai_link->num_codecs;
+	unsigned int bclk_val;
+
+	ret = 0;
+	for (i = 0; i < num_codecs; i++) {
+		codec_dai = snd_soc_rtd_to_codec(rtd, i);
+		if (strcmp(codec_dai->name, "cs35l41-pcm") == 0) {
+			switch (params_rate(params)) {
+			case 48000:
+				bclk_val = 1536000;
+				break;
+			default:
+				dev_err(card->dev, "Invalid Samplerate:0x%x\n",
+					params_rate(params));
+				return -EINVAL;
+			}
+			ret = snd_soc_component_set_sysclk(codec_dai->component,
+							   0, 0, bclk_val, SND_SOC_CLOCK_IN);
+			if (ret < 0) {
+				dev_err(card->dev, "failed to set sysclk for CS35l41 dai\n");
+				return ret;
+			}
+		}
+	}
+
+	return ret;
+}
+
+static struct snd_soc_codec_conf cs35l41_conf[] = {
+	{
+		.dlc = COMP_CODEC_CONF("spi-VLV1776:00"),
+		.name_prefix = "Left",
+	},
+	{
+		.dlc = COMP_CODEC_CONF("spi-VLV1776:01"),
+		.name_prefix = "Right",
+	},
+};
+
+static const struct snd_soc_ops acp_cs35l41_ops = {
+	.startup = acp_cs35l41_startup,
+	.hw_params = acp_cs35l41_hw_params,
+};
+
+SND_SOC_DAILINK_DEF(cs35l41,
+		    DAILINK_COMP_ARRAY(COMP_CODEC("spi-VLV1776:00", "cs35l41-pcm"),
+				       COMP_CODEC("spi-VLV1776:01", "cs35l41-pcm")));
+
 /* Declare DMIC codec components */
 SND_SOC_DAILINK_DEF(dmic_codec,
 		DAILINK_COMP_ARRAY(COMP_CODEC("dmic-codec", "dmic-hifi")));
@@ -1481,6 +1554,7 @@ int acp_sofdsp_dai_links_create(struct snd_soc_card *card)
 		links[i].platforms = sof_component;
 		links[i].num_platforms = ARRAY_SIZE(sof_component);
 		links[i].dpcm_playback = 1;
+		links[i].dpcm_capture = 1;
 		links[i].nonatomic = true;
 		links[i].no_pcm = 1;
 		if (!drv_data->amp_codec_id) {
@@ -1513,6 +1587,7 @@ int acp_sofdsp_dai_links_create(struct snd_soc_card *card)
 		links[i].platforms = sof_component;
 		links[i].num_platforms = ARRAY_SIZE(sof_component);
 		links[i].dpcm_playback = 1;
+		links[i].dpcm_capture = 1;
 		links[i].nonatomic = true;
 		links[i].no_pcm = 1;
 		if (!drv_data->amp_codec_id) {
@@ -1596,6 +1671,8 @@ int acp_legacy_dai_links_create(struct snd_soc_card *card)
 	int rc;
 
 	if (drv_data->hs_cpu_id)
+		num_links++;
+	if (drv_data->bt_cpu_id)
 		num_links++;
 	if (drv_data->amp_cpu_id)
 		num_links++;
@@ -1743,6 +1820,33 @@ int acp_legacy_dai_links_create(struct snd_soc_card *card)
 			links[i].init = acp_card_rt1019_init;
 			card->codec_conf = rt1019_conf;
 			card->num_configs = ARRAY_SIZE(rt1019_conf);
+		}
+		if (drv_data->amp_codec_id == CS35L41) {
+			links[i].codecs = cs35l41;
+			links[i].num_codecs = ARRAY_SIZE(cs35l41);
+			links[i].init = acp_cs35l41_init;
+			card->codec_conf = cs35l41_conf;
+			card->num_configs = ARRAY_SIZE(cs35l41_conf);
+			links[i].ops = &acp_cs35l41_ops;
+		}
+		i++;
+	}
+
+	if (drv_data->bt_cpu_id == I2S_BT) {
+		links[i].name = "acp-bt-codec";
+		links[i].id = BT_BE_ID;
+		links[i].cpus = sof_bt;
+		links[i].num_cpus = ARRAY_SIZE(sof_bt);
+		links[i].platforms = sof_component;
+		links[i].num_platforms = ARRAY_SIZE(sof_component);
+		links[i].dpcm_playback = 1;
+		links[i].dpcm_capture = 1;
+		links[i].nonatomic = true;
+		links[i].no_pcm = 1;
+		if (!drv_data->bt_codec_id) {
+			/* Use dummy codec if codec id not specified */
+			links[i].codecs = &snd_soc_dummy_dlc;
+			links[i].num_codecs = 1;
 		}
 		i++;
 	}
