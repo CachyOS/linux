@@ -35,6 +35,8 @@
 
 #define DC_LOGGER_INIT(logger)
 
+static const uint8_t DP_SINK_BRANCH_DEV_NAME_KT50X0[] = "KT50X0!";
+
 static uint32_t get_tmds_output_pixel_clock_100hz(const struct dc_crtc_timing *timing)
 {
 
@@ -277,6 +279,15 @@ static bool dp_validate_mode_timing(
 		timing->h_addressable == (uint32_t) 640 &&
 		timing->v_addressable == (uint32_t) 480)
 		return true;
+
+	if (link->ctx->dce_version == DCN_VERSION_3_01 &&
+	    link->dpcd_caps.sink_dev_id == DP_BRANCH_DEVICE_ID_0060AD &&
+	    memcmp(&link->dpcd_caps.branch_dev_name,
+		   DP_SINK_BRANCH_DEV_NAME_KT50X0,
+		   sizeof(link->dpcd_caps.branch_dev_name)) == 0) {
+		if (timing->pix_clk_100hz / 10 >= (uint32_t) 1200000)
+			return false; /* KT50X0 does not support Pxl clock >= 1200MHz */
+	}
 
 	link_setting = dp_get_verified_link_cap(link);
 
