@@ -390,27 +390,43 @@ static void max98388_reset(struct max98388_priv *max98388, struct device *dev)
 {
 	int ret, reg, count;
 
+
 	/* Software Reset */
 	ret = regmap_update_bits(max98388->regmap,
 				 MAX98388_R2000_SW_RESET,
 				 MAX98388_SOFT_RESET,
 				 MAX98388_SOFT_RESET);
-	if (ret)
+
+	if (ret) {
 		dev_err(dev, "Reset command failed. (ret:%d)\n", ret);
+		goto exit;
+	}
+
 
 	count = 0;
 	while (count < 3) {
 		usleep_range(10000, 11000);
+
 		/* Software Reset Verification */
 		ret = regmap_read(max98388->regmap,
 				  MAX98388_R22FF_REV_ID, &reg);
+
 		if (!ret) {
 			dev_info(dev, "Reset completed (retry:%d)\n", count);
-			return;
+			goto exit;
 		}
 		count++;
 	}
+
 	dev_err(dev, "Reset failed. (ret:%d)\n", ret);
+
+
+exit:
+	regcache_cache_only(max98388->regmap, true);
+	ret = regmap_update_bits(max98388->regmap,
+				 MAX98388_R2000_SW_RESET,
+				 MAX98388_SOFT_RESET, 0);
+	regcache_cache_only(max98388->regmap, false);
 }
 
 static int max98388_probe(struct snd_soc_component *component)
@@ -419,6 +435,7 @@ static int max98388_probe(struct snd_soc_component *component)
 
 	/* Software Reset */
 	max98388_reset(max98388, component->dev);
+	usleep_range(400, 1000);
 
 	/* General channel source configuration */
 	regmap_write(max98388->regmap,
@@ -811,6 +828,7 @@ static bool max98388_readable_register(struct device *dev,
 	case MAX98388_R210E_AUTO_RESTART:
 	case MAX98388_R210F_GLOBAL_EN:
 	case MAX98388_R22FF_REV_ID:
+	case MAX98388_R2000_SW_RESET:
 		return true;
 	default:
 		return false;
@@ -823,6 +841,7 @@ static bool max98388_volatile_reg(struct device *dev, unsigned int reg)
 	case MAX98388_R2001_INT_RAW1 ... MAX98388_R2005_INT_STATE2:
 	case MAX98388_R210F_GLOBAL_EN:
 	case MAX98388_R22FF_REV_ID:
+	case MAX98388_R2000_SW_RESET:
 		return true;
 	default:
 		return false;
@@ -866,6 +885,7 @@ static int max98388_resume(struct device *dev)
 
 	regcache_cache_only(max98388->regmap, false);
 	max98388_reset(max98388, dev);
+	usleep_range(400, 1000);
 	regcache_sync(max98388->regmap);
 
 	return 0;
