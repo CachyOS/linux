@@ -1743,7 +1743,8 @@ int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
 	drm_plane_helper_add(plane, &dm_plane_helper_funcs);
 
 #ifdef CONFIG_AMD_PRIVATE_COLOR
-	dm_atomic_plane_attach_color_mgmt_properties(dm, plane);
+	if (dm->adev->asic_type >= CHIP_SIENNA_CICHLID)
+		dm_atomic_plane_attach_color_mgmt_properties(dm, plane);
 #endif
 	/* Create (reset) the plane state */
 	if (plane->funcs->reset)
