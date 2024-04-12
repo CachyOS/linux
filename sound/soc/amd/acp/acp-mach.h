@@ -27,8 +27,8 @@
 enum be_id {
 	HEADSET_BE_ID = 0,
 	AMP_BE_ID,
-	DMIC_BE_ID,
 	BT_BE_ID,
+	DMIC_BE_ID,
 };
 
 enum cpu_endpoints {
@@ -46,6 +46,7 @@ enum codec_endpoints {
 	MAX98360A,
 	RT5682S,
 	NAU8825,
+	CS35L41,
 	NAU8821,
 	MAX98388,
 	ES83XX,
