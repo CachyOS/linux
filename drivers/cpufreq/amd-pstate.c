@@ -869,20 +869,20 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
 		min_freq = cppc_perf.lowest_freq * 1000;
 
 	if (quirks && quirks->nominal_freq)
-		nominal_freq = quirks->nominal_freq * 1000;
+		nominal_freq = quirks->nominal_freq ;
 	else
-		nominal_freq = cppc_perf.nominal_freq * 1000;
+		nominal_freq = cppc_perf.nominal_freq;
 
 	nominal_perf = READ_ONCE(cpudata->nominal_perf);
 
 	highest_perf = READ_ONCE(cpudata->highest_perf);
 	boost_ratio = div_u64(highest_perf << SCHED_CAPACITY_SHIFT, nominal_perf);
-	max_freq = nominal_freq * boost_ratio >> SCHED_CAPACITY_SHIFT;
+	max_freq = (nominal_freq * boost_ratio >> SCHED_CAPACITY_SHIFT) * 1000;
 
 	lowest_nonlinear_perf = READ_ONCE(cpudata->lowest_nonlinear_perf);
 	lowest_nonlinear_ratio = div_u64(lowest_nonlinear_perf << SCHED_CAPACITY_SHIFT,
 					 nominal_perf);
-	lowest_nonlinear_freq = nominal_freq * lowest_nonlinear_ratio >> SCHED_CAPACITY_SHIFT;
+	lowest_nonlinear_freq = (nominal_freq * lowest_nonlinear_ratio >> SCHED_CAPACITY_SHIFT) * 1000;
 
 	WRITE_ONCE(cpudata->min_freq, min_freq);
 	WRITE_ONCE(cpudata->lowest_nonlinear_freq, lowest_nonlinear_freq);
@@ -936,7 +936,7 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 	if (min_freq <= 0 || max_freq <= 0 ||
 	    nominal_freq <= 0 || min_freq > max_freq) {
 		dev_err(dev,
-			"min_freq(%d) or max_freq(%d) or nominal_freq (%d) value is incorrect\n",
+			"min_freq(%d) or max_freq(%d) or nominal_freq (%d) value is incorrect, check _CPC in ACPI tables\n",
 			min_freq, max_freq, nominal_freq);
 		ret = -EINVAL;
 		goto free_cpudata1;
@@ -1501,7 +1501,7 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	if (min_freq <= 0 || max_freq <= 0 ||
 	    nominal_freq <= 0 || min_freq > max_freq) {
 		dev_err(dev,
-			"min_freq(%d) or max_freq(%d) or nominal_freq(%d) value is incorrect\n",
+			"min_freq(%d) or max_freq(%d) or nominal_freq(%d) value is incorrect, check _CPC in ACPI tables\n",
 			min_freq, max_freq, nominal_freq);
 		ret = -EINVAL;
 		goto free_cpudata1;
