@@ -49,8 +49,8 @@ struct amd_aperf_mperf {
  * @lowest_perf: the absolute lowest performance level of the processor
  * @prefcore_ranking: the preferred core ranking, the higher value indicates a higher
  * 		  priority.
- * @min_limit_perf: Cached value of the perf corresponding to policy->min
- * @max_limit_perf: Cached value of the perf corresponding to policy->max
+ * @min_limit_perf: Cached value of the performance corresponding to policy->min
+ * @max_limit_perf: Cached value of the performance corresponding to policy->max
  * @min_limit_freq: Cached value of policy->min (in khz)
  * @max_limit_freq: Cached value of policy->max (in khz)
  * @max_freq: the frequency (in khz) that mapped to highest_perf
