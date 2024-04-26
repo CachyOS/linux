@@ -653,7 +653,7 @@ static int amd_pstate_set_boost(struct cpufreq_policy *policy, int state)
 
 	if (!cpudata->boost_supported) {
 		pr_err("Boost mode is not supported by this processor or SBIOS\n");
-		return -EINVAL;
+		return -ENOTSUPP;
 	}
 
 	if (state)
@@ -676,6 +676,13 @@ static int amd_pstate_boost_init(struct amd_cpudata *cpudata)
 	u64 boost_val;
 	int ret;
 
+	if (!boot_cpu_has(X86_FEATURE_CPB)) {
+		cpudata->boost_supported = false;
+		current_pstate_driver->boost_enabled = false;
+		pr_debug_once("Boost CPB capabilities not present in the processor\n");
+		return -ENOTSUPP;
+	}
+
 	ret = rdmsrl_on_cpu(cpudata->cpu, MSR_K7_HWCR, &boost_val);
 	if (ret) {
 		pr_err_once("failed to read initial CPU boost state!\n");
@@ -683,11 +690,8 @@ static int amd_pstate_boost_init(struct amd_cpudata *cpudata)
 	}
 
 	amd_pstate_global_params.cpb_supported = !(boost_val & MSR_K7_HWCR_CPB_DIS);
-
-	if (amd_pstate_global_params.cpb_supported) {
-		cpudata->boost_supported = true;
+	if (amd_pstate_global_params.cpb_supported)
 		current_pstate_driver->boost_enabled = true;
-	}
 
 	amd_pstate_global_params.cpb_boost = amd_pstate_global_params.cpb_supported;
 
@@ -1318,11 +1322,11 @@ static int amd_cpu_boost_update(struct amd_cpudata *cpudata, u32 on)
 		WRITE_ONCE(cpudata->cppc_req_cached, value);
 
 		wrmsrl_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, value);
-
 	} else {
 		perf_ctrls.max_perf = on ? highest_perf : nominal_perf;
 		ret = cppc_set_epp_perf(cpudata->cpu, &perf_ctrls, 1);
 		if (ret) {
+			cpufreq_cpu_release(policy);
 			pr_debug("failed to set energy perf value (%d)\n", ret);
 			return ret;
 		}
@@ -1331,7 +1335,7 @@ static int amd_cpu_boost_update(struct amd_cpudata *cpudata, u32 on)
 	if (on)
 		policy->cpuinfo.max_freq = max_freq;
 	else
-		policy->cpuinfo.max_freq = nominal_freq;
+		policy->cpuinfo.max_freq = nominal_freq * 1000;
 
 	policy->max = policy->cpuinfo.max_freq;
 
@@ -1358,7 +1362,6 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 	ssize_t ret;
 	int cpu;
 
-	mutex_lock(&amd_pstate_driver_lock);
 	if (!amd_pstate_global_params.cpb_supported) {
 		pr_err("Boost mode is not supported by this processor or SBIOS\n");
 		return -EINVAL;
@@ -1366,8 +1369,9 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 
 	ret = kstrtobool(buf, &new_state);
 	if (ret)
-		return -EINVAL;
+		return ret;
 
+	mutex_lock(&amd_pstate_driver_lock);
 	amd_pstate_global_params.cpb_boost = !!new_state;
 
 	for_each_present_cpu(cpu) {
