@@ -999,7 +999,7 @@ KBUILD_CFLAGS  += -fno-stack-check
 
 # conserve stack, ivopts and modulo-sched if available
 ifdef CONFIG_CC_IS_GCC
-KBUILD_CFLAGS   += -fconserve-stack -fivopts -fmodulo-sched
+KBUILD_CFLAGS   += -fconserve-stack -fivopts -fmodulo-sched -fno-tree-vectorize
 endif
 
 # change __FILE__ to the relative path from the srctree
