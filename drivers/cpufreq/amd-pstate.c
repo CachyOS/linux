@@ -1387,6 +1387,30 @@ err_exit:
 	return ret < 0 ? ret : 0;
 }
 
+static ssize_t show_boost(struct cpufreq_policy *policy, char *buf)
+{
+	struct amd_cpudata *cpudata = policy->driver_data;
+	bool boost_val;
+
+	boost_val = READ_ONCE(cpudata->boost_state);
+
+	return sysfs_emit(buf, "%u\n", boost_val);
+}
+
+static ssize_t store_boost(
+		struct cpufreq_policy *policy, const char *buf, size_t count)
+{
+	bool boost_val;
+	int ret;
+
+	if (sscanf(buf, "%d", &boost_val) != 1)
+		return -EINVAL;
+
+	ret = amd_pstate_cpu_boost(policy->cpu, boost_val);
+
+	return ret < 0 ? ret : count;
+}
+
 static ssize_t cpb_boost_show(struct device *dev,
 			   struct device_attribute *attr, char *buf)
 {
@@ -1432,6 +1456,7 @@ cpufreq_freq_attr_ro(amd_pstate_prefcore_ranking);
 cpufreq_freq_attr_ro(amd_pstate_hw_prefcore);
 cpufreq_freq_attr_rw(energy_performance_preference);
 cpufreq_freq_attr_ro(energy_performance_available_preferences);
+cpufreq_freq_attr_rw(boost);
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(prefcore);
 static DEVICE_ATTR_RW(cpb_boost);
@@ -1442,6 +1467,7 @@ static struct freq_attr *amd_pstate_attr[] = {
 	&amd_pstate_highest_perf,
 	&amd_pstate_prefcore_ranking,
 	&amd_pstate_hw_prefcore,
+	&boost,
 	NULL,
 };
 
@@ -1453,6 +1479,7 @@ static struct freq_attr *amd_pstate_epp_attr[] = {
 	&amd_pstate_hw_prefcore,
 	&energy_performance_preference,
 	&energy_performance_available_preferences,
+	&boost,
 	NULL,
 };
 
