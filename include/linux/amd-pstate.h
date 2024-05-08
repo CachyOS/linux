@@ -106,6 +106,7 @@ struct amd_cpudata {
 	u32	policy;
 	u64	cppc_cap1_cached;
 	bool	suspended;
+	bool	boost_state;
 };
 
 /*
