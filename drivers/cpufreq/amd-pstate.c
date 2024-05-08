@@ -1403,7 +1403,7 @@ static ssize_t store_boost(
 	bool boost_val;
 	int ret;
 
-	if (sscanf(buf, "%d", &boost_val) != 1)
+	if (kstrtobool(buf, &boost_val))
 		return -EINVAL;
 
 	ret = amd_pstate_cpu_boost(policy->cpu, boost_val);
@@ -1437,7 +1437,7 @@ static ssize_t cpb_boost_store(struct device *dev, struct device_attribute *b,
 	for_each_present_cpu(cpu) {
 		ret = amd_pstate_cpu_boost(cpu, new_state);
 		if (ret < 0) {
-			pr_warn("failed to update cpu boost for CPU%d (%d)\n", cpu, ret);
+			pr_warn("failed to update cpu boost for CPU%d (%zd)\n", cpu, ret);
 			goto err_exit;
 		}
 	}
