@@ -148,4 +148,12 @@ struct amd_pstate_global_params {
 
 extern struct amd_pstate_global_params amd_pstate_global_params;
 
+/* defined by CPUID_Fn80000026_EBX BIT [31:28] */
+enum amd_core_type {
+	CPU_CORE_TYPE_NO_HETERO_SUP = -1,
+	CPU_CORE_TYPE_PERFORMANCE = 0,
+	CPU_CORE_TYPE_EFFICIENCY = 1,
+	CPU_CORE_TYPE_UNDEFINED = 2,
+};
+
 #endif /* _LINUX_AMD_PSTATE_H */

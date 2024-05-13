@@ -1219,3 +1219,22 @@ void noinstr amd_clear_divider(void)
 		     :: "a" (0), "d" (0), "r" (1));
 }
 EXPORT_SYMBOL_GPL(amd_clear_divider);
+
+#define X86_CPU_TYPE_ID_SHIFT	28
+
+/**
+ * amd_get_this_core_type - Get the type of this heterogeneous CPU
+ *
+ * Returns the CPU type [31:28] (i.e., performance or efficient) of
+ * a CPU in the processor.
+ * If the processor has no core type support, returns -1.
+ */
+
+int amd_get_this_core_type(void)
+{
+	if (!cpu_feature_enabled(X86_FEATURE_HETERO_CORE_TOPOLOGY))
+		return -1;
+
+	return cpuid_ebx(0x80000026) >> X86_CPU_TYPE_ID_SHIFT;
+}
+EXPORT_SYMBOL_GPL(amd_get_this_core_type);
