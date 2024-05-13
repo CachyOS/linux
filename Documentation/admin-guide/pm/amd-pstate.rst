@@ -502,6 +502,19 @@ operations for the new ``amd-pstate`` module with this tool. ::
 Diagnostics and Tuning
 =======================
 
+Debugging AMD P-State Driver Loading Issues
+------------------------------------------
+
+On some platforms, there may be issues with the loading of the amd-pstate driver.
+To capture debug messages for issue analysis, users can add below parameter,
+"amd_pstate.dyndbg=+p cppc_acpi.dyndbg=+p debug"
+to the kernel command line. This will enable dynamic debugging and allow better
+analysis and troubleshooting of the driver loading process.
+
+Please note that adding this parameter will only enable debug logging during the
+driver loading phase and may affect system behavior. Use this option with caution
+and only for debugging purposes.
+
 Trace Events
 --------------
 
