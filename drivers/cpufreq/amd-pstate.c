@@ -1952,28 +1952,30 @@ static int __init amd_pstate_init(void)
 	/* check if this machine need CPPC quirks */
 	dmi_check_system(amd_pstate_quirks_table);
 
+	/* get default driver mode for loading */
+	if (cppc_state == AMD_PSTATE_UNDEFINED)
+		cppc_state = CONFIG_X86_AMD_PSTATE_DEFAULT_MODE;
+
+	/* Disable on the following configs by default:
+	 * 1. Undefined platforms
+	 * 2. Server platforms
+	 */
+	if (amd_pstate_acpi_pm_profile_undefined() ||
+		amd_pstate_acpi_pm_profile_server()) {
+		pr_info("driver load is disabled for server or undefined platform\n");
+		return -ENODEV;
+	}
+
 	switch (cppc_state) {
-	case AMD_PSTATE_UNDEFINED:
-		/* Disable on the following configs by default:
-		 * 1. Undefined platforms
-		 * 2. Server platforms
-		 * 3. Shared memory designs
-		 */
-		if (amd_pstate_acpi_pm_profile_undefined() ||
-		    amd_pstate_acpi_pm_profile_server() ||
-		    !cpu_feature_enabled(X86_FEATURE_CPPC)) {
-			pr_info("driver load is disabled, boot with specific mode to enable this\n");
-			return -ENODEV;
-		}
-		ret = amd_pstate_set_driver(CONFIG_X86_AMD_PSTATE_DEFAULT_MODE);
-		if (ret)
-			return ret;
-		break;
 	case AMD_PSTATE_DISABLE:
+		pr_info("driver load is disabled, boot with specific mode to enable this\n");
 		return -ENODEV;
 	case AMD_PSTATE_PASSIVE:
 	case AMD_PSTATE_ACTIVE:
 	case AMD_PSTATE_GUIDED:
+		ret = amd_pstate_set_driver(cppc_state);
+		if (ret)
+			return ret;
 		break;
 	default:
 		return -EINVAL;
@@ -1994,7 +1996,7 @@ static int __init amd_pstate_init(void)
 	/* enable amd pstate feature */
 	ret = amd_pstate_enable(true);
 	if (ret) {
-		pr_err("failed to enable with return %d\n", ret);
+		pr_err("failed to enable driver mode(%d)\n", cppc_state);
 		return ret;
 	}
 
