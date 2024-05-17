@@ -2332,6 +2332,7 @@ struct wmi_init_cmd {
 #define WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64 BIT(5)
 #define WMI_RSRC_CFG_FLAG2_CALC_NEXT_DTIM_COUNT_SET BIT(9)
 #define WMI_RSRC_CFG_FLAG1_ACK_RSSI BIT(18)
+#define WMI_RSRC_CFG_HOST_SERVICE_FLAG_NAN_IFACE_SUPPORT       BIT(0)
 
 #define WMI_CFG_HOST_SERVICE_FLAG_REG_CC_EXT 4
 
@@ -5677,6 +5678,15 @@ struct target_resource_config {
 	u8 is_reg_cc_ext_event_supported;
 	u32 ema_max_vap_cnt;
 	u32 ema_max_profile_period;
+	u32 max_nlo_ssids;
+	u32 num_packet_filters;
+	u32 num_max_sta_vdevs;
+	u32 max_bssid_indicator;
+	u32 ul_resp_config;
+	u32 msdu_flow_override_config0;
+	u32 msdu_flow_override_config1;
+	u32 flags2;
+	u32 host_service_flags;
 };
 
 enum wmi_debug_log_param {
@@ -6298,6 +6308,82 @@ enum wmi_sta_keepalive_method {
 
 const void **ath11k_wmi_tlv_parse_alloc(struct ath11k_base *ab, const void *ptr,
 					size_t len, gfp_t gfp);
+enum wmi_coex_config_type {
+    WMI_COEX_CONFIG_PAGE_P2P_TDM        =  1,
+    WMI_COEX_CONFIG_PAGE_STA_TDM        =  2,
+    WMI_COEX_CONFIG_PAGE_SAP_TDM        =  3,
+    WMI_COEX_CONFIG_DURING_WLAN_CONN    =  4,
+    WMI_COEX_CONFIG_BTC_ENABLE          =  5,
+    WMI_COEX_CONFIG_COEX_DBG            =  6,
+    WMI_COEX_CONFIG_PAGE_P2P_STA_TDM    =  7,
+    WMI_COEX_CONFIG_INQUIRY_P2P_TDM     =  8,
+    WMI_COEX_CONFIG_INQUIRY_STA_TDM     =  9,
+    WMI_COEX_CONFIG_INQUIRY_SAP_TDM     = 10,
+    WMI_COEX_CONFIG_INQUIRY_P2P_STA_TDM = 11,
+    WMI_COEX_CONFIG_TX_POWER            = 12,
+    WMI_COEX_CONFIG_PTA_CONFIG          = 13,
+    WMI_COEX_CONFIG_AP_TDM              = 14,
+    WMI_COEX_CONFIG_WLAN_SCAN_PRIORITY  = 15,
+    WMI_COEX_CONFIG_WLAN_PKT_PRIORITY   = 16,
+    WMI_COEX_CONFIG_PTA_INTERFACE       = 17,
+    WMI_COEX_CONFIG_BTC_DUTYCYCLE       = 18,
+    WMI_COEX_CONFIG_HANDOVER_RSSI       = 19,
+    WMI_COEX_CONFIG_PTA_BT_INFO         = 20,
+    WMI_COEX_CONFIG_SINK_WLAN_TDM       = 21,
+    WMI_COEX_CONFIG_COEX_ENABLE_MCC_TDM = 22,
+    WMI_COEX_CONFIG_LOWRSSI_A2DPOPP_TDM = 23,
+    WMI_COEX_CONFIG_BTC_MODE            = 24,
+    WMI_COEX_CONFIG_ANTENNA_ISOLATION   = 25,
+    WMI_COEX_CONFIG_BT_LOW_RSSI_THRESHOLD = 26,
+    WMI_COEX_CONFIG_BT_INTERFERENCE_LEVEL = 27,
+    WMI_COEX_CONFIG_WLAN_OVER_ZBLOW        = 28,
+    WMI_COEX_CONFIG_WLAN_MGMT_OVER_BT_A2DP = 29,
+    WMI_COEX_CONFIG_WLAN_CONN_OVER_LE      = 30,
+    WMI_COEX_CONFIG_LE_OVER_WLAN_TRAFFIC   = 31,
+    WMI_COEX_CONFIG_THREE_WAY_COEX_RESET   = 32,
+    WMI_COEX_CONFIG_THREE_WAY_DELAY_PARA   = 33,
+    WMI_COEX_CONFIG_THREE_WAY_COEX_START   = 34,
+    WMI_COEX_CONFIG_MPTA_HELPER_ENABLE     = 35,
+    WMI_COEX_CONFIG_MPTA_HELPER_ZIGBEE_STATE = 36,
+    WMI_COEX_CONFIG_MPTA_HELPER_INT_OCS_PARAMS = 37,
+    WMI_COEX_CONFIG_MPTA_HELPER_MON_OCS_PARAMS   = 38,
+    WMI_COEX_CONFIG_MPTA_HELPER_INT_MON_DURATION = 39,
+    WMI_COEX_CONFIG_MPTA_HELPER_ZIGBEE_CHANNEL   = 40,
+    WMI_COEX_CONFIG_MPTA_HELPER_WLAN_MUTE_DURATION   = 41,
+    WMI_COEX_CONFIG_BT_SCO_ALLOW_WLAN_2G_SCAN   = 42,
+    WMI_COEX_CONFIG_ENABLE_2ND_HARMONIC_WAR     = 43,
+    WMI_COEX_CONFIG_BTCOEX_SEPARATE_CHAIN_MODE  = 44,
+    WMI_COEX_CONFIG_ENABLE_TPUT_SHAPING = 45,
+    WMI_COEX_CONFIG_ENABLE_TXBF = 46,
+    WMI_COEX_CONFIG_FORCED_ALGO = 47,
+    WMI_COEX_CONFIG_LE_SCAN_POLICY = 48,
+};
+
+struct wmi_coex_config_params {
+	u32 vdev_id;
+	u32 config_type;
+	u32 config_arg1;
+	u32 config_arg2;
+	u32 config_arg3;
+	u32 config_arg4;
+	u32 config_arg5;
+	u32 config_arg6;
+};
+
+struct wmi_coex_config_cmd {
+	u32 tlv_header;
+	u32 vdev_id;
+	u32 config_type;
+	u32 config_arg1;
+	u32 config_arg2;
+	u32 config_arg3;
+	u32 config_arg4;
+	u32 config_arg5;
+	u32 config_arg6;
+} __packed;
+
+#define WMI_COEX_ISOLATION_ARG1_DEFAUT     30
+
 int ath11k_wmi_cmd_send(struct ath11k_pdev_wmi *wmi, struct sk_buff *skb,
 			u32 cmd_id);
 struct sk_buff *ath11k_wmi_alloc_skb(struct ath11k_wmi_base *wmi_sc, u32 len);
@@ -6459,6 +6545,7 @@ int ath11k_wmi_scan_prob_req_oui(struct ath11k *ar,
 				 const u8 mac_addr[ETH_ALEN]);
 int ath11k_wmi_fw_dbglog_cfg(struct ath11k *ar, u32 *module_id_bitmap,
 			     struct ath11k_fw_dbglog *dbglog);
+int ath11k_wmi_send_coex_config(struct ath11k *ar, struct wmi_coex_config_params *param);
 int ath11k_wmi_wow_config_pno(struct ath11k *ar, u32 vdev_id,
 			      struct wmi_pno_scan_req  *pno_scan);
 int ath11k_wmi_wow_del_pattern(struct ath11k *ar, u32 vdev_id, u32 pattern_id);

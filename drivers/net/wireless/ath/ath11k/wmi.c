@@ -4069,6 +4069,7 @@ ath11k_wmi_copy_resource_config(struct wmi_resource_config *wmi_cfg,
 	wmi_cfg->sched_params = tg_cfg->sched_params;
 	wmi_cfg->twt_ap_pdev_count = tg_cfg->twt_ap_pdev_count;
 	wmi_cfg->twt_ap_sta_count = tg_cfg->twt_ap_sta_count;
+	wmi_cfg->host_service_flags = tg_cfg->host_service_flags;
 	wmi_cfg->host_service_flags &=
 		~(1 << WMI_CFG_HOST_SERVICE_FLAG_REG_CC_EXT);
 	wmi_cfg->host_service_flags |= (tg_cfg->is_reg_cc_ext_event_supported <<
@@ -9687,4 +9688,30 @@ int ath11k_wmi_sta_keepalive(struct ath11k *ar,
 		   arg->vdev_id, arg->enabled, arg->method, arg->interval);
 
 	return ath11k_wmi_cmd_send(wmi, skb, WMI_STA_KEEPALIVE_CMDID);
+}
+
+int ath11k_wmi_send_coex_config(struct ath11k *ar,
+				struct wmi_coex_config_params *param)
+{
+	struct ath11k_pdev_wmi *wmi = ar->wmi;
+	struct wmi_coex_config_cmd *cmd;
+	struct sk_buff *skb;
+
+	skb = ath11k_wmi_alloc_skb(wmi->wmi_ab, sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	cmd = (struct wmi_coex_config_cmd *)skb->data;
+	cmd->tlv_header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_COEX_CONFIG_CMD) |
+			  FIELD_PREP(WMI_TLV_LEN, sizeof(*cmd) - TLV_HDR_SIZE);
+	cmd->vdev_id = param->vdev_id;
+	cmd->config_type = param->config_type;
+	cmd->config_arg1 = param->config_arg1;
+	cmd->config_arg2 = param->config_arg2;
+	cmd->config_arg3 = param->config_arg3;
+	cmd->config_arg4 = param->config_arg4;
+	cmd->config_arg5 = param->config_arg5;
+	cmd->config_arg6 = param->config_arg6;
+
+	return ath11k_wmi_cmd_send(wmi, skb, WMI_COEX_CONFIG_CMDID);
 }
