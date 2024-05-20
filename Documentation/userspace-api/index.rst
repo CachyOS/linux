@@ -34,7 +34,6 @@ place where this information is gathered.
    tee
    isapnp
    dcdbas
-   ntsync
 
 .. only::  subproject and html
 
