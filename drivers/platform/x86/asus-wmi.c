@@ -4776,7 +4776,7 @@ static int asus_wmi_add(struct platform_device *pdev)
 		goto fail_fan_boost_mode;
 
 	err = platform_profile_setup(asus);
-	if (err)
+	if (err && err != -EEXIST)
 		goto fail_platform_profile_setup;
 
 	err = asus_wmi_sysfs_init(asus->platform_device);
