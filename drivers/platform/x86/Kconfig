@@ -265,6 +265,19 @@ config ASUS_WIRELESS
 	  If you choose to compile this driver as a module the module will be
 	  called asus-wireless.
 
+config ASUS_ARMOURY
+	tristate "ASUS Armoury (firmware) Driver"
+	depends on ACPI_WMI
+	depends on ASUS_WMI
+	select FW_ATTR_CLASS
+	help
+	  Say Y here if you have a WMI aware Asus laptop and would like to use the
+	  firmware_attributes API to control various settings typically exposed in
+	  the ASUS Armoury Crate application available on Windows.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called asus-armoury.
+
 config ASUS_WMI
 	tristate "ASUS WMI Driver"
 	depends on ACPI_WMI
@@ -276,6 +289,7 @@ config ASUS_WMI
 	depends on HOTPLUG_PCI
 	depends on ACPI_VIDEO || ACPI_VIDEO = n
 	depends on SERIO_I8042 || SERIO_I8042 = n
+	select ASUS_ARMOURY
 	select INPUT_SPARSEKMAP
 	select LEDS_CLASS
 	select NEW_LEDS
