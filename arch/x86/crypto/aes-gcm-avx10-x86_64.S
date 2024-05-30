@@ -118,23 +118,22 @@
 	.octa	4
 
 // Number of powers of the hash key stored in the key struct.  The powers are
-// stored from highest (H^NUM_KEY_POWERS) to lowest (H^1).
-#define NUM_KEY_POWERS		16
+// stored from highest (H^NUM_H_POWERS) to lowest (H^1).
+#define NUM_H_POWERS		16
 
-// Number of powers of the hash key including zero padding at the end.  Zero
-// padding is appended so that partial vectors can be handled more easily.  E.g.
-// if VL=64 and two blocks remain, we load the 4 values [H^2, H^1, 0, 0].  The
-// most padding blocks needed is 3, which occurs if [H^1, 0, 0, 0] is loaded.
-#define FULL_NUM_KEY_POWERS	(NUM_KEY_POWERS + 3)
+// Offset to AES key length (in bytes) in the key struct
+#define OFFSETOF_AESKEYLEN	480
 
-// Offset to AES key length in the key struct
-#define OFFSETOF_KEYLEN		480
+// Offset to start of hash key powers array in the key struct
+#define OFFSETOF_H_POWERS	512
 
-// Offset to start of key powers array in the key struct
-#define OFFSETOF_KEY_POWERS	512
-
-// Offset to end of key powers array, not including the zero padding
-#define OFFSETOFEND_KEY_POWERS	(OFFSETOF_KEY_POWERS + (NUM_KEY_POWERS * 16))
+// Offset to end of hash key powers array in the key struct.
+//
+// This is immediately followed by three zeroized padding blocks, which are
+// included so that partial vectors can be handled more easily.  E.g. if VL=64
+// and two blocks remain, we load the 4 values [H^2, H^1, 0, 0].  The most
+// padding blocks needed is 3, which occurs if [H^1, 0, 0, 0] is loaded.
+#define OFFSETOFEND_H_POWERS	(OFFSETOF_H_POWERS + (NUM_H_POWERS * 16))
 
 .text
 
@@ -318,9 +317,9 @@
 // Given the expanded AES key |key->aes_key|, this function derives the GHASH
 // subkey and initializes |key->ghash_key_powers| with powers of it.
 //
-// The number of key powers initialized is NUM_KEY_POWERS, and they are stored
-// in the order H^NUM_KEY_POWERS to H^1.  The zeroized padding blocks after the
-// key powers themselves (see FULL_NUM_KEY_POWERS) are also initialized.
+// The number of key powers initialized is NUM_H_POWERS, and they are stored in
+// the order H^NUM_H_POWERS to H^1.  The zeroized padding blocks after the key
+// powers themselves are also initialized.
 //
 // This macro supports both VL=32 and VL=64.  _set_veclen must have been invoked
 // with the desired length.  In the VL=32 case, the function computes twice as
@@ -345,10 +344,10 @@
 	.set	GFPOLY_XMM,	%xmm5
 
 	// Get pointer to lowest set of key powers (located at end of array).
-	lea		OFFSETOFEND_KEY_POWERS-VL(KEY), POWERS_PTR
+	lea		OFFSETOFEND_H_POWERS-VL(KEY), POWERS_PTR
 
 	// Encrypt an all-zeroes block to get the raw hash subkey.
-	movl		OFFSETOF_KEYLEN(KEY), %eax  // AES key length in bytes
+	movl		OFFSETOF_AESKEYLEN(KEY), %eax
 	lea		6*16(KEY,%rax,4), RNDKEYLAST_PTR
 	vmovdqu		(KEY), %xmm0  // Zero-th round key XOR all-zeroes block
 	add		$16, KEY
@@ -420,7 +419,7 @@
 	// multiply [H^(i+1), H^i] by [H^2, H^2] to get [H^(i+3), H^(i+2)].
 	// With VL=64, repeatedly multiply [H^(i+3), H^(i+2), H^(i+1), H^i] by
 	// [H^4, H^4, H^4, H^4] to get [H^(i+7), H^(i+6), H^(i+5), H^(i+4)].
-	mov		$(NUM_KEY_POWERS*16/VL) - 1, %eax
+	mov		$(NUM_H_POWERS*16/VL) - 1, %eax
 .Lprecompute_next\@:
 	sub		$VL, POWERS_PTR
 	_ghash_mul	H_INC, H_CUR, H_CUR, GFPOLY, V0, V1, V2
@@ -687,7 +686,7 @@
 	vbroadcasti32x4	(LE_CTR_PTR), LE_CTR
 
 	// Load the AES key length in bytes.
-	movl		OFFSETOF_KEYLEN(KEY), AESKEYLEN
+	movl		OFFSETOF_AESKEYLEN(KEY), AESKEYLEN
 
 	// Make RNDKEYLAST_PTR point to the last AES round key.  This is the
 	// round key with index 10, 12, or 14 for AES-128, AES-192, or AES-256
@@ -718,10 +717,10 @@
 	jl		.Lcrypt_loop_4x_done\@
 
 	// Load powers of the hash key.
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-4*VL(KEY), H_POW4
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-3*VL(KEY), H_POW3
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-2*VL(KEY), H_POW2
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-1*VL(KEY), H_POW1
+	vmovdqu8	OFFSETOFEND_H_POWERS-4*VL(KEY), H_POW4
+	vmovdqu8	OFFSETOFEND_H_POWERS-3*VL(KEY), H_POW3
+	vmovdqu8	OFFSETOFEND_H_POWERS-2*VL(KEY), H_POW2
+	vmovdqu8	OFFSETOFEND_H_POWERS-1*VL(KEY), H_POW1
 
 	// Main loop: en/decrypt and hash 4 vectors at a time.
 	//
@@ -883,7 +882,7 @@
 	mov		DATALEN, %eax
 	neg		%rax
 	and		$~15, %rax  // -round_up(DATALEN, 16)
-	lea		OFFSETOFEND_KEY_POWERS(KEY,%rax), POWERS_PTR
+	lea		OFFSETOFEND_H_POWERS(KEY,%rax), POWERS_PTR
 
 	// Start collecting the unreduced GHASH intermediate value LO, MI, HI.
 	.set		LO, GHASHDATA0
@@ -1014,7 +1013,7 @@
 	vmovdqa		.Lbswap_mask(%rip), BSWAP_MASK
 
 	// Load the AES key length in bytes.
-	movl		OFFSETOF_KEYLEN(KEY), AESKEYLEN
+	movl		OFFSETOF_AESKEYLEN(KEY), AESKEYLEN
 
 	// Set up a counter block with 1 in the low 32-bit word.  This is the
 	// counter that produces the ciphertext needed to encrypt the auth tag.
@@ -1033,7 +1032,7 @@
 	vpxor		(GHASH_ACC_PTR), %xmm0, GHASH_ACC
 
 	// Load the first hash key power (H^1), which is stored last.
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-16(KEY), H_POW1
+	vmovdqu8	OFFSETOFEND_H_POWERS-16(KEY), H_POW1
 
 .if !\enc
 	// Prepare a mask of TAGLEN one bits.
@@ -1176,7 +1175,7 @@ SYM_FUNC_START(aes_gcm_aad_update_vaes_avx10)
 	// zero-extending it and allowing AADLEN64 to be used later.
 	sub		$32, AADLEN
 	jl		.Laad_loop_1x_done
-	vmovdqu8	OFFSETOFEND_KEY_POWERS-32(KEY), H_POW1	// [H^2, H^1]
+	vmovdqu8	OFFSETOFEND_H_POWERS-32(KEY), H_POW1	// [H^2, H^1]
 .Laad_loop_1x:
 	vmovdqu		(AAD), %ymm0
 	vpshufb		BSWAP_MASK, %ymm0, %ymm0
@@ -1199,7 +1198,7 @@ SYM_FUNC_START(aes_gcm_aad_update_vaes_avx10)
 	vmovdqu8	(AAD), %ymm0{%k1}{z}
 	neg		AADLEN64
 	and		$~15, AADLEN64  // -round_up(AADLEN, 16)
-	vmovdqu8	OFFSETOFEND_KEY_POWERS(KEY,AADLEN64), H_POW1
+	vmovdqu8	OFFSETOFEND_H_POWERS(KEY,AADLEN64), H_POW1
 	vpshufb		BSWAP_MASK, %ymm0, %ymm0
 	vpxor		%ymm0, GHASH_ACC, GHASH_ACC
 	_ghash_mul	H_POW1, GHASH_ACC, GHASH_ACC, GFPOLY, \
