@@ -169,6 +169,7 @@ else
         cflags-$(CONFIG_MZEN2) 	+= -march=znver2
         cflags-$(CONFIG_MZEN3) 	+= -march=znver3
         cflags-$(CONFIG_MZEN4) 	+= -march=znver4
+        cflags-$(CONFIG_MZEN5) 	+= -march=znver5
         cflags-$(CONFIG_MNATIVE_INTEL) += -march=native
         cflags-$(CONFIG_MNATIVE_AMD) 	+= -march=native
         cflags-$(CONFIG_MATOM) 	+= -march=bonnell
