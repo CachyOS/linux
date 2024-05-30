@@ -87,19 +87,6 @@ struct quirk_entry {
 	u32 lowest_freq;
 };
 
-/**
- * struct amd_pstate_global_params - Global parameters, mostly tunable via sysfs.
- * @cpb_boost:		Whether or not to use boost CPU P-states.
- * @cpb_supported:	Whether or not CPU boost P-states are available
- *			based on the MSR_K7_HWCR bit[25] state
- */
-struct amd_pstate_global_params {
-	bool cpb_boost;
-	bool cpb_supported;
-};
-
-extern struct amd_pstate_global_params amd_pstate_global_params;
-
 /* defined by CPUID_Fn80000026_EBX BIT [31:28] */
 enum amd_core_type {
 	CPU_CORE_TYPE_NO_HETERO_SUP = -1,
