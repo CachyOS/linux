@@ -86,4 +86,18 @@ struct asus_wmi_driver {
 int asus_wmi_register_driver(struct asus_wmi_driver *driver);
 void asus_wmi_unregister_driver(struct asus_wmi_driver *driver);
 
+static const struct dmi_system_id asus_rog_ally_device[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "RC71L"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "RC72L"),
+		},
+	},
+	{ },
+};
+
 #endif /* !_ASUS_WMI_H_ */
