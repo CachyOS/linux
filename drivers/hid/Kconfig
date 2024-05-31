@@ -169,6 +169,19 @@ config HID_APPLETB_KBD
 	  To compile this driver as a module, choose M here: the
 	  module will be called hid-appletb-kbd.
 
+config HID_APPLE_MAGIC_BACKLIGHT
+	tristate "Apple Magic Keyboard Backlight"
+	depends on USB_HID
+	depends on LEDS_CLASS
+	depends on NEW_LEDS
+	help
+	Say Y here if you want support for the keyboard backlight on Macs with
+	the magic keyboard (MacBookPro16,x and MacBookAir9,1). Note that this
+	driver is not for external magic keyboards.
+
+	To compile this driver as a module, choose M here: the
+	module will be called hid-apple-magic-backlight.
+
 config HID_ASUS
 	tristate "Asus"
 	depends on USB_HID
