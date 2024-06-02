@@ -90,6 +90,20 @@ static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 	static struct kobj_attribute attr_##_attrname##_##_prop =             \
 		__ASUS_ATTR_RO(_attrname, _prop)
 
+/* Requires current_value_show */
+#define __ATTR_GROUP_INT_VALUE_ONLY(_attrname, _fsname, _dispname)     \
+	__ATTR_SHOW_FMT(display_name, _attrname, "%s\n", _dispname);   \
+	static struct kobj_attribute attr_##_attrname##_type =         \
+		__ASUS_ATTR_RO_AS(type, int_type_show);                \
+	static struct attribute *_attrname##_attrs[] = {               \
+		&attr_##_attrname##_current_value.attr,                \
+		&attr_##_attrname##_display_name.attr,                 \
+		&attr_##_attrname##_type.attr, NULL                    \
+	};                                                             \
+	static const struct attribute_group _attrname##_attr_group = { \
+		.name = _fsname, .attrs = _attrname##_attrs            \
+	}
+
 /* Boolean style enumeration, base macro. Requires adding show/store */
 #define __ATTR_GROUP_ENUM(_attrname, _fsname, _possible, _dispname)     \
 	__ATTR_SHOW_FMT(display_name, _attrname, "%s\n", _dispname);    \
@@ -106,6 +120,10 @@ static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 	static const struct attribute_group _attrname##_attr_group = {  \
 		.name = _fsname, .attrs = _attrname##_attrs             \
 	}
+
+#define ATTR_GROUP_INT_VALUE_ONLY_RO(_attrname, _fsname, _wmi, _dispname) \
+	__ATTR_CURRENT_INT_RO(_attrname, _wmi);                           \
+	__ATTR_GROUP_INT_VALUE_ONLY(_attrname, _fsname, _dispname)
 
 #define ATTR_GROUP_BOOL_RO(_attrname, _fsname, _wmi, _dispname) \
 	__ATTR_CURRENT_INT_RO(_attrname, _wmi);                 \
