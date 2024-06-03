@@ -205,7 +205,7 @@
 .endif
 .endm
 
-// Load 1 <= %rcx <= 15 bytes from the pointer \src into the xmm register \dst
+// Load 1 <= %ecx <= 15 bytes from the pointer \src into the xmm register \dst
 // and zeroize any remaining bytes.  Clobbers %rax, %rcx, and \tmp{64,32}.
 .macro	_load_partial_block	src, dst, tmp64, tmp32
 	sub		$8, %ecx		// LEN - 8
@@ -244,7 +244,7 @@
 .Ldone\@:
 .endm
 
-// Store 1 <= %rcx <= 15 bytes from the xmm register \src to the pointer \dst.
+// Store 1 <= %ecx <= 15 bytes from the xmm register \src to the pointer \dst.
 // Clobbers %rax, %rcx, and %rsi.
 .macro	_store_partial_block	src, dst
 	sub		$8, %ecx		// LEN - 8
@@ -592,9 +592,6 @@
 	movq		.Lgfpoly(%rip), GFPOLY
 
 	// Process the AAD one full block at a time.
-	//
-	// Pre-subtracting 16 from AADLEN simplifies the loop.  It also
-	// zero-extends it to 64 bits, which is needed for _load_partial_block.
 	sub		$16, AADLEN
 	jl		.Laad_loop_1x_done\@
 .Laad_loop_1x\@:
@@ -611,7 +608,7 @@
 	jz		.Laad_done\@
 
 	// Process a partial block of length 1 <= AADLEN <= 15.
-	// _load_partial_block assumes that %rcx contains zero-extended AADLEN.
+	// _load_partial_block assumes that %ecx contains AADLEN.
 	_load_partial_block	AAD, %xmm0, %r10, %r10d
 	pshufb		BSWAP_MASK, %xmm0
 	pxor		%xmm0, GHASH_ACC

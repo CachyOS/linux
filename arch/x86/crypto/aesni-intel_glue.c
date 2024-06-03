@@ -852,24 +852,24 @@ struct aes_gcm_key_aesni {
 	struct aes_gcm_key base;
 
 	/*
-	 * Powers of the hash key H^8 through H^1.  All entries have an extra
-	 * factor of x^-1 and are byte-reversed.  16-byte alignment is required
-	 * by the assembly code.
+	 * Powers of the hash key H^8 through H^1.  These are 128-bit values.
+	 * They all have an extra factor of x^-1 and are byte-reversed.  16-byte
+	 * alignment is required by the assembly code.
 	 */
-	u8 h_powers[8][16] __aligned(16);
+	u64 h_powers[8][2] __aligned(16);
 
 	/*
 	 * h_powers_xored[i] contains the two 64-bit halves of h_powers[i] XOR'd
 	 * together.  It's used for Karatsuba multiplication.  16-byte alignment
 	 * is required by the assembly code.
 	 */
-	u8 h_powers_xored[8][8] __aligned(16);
+	u64 h_powers_xored[8] __aligned(16);
 
 	/*
 	 * H^1 times x^64 (and also the usual extra factor of x^-1).  16-byte
 	 * alignment is required by the assembly code.
 	 */
-	u8 h_times_x64[16] __aligned(16);
+	u64 h_times_x64[2] __aligned(16);
 };
 #define AES_GCM_KEY_AESNI(key)	\
 	container_of((key), struct aes_gcm_key_aesni, base)
@@ -886,16 +886,16 @@ struct aes_gcm_key_avx10 {
 	struct aes_gcm_key base;
 
 	/*
-	 * Powers of the hash key H^16 through H^1.  All entries have an extra
-	 * factor of x^-1 and are byte-reversed.  This is aligned to a 64-byte
-	 * boundary to make it naturally aligned for 512-bit loads, which may
-	 * improve performance on some CPUs.  (The assembly code doesn't *need*
-	 * the alignment; this is just an optimization.)
+	 * Powers of the hash key H^16 through H^1.  These are 128-bit values.
+	 * They all have an extra factor of x^-1 and are byte-reversed.  This
+	 * array is aligned to a 64-byte boundary to make it naturally aligned
+	 * for 512-bit loads, which can improve performance.  (The assembly code
+	 * doesn't *need* the alignment; this is just an optimization.)
 	 */
-	u8 h_powers[16][16] __aligned(64);
+	u64 h_powers[16][2] __aligned(64);
 
 	/* Three padding blocks required by the assembly code */
-	u8 padding[3][16];
+	u64 padding[3][2];
 };
 #define AES_GCM_KEY_AVX10(key)	\
 	container_of((key), struct aes_gcm_key_avx10, base)
@@ -1246,8 +1246,8 @@ static int gcm_setkey(struct crypto_aead *tfm, const u8 *raw_key,
 			struct aes_gcm_key_avx10 *k = AES_GCM_KEY_AVX10(key);
 
 			for (i = ARRAY_SIZE(k->h_powers) - 1; i >= 0; i--) {
-				put_unaligned_be64(h.a, &k->h_powers[i][8]);
-				put_unaligned_be64(h.b, &k->h_powers[i][0]);
+				k->h_powers[i][0] = be64_to_cpu(h.b);
+				k->h_powers[i][1] = be64_to_cpu(h.a);
 				gf128mul_lle(&h, &h1);
 			}
 			memset(k->padding, 0, sizeof(k->padding));
@@ -1255,15 +1255,15 @@ static int gcm_setkey(struct crypto_aead *tfm, const u8 *raw_key,
 			struct aes_gcm_key_aesni *k = AES_GCM_KEY_AESNI(key);
 
 			for (i = ARRAY_SIZE(k->h_powers) - 1; i >= 0; i--) {
-				put_unaligned_be64(h.a, &k->h_powers[i][8]);
-				put_unaligned_be64(h.b, &k->h_powers[i][0]);
-				put_unaligned_be64(h.a ^ h.b,
-						   &k->h_powers_xored[i]);
+				k->h_powers[i][0] = be64_to_cpu(h.b);
+				k->h_powers[i][1] = be64_to_cpu(h.a);
+				k->h_powers_xored[i] = k->h_powers[i][0] ^
+						       k->h_powers[i][1];
 				gf128mul_lle(&h, &h1);
 			}
 			gf128mul_lle(&h1, (const be128 *)x_to_the_63);
-			put_unaligned_be64(h1.a, &k->h_times_x64[8]);
-			put_unaligned_be64(h1.b, &k->h_times_x64[0]);
+			k->h_times_x64[0] = be64_to_cpu(h1.b);
+			k->h_times_x64[1] = be64_to_cpu(h1.a);
 		}
 	}
 	return 0;
@@ -1448,7 +1448,7 @@ out:
 			ctxsize, priority)				       \
 									       \
 static int gcm_setkey_##suffix(struct crypto_aead *tfm, const u8 *raw_key,     \
-			    unsigned int keylen)			       \
+			       unsigned int keylen)			       \
 {									       \
 	return gcm_setkey(tfm, raw_key, keylen, (flags));		       \
 }									       \
@@ -1464,7 +1464,7 @@ static int gcm_decrypt_##suffix(struct aead_request *req)		       \
 }									       \
 									       \
 static int rfc4106_setkey_##suffix(struct crypto_aead *tfm, const u8 *raw_key, \
-				unsigned int keylen)			       \
+				   unsigned int keylen)			       \
 {									       \
 	return gcm_setkey(tfm, raw_key, keylen, (flags) | FLAG_RFC4106);       \
 }									       \
