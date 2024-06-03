@@ -301,6 +301,14 @@ config ASUS_WMI
 	  To compile this driver as a module, choose M here: the module will
 	  be called asus-wmi.
 
+config ASUS_WMI_BIOS
+	bool "BIOS option support in WMI platform (DEPRECATED)"
+	depends on ASUS_WMI
+	help
+	  Say Y to expose the configurable BIOS options through the asus-wmi
+	  driver. This can be used with or without the new asus-bios driver as
+	  the options are the same but the asus-bios driver has more features.
+
 config ASUS_NB_WMI
 	tristate "Asus Notebook WMI Driver"
 	depends on ASUS_WMI
