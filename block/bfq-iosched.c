@@ -7627,7 +7627,7 @@ MODULE_ALIAS("bfq-iosched");
 static int __init bfq_init(void)
 {
 	int ret;
-	char msg[60] = "BFQ I/O-scheduler: BFQ-CachyOS v6.9";
+	char msg[60] = "BFQ I/O-scheduler: BFQ-CachyOS v6.10";
 
 #ifdef CONFIG_BFQ_GROUP_IOSCHED
 	ret = blkcg_policy_register(&blkcg_policy_bfq);
