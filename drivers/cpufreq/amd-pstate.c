@@ -113,6 +113,7 @@ static bool amd_pstate_prefcore = true;
 static struct quirk_entry *quirks;
 struct amd_pstate_global_params amd_pstate_global_params;
 EXPORT_SYMBOL_GPL(amd_pstate_global_params);
+static int amd_pstate_cpu_boost(int cpu, bool state);
 
 /*
  * AMD Energy Preference Performance (EPP)
@@ -740,48 +741,46 @@ static int amd_pstate_set_boost(struct cpufreq_policy *policy, int state)
 		pr_err("Boost mode is not supported by this processor or SBIOS\n");
 		return -ENOTSUPP;
 	}
+	mutex_lock(&amd_pstate_driver_lock);
+	ret = amd_pstate_cpu_boost(policy->cpu, state);
+	mutex_unlock(&amd_pstate_driver_lock);
 
-	if (state)
-		policy->cpuinfo.max_freq = cpudata->max_freq;
-	else
-		policy->cpuinfo.max_freq = cpudata->nominal_freq * 1000;
-
-	policy->max = policy->cpuinfo.max_freq;
-
-	ret = freq_qos_update_request(&cpudata->req[1],
-				      policy->cpuinfo.max_freq);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
-static int amd_pstate_boost_init(struct amd_cpudata *cpudata)
+static int amd_pstate_boost_set(struct amd_cpudata *cpudata)
 {
 	u64 boost_val;
-	int ret;
+	int ret = -1;
 
 	if (!cpu_feature_enabled(X86_FEATURE_CPB)) {
-		cpudata->boost_supported = false;
-		current_pstate_driver->boost_enabled = false;
 		pr_debug_once("Boost CPB capabilities not present in the processor\n");
-		return -ENOTSUPP;
+		ret = -EOPNOTSUPP;
+		goto exit_err;
 	}
 
 	ret = rdmsrl_on_cpu(cpudata->cpu, MSR_K7_HWCR, &boost_val);
 	if (ret) {
 		pr_err_once("failed to read initial CPU boost state!\n");
-		return ret;
+		ret = -EIO;
+		goto exit_err;
 	}
 
 	amd_pstate_global_params.cpb_supported = !(boost_val & MSR_K7_HWCR_CPB_DIS);
 	if (amd_pstate_global_params.cpb_supported) {
 		current_pstate_driver->boost_enabled = true;
-		cpudata->boost_state = true;
+		WRITE_ONCE(cpudata->boost_supported, true);
+		WRITE_ONCE(cpudata->boost_state, true);
 	}
 
 	amd_pstate_global_params.cpb_boost = amd_pstate_global_params.cpb_supported;
+	return 0;
 
+exit_err:
+	WRITE_ONCE(cpudata->boost_supported, false);
+	WRITE_ONCE(cpudata->boost_state, false);
+	current_pstate_driver->boost_enabled = false;
+	amd_pstate_global_params.cpb_boost = false;
 	return ret;
 }
 
@@ -1026,11 +1025,6 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 	cpudata->cpu = policy->cpu;
 
 	amd_pstate_init_prefcore(cpudata);
-
-	/* initialize cpu cores boot state */
-	ret = amd_pstate_boost_init(cpudata);
-	if (ret)
-		goto free_cpudata1;
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
@@ -1439,11 +1433,12 @@ static int amd_pstate_cpu_boost_update(struct cpufreq_policy *policy, bool on)
 	policy->max = policy->cpuinfo.max_freq;
 
 	if (cppc_state == AMD_PSTATE_PASSIVE) {
-		ret = freq_qos_update_request(&cpudata->req[1],
-				      policy->cpuinfo.max_freq);
+		ret = freq_qos_update_request(&cpudata->req[1], policy->cpuinfo.max_freq);
+		if (ret < 0)
+			pr_debug("Failed to update freq constraint: CPU%d\n", cpudata->cpu);
 	}
 
-	return ret;
+	return ret < 0 ? ret : 0;
 }
 
 static int amd_pstate_cpu_boost(int cpu, bool state)
@@ -1460,35 +1455,12 @@ static int amd_pstate_cpu_boost(int cpu, bool state)
 
 	ret = amd_pstate_cpu_boost_update(policy, state);
 	refresh_frequency_limits(policy);
-	cpudata->boost_state = !!state;
+	WRITE_ONCE(cpudata->boost_state, state);
+	policy->boost_enabled = state;
 
 err_exit:
 	cpufreq_cpu_put(policy);
 	return ret < 0 ? ret : 0;
-}
-
-static ssize_t show_amd_pstate_boost(struct cpufreq_policy *policy, char *buf)
-{
-	struct amd_cpudata *cpudata = policy->driver_data;
-	bool boost_val;
-
-	boost_val = READ_ONCE(cpudata->boost_state);
-
-	return sysfs_emit(buf, "%u\n", boost_val);
-}
-
-static ssize_t store_amd_pstate_boost(
-		struct cpufreq_policy *policy, const char *buf, size_t count)
-{
-	bool boost_val;
-	int ret;
-
-	if (kstrtobool(buf, &boost_val))
-		return -EINVAL;
-
-	ret = amd_pstate_cpu_boost(policy->cpu, boost_val);
-
-	return ret < 0 ? ret : count;
 }
 
 static ssize_t cpb_boost_show(struct device *dev,
@@ -1536,7 +1508,6 @@ cpufreq_freq_attr_ro(amd_pstate_prefcore_ranking);
 cpufreq_freq_attr_ro(amd_pstate_hw_prefcore);
 cpufreq_freq_attr_rw(energy_performance_preference);
 cpufreq_freq_attr_ro(energy_performance_available_preferences);
-cpufreq_freq_attr_rw(amd_pstate_boost);
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(prefcore);
 static DEVICE_ATTR_RW(cpb_boost);
@@ -1547,7 +1518,6 @@ static struct freq_attr *amd_pstate_attr[] = {
 	&amd_pstate_highest_perf,
 	&amd_pstate_prefcore_ranking,
 	&amd_pstate_hw_prefcore,
-	&amd_pstate_boost,
 	NULL,
 };
 
@@ -1559,7 +1529,6 @@ static struct freq_attr *amd_pstate_epp_attr[] = {
 	&amd_pstate_hw_prefcore,
 	&energy_performance_preference,
 	&energy_performance_available_preferences,
-	&amd_pstate_boost,
 	NULL,
 };
 
@@ -1595,6 +1564,21 @@ static bool amd_pstate_acpi_pm_profile_undefined(void)
 	return false;
 }
 
+static int amd_pstate_init_boost(struct cpufreq_policy *policy)
+{
+	struct amd_cpudata *cpudata = policy->driver_data;
+	int ret;
+
+	/* initialize cpu cores boot state */
+	ret = amd_pstate_boost_set(cpudata);
+	if (ret)
+		return ret;
+
+	policy->boost_enabled = READ_ONCE(cpudata->boost_state);
+
+	return 0;
+}
+
 static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 {
 	int min_freq, max_freq, ret;
@@ -1619,11 +1603,6 @@ static int amd_pstate_epp_cpu_init(struct cpufreq_policy *policy)
 	cpudata->epp_policy = 0;
 
 	amd_pstate_init_prefcore(cpudata);
-
-	/* initialize cpu cores boot state */
-	ret = amd_pstate_boost_init(cpudata);
-	if (ret)
-		goto free_cpudata1;
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
@@ -1907,6 +1886,7 @@ static struct cpufreq_driver amd_pstate_driver = {
 	.exit		= amd_pstate_cpu_exit,
 	.suspend	= amd_pstate_cpu_suspend,
 	.resume		= amd_pstate_cpu_resume,
+	.init_boost	= amd_pstate_init_boost,
 	.set_boost	= amd_pstate_set_boost,
 	.update_limits	= amd_pstate_update_limits,
 	.name		= "amd-pstate",
@@ -1924,6 +1904,8 @@ static struct cpufreq_driver amd_pstate_epp_driver = {
 	.suspend	= amd_pstate_epp_suspend,
 	.resume		= amd_pstate_epp_resume,
 	.update_limits	= amd_pstate_update_limits,
+	.init_boost	= amd_pstate_init_boost,
+	.set_boost	= amd_pstate_set_boost,
 	.name		= "amd-pstate-epp",
 	.attr		= amd_pstate_epp_attr,
 };

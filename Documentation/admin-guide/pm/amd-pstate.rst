@@ -281,8 +281,8 @@ integer values defined between 0 to 255 when EPP feature is enabled by platform
 firmware, if EPP feature is disabled, driver will ignore the written value
 This attribute is read-write.
 
-``amd_pstate_boost``
-The `amd_pstate_boost` sysfs attribute provides control over the CPU core
+``boost``
+The `boost` sysfs attribute provides control over the CPU core
 performance boost, allowing users to manage the maximum frequency limitation
 of the CPU. This attribute can be used to enable or disable the boost feature
 on individual CPUs.
@@ -293,9 +293,9 @@ On the other hand, disabling the boost feature restricts the CPU to operate at t
 base frequency, which may be desirable in certain scenarios to prioritize power
 efficiency or manage temperature.
 
-To manipulate the `amd_pstate_boost` attribute, users can write a value of `0` to disable the
+To manipulate the `boost` attribute, users can write a value of `0` to disable the
 boost or `1` to enable it, for the respective CPU using the sysfs path
-`/sys/devices/system/cpu/cpuX/cpufreq/amd_pstate_boost`, where `X` represents the CPU number.
+`/sys/devices/system/cpu/cpuX/cpufreq/boost`, where `X` represents the CPU number.
 
 It is important to note that modifying the global variable
 `amd_pstate_global_params.cpb_boost` will override the individual CPU settings.

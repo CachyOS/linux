@@ -614,10 +614,9 @@ static ssize_t show_boost(struct kobject *kobj,
 static ssize_t store_boost(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t count)
 {
-	int ret, enable;
+	bool enable;
 
-	ret = sscanf(buf, "%d", &enable);
-	if (ret != 1 || enable < 0 || enable > 1)
+	if (kstrtobool(buf, &enable))
 		return -EINVAL;
 
 	if (cpufreq_boost_trigger_state(enable)) {
@@ -641,10 +640,10 @@ static ssize_t show_local_boost(struct cpufreq_policy *policy, char *buf)
 static ssize_t store_local_boost(struct cpufreq_policy *policy,
 				 const char *buf, size_t count)
 {
-	int ret, enable;
+	int ret;
+	bool enable;
 
-	ret = kstrtoint(buf, 10, &enable);
-	if (ret || enable < 0 || enable > 1)
+	if (kstrtobool(buf, &enable))
 		return -EINVAL;
 
 	if (!cpufreq_driver->boost_enabled)
@@ -1430,8 +1429,16 @@ static int cpufreq_online(unsigned int cpu)
 			goto out_free_policy;
 		}
 
-		/* Let the per-policy boost flag mirror the cpufreq_driver boost during init */
-		policy->boost_enabled = cpufreq_boost_enabled() && policy_has_boost_freq(policy);
+		/* init boost state to prepare set_boost callback for each CPU */
+		if (cpufreq_driver->init_boost) {
+			ret = cpufreq_driver->init_boost(policy);
+			if (ret)
+				pr_debug("%s: %d: initialization boost failed\n", __func__,
+					__LINE__);
+		} else {
+			/* Let the per-policy boost flag mirror the cpufreq_driver boost during init */
+			policy->boost_enabled = cpufreq_boost_enabled() && policy_has_boost_freq(policy);
+		}
 
 		/*
 		 * The initialization has succeeded and the policy is online.
