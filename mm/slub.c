@@ -287,6 +287,7 @@ static inline bool kmem_cache_has_cpu_partial(struct kmem_cache *s)
 #define OO_SHIFT	16
 #define OO_MASK		((1 << OO_SHIFT) - 1)
 #define MAX_OBJS_PER_PAGE	32767 /* since slab.objects is u15 */
+#define SLUB_PAGE_FRAC_SHIFT 12
 
 /* Internal SLUB flags */
 /* Poison object */
@@ -4140,6 +4141,7 @@ static inline int calculate_order(unsigned int size)
 	unsigned int min_objects;
 	unsigned int max_objects;
 	unsigned int nr_cpus;
+	unsigned int page_size_frac;
 
 	/*
 	 * Attempt to find best configuration for a slab. This
@@ -4168,10 +4170,13 @@ static inline int calculate_order(unsigned int size)
 	max_objects = order_objects(slub_max_order, size);
 	min_objects = min(min_objects, max_objects);
 
-	while (min_objects > 1) {
+	page_size_frac = ((PAGE_SIZE >> SLUB_PAGE_FRAC_SHIFT) == 1) ? 0
+		: PAGE_SIZE >> SLUB_PAGE_FRAC_SHIFT;
+
+	while (min_objects >= 1) {
 		unsigned int fraction;
 
-		fraction = 16;
+		fraction = 16 + page_size_frac;
 		while (fraction >= 4) {
 			order = calc_slab_order(size, min_objects,
 					slub_max_order, fraction);
@@ -4181,14 +4186,6 @@ static inline int calculate_order(unsigned int size)
 		}
 		min_objects--;
 	}
-
-	/*
-	 * We were unable to place multiple objects in a slab. Now
-	 * lets see if we can place a single object there.
-	 */
-	order = calc_slab_order(size, 1, slub_max_order, 1);
-	if (order <= slub_max_order)
-		return order;
 
 	/*
 	 * Doh this slab cannot be placed using slub_max_order.
