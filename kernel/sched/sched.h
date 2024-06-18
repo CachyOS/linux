@@ -3523,4 +3523,6 @@ static inline void init_sched_mm_cid(struct task_struct *t) { }
 extern u64 avg_vruntime(struct cfs_rq *cfs_rq);
 extern int entity_eligible(struct cfs_rq *cfs_rq, struct sched_entity *se);
 
+#include "ext.h"
+
 #endif /* _KERNEL_SCHED_SCHED_H */
