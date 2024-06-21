@@ -100,6 +100,7 @@ struct amd_cpudata {
 	u64	cppc_cap1_cached;
 	bool	suspended;
 	s16	epp_default;
+	bool	boost_state;
 };
 
 /**
