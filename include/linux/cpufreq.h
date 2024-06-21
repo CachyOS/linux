@@ -399,6 +399,8 @@ struct cpufreq_driver {
 	bool		boost_enabled;
 	int		(*set_boost)(struct cpufreq_policy *policy, int state);
 
+	/* initialize boost state to be consistent before calling set_boost */
+	int		(*init_boost)(struct cpufreq_policy *policy);
 	/*
 	 * Set by drivers that want to register with the energy model after the
 	 * policy is properly initialized, but before the governor is started.

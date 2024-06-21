@@ -1429,8 +1429,18 @@ static int cpufreq_online(unsigned int cpu)
 			goto out_free_policy;
 		}
 
-		/* Let the per-policy boost flag mirror the cpufreq_driver boost during init */
-		policy->boost_enabled = cpufreq_boost_enabled() && policy_has_boost_freq(policy);
+		/* init boost state to prepare set_boost callback for each CPU */
+		if (cpufreq_driver->init_boost) {
+			ret = cpufreq_driver->init_boost(policy);
+			if (ret) {
+				pr_debug("%s: %d: boost initialization failed\n", __func__,
+					__LINE__);
+				goto out_offline_policy;
+			}
+		} else {
+			/* Let the per-policy boost flag mirror the cpufreq_driver boost during init */
+			policy->boost_enabled = cpufreq_boost_enabled() && policy_has_boost_freq(policy);
+		}
 
 		/*
 		 * The initialization has succeeded and the policy is online.
