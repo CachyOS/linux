@@ -703,20 +703,11 @@ static int amd_pstate_set_boost(struct cpufreq_policy *policy, int state)
 		pr_err("Boost mode is not supported by this processor or SBIOS\n");
 		return -ENOTSUPP;
 	}
+	mutex_lock(&amd_pstate_driver_lock);
+	ret = amd_pstate_cpu_boost(policy->cpu, state);
+	mutex_unlock(&amd_pstate_driver_lock);
 
-	if (state)
-		policy->cpuinfo.max_freq = cpudata->max_freq;
-	else
-		policy->cpuinfo.max_freq = cpudata->nominal_freq * 1000;
-
-	policy->max = policy->cpuinfo.max_freq;
-
-	ret = freq_qos_update_request(&cpudata->req[1],
-				      policy->cpuinfo.max_freq);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 static int amd_pstate_init_boost_support(struct amd_cpudata *cpudata)
@@ -1888,6 +1879,7 @@ static struct cpufreq_driver amd_pstate_epp_driver = {
 	.resume		= amd_pstate_epp_resume,
 	.update_limits	= amd_pstate_update_limits,
 	.init_boost	= amd_pstate_init_boost,
+	.set_boost	= amd_pstate_set_boost,
 	.name		= "amd-pstate-epp",
 	.attr		= amd_pstate_epp_attr,
 };
