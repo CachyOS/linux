@@ -558,10 +558,10 @@ static struct perf_msr amd_rapl_msrs[] = {
 	[PERF_RAPL_PSYS] = { 0, &rapl_events_psys_group,  NULL, false, 0 },
 };
 
-static int rapl_cpu_offline(unsigned int cpu)
+static int __rapl_cpu_offline(struct rapl_pmus *rapl_pmus, unsigned int rapl_pmu_idx,
+			      const struct cpumask *event_cpumask, unsigned int cpu)
 {
-	const struct cpumask *rapl_pmu_cpumask = get_rapl_pmu_cpumask(cpu);
-	struct rapl_pmu *rapl_pmu = cpu_to_rapl_pmu(cpu);
+	struct rapl_pmu *rapl_pmu = rapl_pmus->rapl_pmu[rapl_pmu_idx];
 	int target;
 
 	/* Check if exiting cpu is used for collecting rapl events */
@@ -570,7 +570,7 @@ static int rapl_cpu_offline(unsigned int cpu)
 
 	rapl_pmu->cpu = -1;
 	/* Find a new cpu to collect rapl events */
-	target = cpumask_any_but(rapl_pmu_cpumask, cpu);
+	target = cpumask_any_but(event_cpumask, cpu);
 
 	/* Migrate rapl events to the new target */
 	if (target < nr_cpu_ids) {
@@ -581,11 +581,16 @@ static int rapl_cpu_offline(unsigned int cpu)
 	return 0;
 }
 
-static int rapl_cpu_online(unsigned int cpu)
+static int rapl_cpu_offline(unsigned int cpu)
 {
-	unsigned int rapl_pmu_idx = get_rapl_pmu_idx(cpu);
-	const struct cpumask *rapl_pmu_cpumask = get_rapl_pmu_cpumask(cpu);
-	struct rapl_pmu *rapl_pmu = cpu_to_rapl_pmu(cpu);
+	return __rapl_cpu_offline(rapl_pmus, get_rapl_pmu_idx(cpu),
+				  get_rapl_pmu_cpumask(cpu), cpu);
+}
+
+static int __rapl_cpu_online(struct rapl_pmus *rapl_pmus, unsigned int rapl_pmu_idx,
+			     const struct cpumask *event_cpumask, unsigned int cpu)
+{
+	struct rapl_pmu *rapl_pmu = rapl_pmus->rapl_pmu[rapl_pmu_idx];
 	int target;
 
 	if (!rapl_pmu) {
@@ -606,7 +611,7 @@ static int rapl_cpu_online(unsigned int cpu)
 	 * Check if there is an online cpu in the package which collects rapl
 	 * events already.
 	 */
-	target = cpumask_any_and(&rapl_pmus->cpumask, rapl_pmu_cpumask);
+	target = cpumask_any_and(&rapl_pmus->cpumask, event_cpumask);
 	if (target < nr_cpu_ids)
 		return 0;
 
@@ -614,6 +619,13 @@ static int rapl_cpu_online(unsigned int cpu)
 	rapl_pmu->cpu = cpu;
 	return 0;
 }
+
+static int rapl_cpu_online(unsigned int cpu)
+{
+	return __rapl_cpu_online(rapl_pmus, get_rapl_pmu_idx(cpu),
+				 get_rapl_pmu_cpumask(cpu), cpu);
+}
+
 
 static int rapl_check_hw_unit(void)
 {
