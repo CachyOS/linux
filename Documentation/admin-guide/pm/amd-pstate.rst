@@ -281,6 +281,27 @@ integer values defined between 0 to 255 when EPP feature is enabled by platform
 firmware, if EPP feature is disabled, driver will ignore the written value
 This attribute is read-write.
 
+``boost``
+The `boost` sysfs attribute provides control over the CPU core
+performance boost, allowing users to manage the maximum frequency limitation
+of the CPU. This attribute can be used to enable or disable the boost feature
+on individual CPUs.
+
+When the boost feature is enabled, the CPU can dynamically increase its frequency
+beyond the base frequency, providing enhanced performance for demanding workloads.
+On the other hand, disabling the boost feature restricts the CPU to operate at the
+base frequency, which may be desirable in certain scenarios to prioritize power
+efficiency or manage temperature.
+
+To manipulate the `boost` attribute, users can write a value of `0` to disable the
+boost or `1` to enable it, for the respective CPU using the sysfs path
+`/sys/devices/system/cpu/cpuX/cpufreq/boost`, where `X` represents the CPU number.
+
+It is important to note that modifying the global variable
+`/sys/devices/system/cpu/amd_pstate/cpb_boost` will override the individual CPU
+settings.
+
+
 Other performance and frequency values can be read back from
 ``/sys/devices/system/cpu/cpuX/acpi_cppc/``, see :ref:`cppc_sysfs`.
 
@@ -406,7 +427,7 @@ control its functionality at the system level.  They are located in the
 ``/sys/devices/system/cpu/amd_pstate/`` directory and affect all CPUs.
 
 ``status``
-	Operation mode of the driver: "active", "passive" or "disable".
+	Operation mode of the driver: "active", "passive", "guided" or "disable".
 
 	"active"
 		The driver is functional and in the ``active mode``
@@ -439,6 +460,23 @@ control its functionality at the system level.  They are located in the
 
         This attribute is read-only to check the state of preferred core set
         by the kernel parameter.
+
+``cpb_boost``
+        Specifies whether core performance boost is requested to be enabled or disabled
+        If core performance boost is disabled while a core is in a boosted P-state, the
+        core automatically transitions to the highest performance non-boosted P-state.
+        AMD Core Performance Boost(CPB) is controlled by this attribute file which allows
+        user to change all cores frequency boosting state. It supports all amd-pstate modes.
+
+        States of the driver "/sys/devices/system/cpu/amd_pstate/cpb_boost"
+        "disabled" Core Performance Boosting Disabled.
+        "enabled"  Core Performance Boosting Enabled.
+
+        To enable core performance boost:
+          # echo "enabled" > /sys/devices/system/cpu/amd_pstate/cpb_boost
+
+        To disable core performance boost:
+          # echo "disabled" > /sys/devices/system/cpu/amd_pstate/cpb_boost
 
 ``cpupower`` tool support for ``amd-pstate``
 ===============================================
