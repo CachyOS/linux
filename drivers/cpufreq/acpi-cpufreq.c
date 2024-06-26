@@ -137,6 +137,7 @@ static int set_boost(struct cpufreq_policy *policy, int val)
 			 (void *)(long)val, 1);
 	pr_debug("CPU %*pbl: Core Boosting %s.\n",
 		 cpumask_pr_args(policy->cpus), str_enabled_disabled(val));
+	policy->boost_enabled = val;
 
 	return 0;
 }
