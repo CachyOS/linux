@@ -6596,6 +6596,12 @@ S:	Supported
 T:	git git://anongit.freedesktop.org/drm/drm-misc
 F:	drivers/gpu/drm/sun4i/sun8i*
 
+DRM DRIVER FOR APPLE TOUCH BARS
+M:	Kerem Karabay <kekrby@gmail.com>
+L:	dri-devel@lists.freedesktop.org
+S:	Maintained
+F:	drivers/gpu/drm/tiny/appletbdrm.c
+
 DRM DRIVER FOR ARM PL111 CLCD
 S:	Orphan
 T:	git git://anongit.freedesktop.org/drm/drm-misc
@@ -9572,6 +9578,18 @@ F:	include/linux/freezer.h
 F:	include/linux/pm.h
 F:	include/linux/suspend.h
 F:	kernel/power/
+
+HID APPLE TOUCH BAR DRIVERS
+M:	Kerem Karabay <kekrby@gmail.com>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/hid/hid-appletb-*
+
+HID APPLE MAGIC BACKLIGHT DRIVER
+M:	Orlando Chamberlain <orlandoch.dev@gmail.com>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/hid/apple-magic-backlight.c
 
 HID CORE LAYER
 M:	Jiri Kosina <jikos@kernel.org>

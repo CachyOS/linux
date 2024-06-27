@@ -225,6 +225,30 @@ static void retrieve_apple_device_properties(struct boot_params *boot_params)
 	}
 }
 
+static void apple_set_os(void)
+{
+	efi_guid_t guid = APPLE_SET_OS_PROTOCOL_GUID;
+	apple_set_os_protocol_t *set_os;
+	efi_status_t status;
+
+	status = efi_bs_call(locate_protocol, &guid, NULL, (void **)&set_os);
+	if (status != EFI_SUCCESS)
+		return;
+
+	if (efi_table_attr(set_os, version) >= 2) {
+		status = efi_fn_call(set_os, set_os_vendor, "Apple Inc.");
+		if (status != EFI_SUCCESS)
+			efi_err("Failed to set OS vendor via apple_set_os\n");
+	}
+
+	/* The version being set doesn't seem to matter */
+	if (efi_table_attr(set_os, version) > 0) {
+		status = efi_fn_call(set_os, set_os_version, "Mac OS X 10.9");
+		if (status != EFI_SUCCESS)
+			efi_err("Failed to set OS version via apple_set_os\n");
+	}
+}
+
 efi_status_t efi_adjust_memory_range_protection(unsigned long start,
 						unsigned long size)
 {
@@ -338,6 +362,9 @@ static void setup_quirks(struct boot_params *boot_params)
 	if (IS_ENABLED(CONFIG_APPLE_PROPERTIES) &&
 	    !memcmp(efistub_fw_vendor(), apple, sizeof(apple)))
 		retrieve_apple_device_properties(boot_params);
+
+	if (efi_apple_set_os)
+		apple_set_os();
 }
 
 /*
