@@ -4269,6 +4269,13 @@ void set_extent_buffer_uptodate(struct extent_buffer *eb)
 	}
 }
 
+static void clear_extent_buffer_reading(struct extent_buffer *eb)
+{
+	clear_bit(EXTENT_BUFFER_READING, &eb->bflags);
+	smp_mb__after_atomic();
+	wake_up_bit(&eb->bflags, EXTENT_BUFFER_READING);
+}
+
 static void end_bbio_meta_read(struct btrfs_bio *bbio)
 {
 	struct extent_buffer *eb = bbio->private;
@@ -4276,6 +4283,13 @@ static void end_bbio_meta_read(struct btrfs_bio *bbio)
 	bool uptodate = !bbio->bio.bi_status;
 	struct folio_iter fi;
 	u32 bio_offset = 0;
+
+	/*
+	 * If the extent buffer is marked UPTODATE before the read operation
+	 * completes, other calls to read_extent_buffer_pages() will return
+	 * early without waiting for the read to finish, causing data races.
+	 */
+	WARN_ON(test_bit(EXTENT_BUFFER_UPTODATE, &eb->bflags));
 
 	eb->read_mirror = bbio->mirror_num;
 
@@ -4303,9 +4317,7 @@ static void end_bbio_meta_read(struct btrfs_bio *bbio)
 		bio_offset += len;
 	}
 
-	clear_bit(EXTENT_BUFFER_READING, &eb->bflags);
-	smp_mb__after_atomic();
-	wake_up_bit(&eb->bflags, EXTENT_BUFFER_READING);
+	clear_extent_buffer_reading(eb);
 	free_extent_buffer(eb);
 
 	bio_put(&bbio->bio);
@@ -4339,9 +4351,7 @@ int read_extent_buffer_pages(struct extent_buffer *eb, int wait, int mirror_num,
 	 * will now be set, and we shouldn't read it in again.
 	 */
 	if (unlikely(test_bit(EXTENT_BUFFER_UPTODATE, &eb->bflags))) {
-		clear_bit(EXTENT_BUFFER_READING, &eb->bflags);
-		smp_mb__after_atomic();
-		wake_up_bit(&eb->bflags, EXTENT_BUFFER_READING);
+		clear_extent_buffer_reading(eb);
 		return 0;
 	}
 
