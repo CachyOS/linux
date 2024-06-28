@@ -4848,6 +4848,7 @@ static int intel_ddi_init_hdmi_connector(struct intel_digital_port *dig_port)
 
 static bool intel_ddi_a_force_4_lanes(struct intel_digital_port *dig_port)
 {
+	struct intel_display *display = to_intel_display(dig_port);
 	struct drm_i915_private *dev_priv = to_i915(dig_port->base.base.dev);
 
 	if (dig_port->base.port != PORT_A)
@@ -4855,6 +4856,9 @@ static bool intel_ddi_a_force_4_lanes(struct intel_digital_port *dig_port)
 
 	if (dig_port->ddi_a_4_lanes)
 		return false;
+
+	if (intel_has_quirk(display, QUIRK_DDI_A_FORCE_4_LANES))
+		return true;
 
 	/* Broxton/Geminilake: Bspec says that DDI_A_4_LANES is the only
 	 *                     supported configuration
