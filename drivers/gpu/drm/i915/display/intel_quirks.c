@@ -59,18 +59,6 @@ static void quirk_increase_ddi_disabled_time(struct drm_i915_private *i915)
 	drm_info(&i915->drm, "Applying Increase DDI Disabled quirk\n");
 }
 
-/*
- * In some cases, the firmware might not set the lane count to 4 (for example,
- * when booting in some dual GPU Macs with the dGPU as the default GPU), this
- * quirk is used to force it as otherwise it might not be possible to compute a
- * valid link configuration.
- */
-static void quirk_ddi_a_force_4_lanes(struct intel_display *display)
-{
-	intel_set_quirk(display, QUIRK_DDI_A_FORCE_4_LANES);
-	drm_info(display->drm, "Applying DDI A Forced 4 Lanes quirk\n");
-}
-
 static void quirk_no_pps_backlight_power_hook(struct drm_i915_private *i915)
 {
 	intel_set_quirk(i915, QUIRK_NO_PPS_BACKLIGHT_POWER_HOOK);
@@ -213,9 +201,6 @@ static struct intel_quirk intel_quirks[] = {
 	{ 0x3184, 0x1019, 0xa94d, quirk_increase_ddi_disabled_time },
 	/* HP Notebook - 14-r206nv */
 	{ 0x0f31, 0x103c, 0x220f, quirk_invert_brightness },
-
-	/* Apple MacBookPro15,1 */
-	{ 0x3e9b, 0x106b, 0x0176, quirk_ddi_a_force_4_lanes },
 };
 
 void intel_init_quirks(struct drm_i915_private *i915)
