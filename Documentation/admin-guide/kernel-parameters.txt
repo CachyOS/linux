@@ -415,6 +415,8 @@
 			      useful so that a dump capture kernel won't be
 			      shot down by NMI
 
+	apple_set_os	[KNL] Report that macOS is being booted to the firmware
+
 	autoconf=	[IPV6]
 			See Documentation/networking/ipv6.rst.
 

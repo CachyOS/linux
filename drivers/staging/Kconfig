@@ -70,4 +70,6 @@ source "drivers/staging/fieldbus/Kconfig"
 
 source "drivers/staging/vme_user/Kconfig"
 
+source "drivers/staging/apple-bce/Kconfig"
+
 endif # STAGING

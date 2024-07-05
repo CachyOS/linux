@@ -39,6 +39,7 @@ extern bool efi_nokaslr;
 extern int efi_loglevel;
 extern int efi_mem_encrypt;
 extern bool efi_novamap;
+extern bool efi_apple_set_os;
 extern const efi_system_table_t *efi_system_table;
 
 typedef union efi_dxe_services_table efi_dxe_services_table_t;
@@ -822,6 +823,19 @@ union apple_properties_protocol {
 		u32 set;
 		u32 del;
 		u32 get_all;
+	} mixed_mode;
+};
+
+typedef struct apple_set_os_protocol apple_set_os_protocol_t;
+
+struct apple_set_os_protocol {
+	u64 version;
+	efi_status_t (__efiapi *set_os_version) (const char *);
+	efi_status_t (__efiapi *set_os_vendor) (const char *);
+	struct {
+		u32 version;
+		u32 set_os_version;
+		u32 set_os_vendor;
 	} mixed_mode;
 };
 
