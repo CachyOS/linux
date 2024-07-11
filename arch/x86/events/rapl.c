@@ -189,18 +189,6 @@ static inline const struct cpumask *get_rapl_pmu_cpumask(int cpu)
 					 topology_die_cpumask(cpu);
 }
 
-static inline struct rapl_pmu *cpu_to_rapl_pmu(unsigned int cpu)
-{
-	unsigned int rapl_pmu_idx = get_rapl_pmu_idx(cpu);
-
-	/*
-	 * The unsigned check also catches the '-1' return value for non
-	 * existent mappings in the topology map.
-	 */
-	return rapl_pmu_idx < rapl_pmus_pkg->nr_rapl_pmu ?
-	       rapl_pmus_pkg->rapl_pmu[rapl_pmu_idx] : NULL;
-}
-
 static inline u64 rapl_read_counter(struct perf_event *event)
 {
 	u64 raw;
