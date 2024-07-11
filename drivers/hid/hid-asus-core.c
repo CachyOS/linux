@@ -20,9 +20,8 @@
  *  Copyright (c) 2016 Frederik Wenigwieser <frederik.wenigwieser@gmail.com>
  */
 
-/*
- */
-
+#include <asm-generic/errno-base.h>
+#include <asm-generic/errno.h>
 #include <linux/dmi.h>
 #include <linux/hid.h>
 #include <linux/module.h>
@@ -32,6 +31,7 @@
 #include <linux/power_supply.h>
 #include <linux/leds.h>
 
+#include "hid-asus.h"
 #include "hid-ids.h"
 
 MODULE_AUTHOR("Yusuke Fujimaki <usk.fujimaki@gmail.com>");
@@ -47,10 +47,6 @@ MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
 #define T100CHI_MOUSE_REPORT_ID 0x06
 #define FEATURE_REPORT_ID 0x0d
 #define INPUT_REPORT_ID 0x5d
-#define FEATURE_KBD_REPORT_ID 0x5a
-#define FEATURE_KBD_REPORT_SIZE 16
-#define FEATURE_KBD_LED_REPORT_ID1 0x5d
-#define FEATURE_KBD_LED_REPORT_ID2 0x5e
 
 #define SUPPORT_KBD_BACKLIGHT BIT(0)
 
@@ -70,20 +66,6 @@ MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
 #define	BATTERY_STAT_DISCONNECT	(0)
 #define	BATTERY_STAT_CHARGING	(1)
 #define	BATTERY_STAT_FULL	(2)
-
-#define QUIRK_FIX_NOTEBOOK_REPORT	BIT(0)
-#define QUIRK_NO_INIT_REPORTS		BIT(1)
-#define QUIRK_SKIP_INPUT_MAPPING	BIT(2)
-#define QUIRK_IS_MULTITOUCH		BIT(3)
-#define QUIRK_NO_CONSUMER_USAGES	BIT(4)
-#define QUIRK_USE_KBD_BACKLIGHT		BIT(5)
-#define QUIRK_T100_KEYBOARD		BIT(6)
-#define QUIRK_T100CHI			BIT(7)
-#define QUIRK_G752_KEYBOARD		BIT(8)
-#define QUIRK_T90CHI			BIT(9)
-#define QUIRK_MEDION_E1239T		BIT(10)
-#define QUIRK_ROG_NKEY_KEYBOARD		BIT(11)
-#define QUIRK_ROG_CLAYMORE_II_KEYBOARD BIT(12)
 
 #define I2C_KEYBOARD_QUIRKS			(QUIRK_FIX_NOTEBOOK_REPORT | \
 						 QUIRK_NO_INIT_REPORTS | \
@@ -111,22 +93,6 @@ struct asus_touchpad_info {
 	int contact_size;
 	int max_contacts;
 	int report_size;
-};
-
-struct asus_drvdata {
-	unsigned long quirks;
-	struct hid_device *hdev;
-	struct input_dev *input;
-	struct input_dev *tp_kbd_input;
-	struct asus_kbd_leds *kbd_backlight;
-	const struct asus_touchpad_info *tp;
-	bool enable_backlight;
-	struct power_supply *battery;
-	struct power_supply_desc battery_desc;
-	int battery_capacity;
-	int battery_stat;
-	bool battery_in_query;
-	unsigned long battery_next_query;
 };
 
 static int asus_report_battery(struct asus_drvdata *, u8 *, int);
@@ -329,6 +295,16 @@ static int asus_raw_event(struct hid_device *hdev,
 	if (drvdata->battery && data[0] == BATTERY_REPORT_ID)
 		return asus_report_battery(drvdata, data, size);
 
+	// TODO: remove after debugging
+	// if (data[0] == 0x5a || data[0] == 0x5d || data[0] == 0x5e){
+	// 	 for (int i = 0; i < size; i++) {
+	// 		if (i == 0)
+	// 			printk(KERN_INFO "GOT: %02x,", data[i]);
+	// 		else
+	// 			printk(KERN_CONT "%02x,", data[i]);
+	// 	 }
+	// }
+
 	if (drvdata->tp && data[0] == INPUT_REPORT_ID)
 		return asus_report_input(drvdata, data, size);
 
@@ -365,7 +341,7 @@ static int asus_raw_event(struct hid_device *hdev,
 	return 0;
 }
 
-static int asus_kbd_set_report(struct hid_device *hdev, const u8 *buf, size_t buf_size)
+int asus_kbd_set_report(struct hid_device *hdev, const u8 *buf, size_t buf_size)
 {
 	unsigned char *dmabuf;
 	int ret;
@@ -386,9 +362,16 @@ static int asus_kbd_set_report(struct hid_device *hdev, const u8 *buf, size_t bu
 	return ret;
 }
 
-static int asus_kbd_init(struct hid_device *hdev)
+int asus_kbd_get_report(struct hid_device *hdev, u8 *out_buf, size_t out_buf_size)
 {
-	const u8 buf[] = { FEATURE_KBD_REPORT_ID, 0x41, 0x53, 0x55, 0x53, 0x20, 0x54,
+	return hid_hw_raw_request(hdev, FEATURE_KBD_REPORT_ID, out_buf,
+				 out_buf_size, HID_FEATURE_REPORT,
+				 HID_REQ_GET_REPORT);
+}
+
+static int asus_kbd_init(struct hid_device *hdev, u8 report_id)
+{
+	const u8 buf[] = { report_id, 0x41, 0x53, 0x55, 0x53, 0x20, 0x54,
 		     0x65, 0x63, 0x68, 0x2e, 0x49, 0x6e, 0x63, 0x2e, 0x00 };
 	int ret;
 
@@ -400,9 +383,10 @@ static int asus_kbd_init(struct hid_device *hdev)
 }
 
 static int asus_kbd_get_functions(struct hid_device *hdev,
-				  unsigned char *kbd_func)
+				  unsigned char *kbd_func,
+				  u8 report_id)
 {
-	const u8 buf[] = { FEATURE_KBD_REPORT_ID, 0x05, 0x20, 0x31, 0x00, 0x08 };
+	const u8 buf[] = { report_id, 0x05, 0x20, 0x31, 0x00, 0x08 };
 	u8 *readbuf;
 	int ret;
 
@@ -428,51 +412,6 @@ static int asus_kbd_get_functions(struct hid_device *hdev,
 	*kbd_func = readbuf[6];
 
 	kfree(readbuf);
-	return ret;
-}
-
-static int rog_nkey_led_init(struct hid_device *hdev)
-{
-	const u8 buf_init_start[] = { FEATURE_KBD_LED_REPORT_ID1, 0xB9 };
-	u8 buf_init2[] = { FEATURE_KBD_LED_REPORT_ID1, 0x41, 0x53, 0x55, 0x53, 0x20,
-				0x54, 0x65, 0x63, 0x68, 0x2e, 0x49, 0x6e, 0x63, 0x2e, 0x00 };
-	u8 buf_init3[] = { FEATURE_KBD_LED_REPORT_ID1,
-						0x05, 0x20, 0x31, 0x00, 0x08 };
-	int ret;
-
-	hid_info(hdev, "Asus initialise N-KEY Device");
-	/* The first message is an init start */
-	ret = asus_kbd_set_report(hdev, buf_init_start, sizeof(buf_init_start));
-	if (ret < 0) {
-		hid_warn(hdev, "Asus failed to send init start command: %d\n", ret);
-		return ret;
-	}
-	/* Followed by a string */
-	ret = asus_kbd_set_report(hdev, buf_init2, sizeof(buf_init2));
-	if (ret < 0) {
-		hid_warn(hdev, "Asus failed to send init command 1.0: %d\n", ret);
-		return ret;
-	}
-	/* Followed by a string */
-	ret = asus_kbd_set_report(hdev, buf_init3, sizeof(buf_init3));
-	if (ret < 0) {
-		hid_warn(hdev, "Asus failed to send init command 1.1: %d\n", ret);
-		return ret;
-	}
-
-	/* begin second report ID with same data */
-	buf_init2[0] = FEATURE_KBD_LED_REPORT_ID2;
-	buf_init3[0] = FEATURE_KBD_LED_REPORT_ID2;
-
-	ret = asus_kbd_set_report(hdev, buf_init2, sizeof(buf_init2));
-	if (ret < 0) {
-		hid_warn(hdev, "Asus failed to send init command 2.0: %d\n", ret);
-		return ret;
-	}
-	ret = asus_kbd_set_report(hdev, buf_init3, sizeof(buf_init3));
-	if (ret < 0)
-		hid_warn(hdev, "Asus failed to send init command 2.1: %d\n", ret);
-
 	return ret;
 }
 
@@ -558,17 +497,27 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 	int ret;
 
 	if (drvdata->quirks & QUIRK_ROG_NKEY_KEYBOARD) {
-		ret = rog_nkey_led_init(hdev);
+		/* Initialize keyboard */
+		ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
+		if (ret < 0)
+			return ret;
+
+		/* The LED endpoint is initialised in two HID */
+		ret = asus_kbd_init(hdev, FEATURE_KBD_LED_REPORT_ID1);
+		if (ret < 0)
+			return ret;
+
+		ret = asus_kbd_init(hdev, FEATURE_KBD_LED_REPORT_ID2);
 		if (ret < 0)
 			return ret;
 	} else {
 		/* Initialize keyboard */
-		ret = asus_kbd_init(hdev);
+		ret = asus_kbd_init(hdev, FEATURE_KBD_REPORT_ID);
 		if (ret < 0)
 			return ret;
 
 		/* Get keyboard functions */
-		ret = asus_kbd_get_functions(hdev, &kbd_func);
+		ret = asus_kbd_get_functions(hdev, &kbd_func, FEATURE_KBD_REPORT_ID);
 		if (ret < 0)
 			return ret;
 
@@ -880,7 +829,11 @@ static int asus_input_mapping(struct hid_device *hdev,
 		case 0xb2: asus_map_key_clear(KEY_PROG2);	break; /* Fn+Left previous aura */
 		case 0xb3: asus_map_key_clear(KEY_PROG3);	break; /* Fn+Left next aura */
 		case 0x6a: asus_map_key_clear(KEY_F13);		break; /* Screenpad toggle */
-		case 0x4b: asus_map_key_clear(KEY_F14);		break; /* Arrows/Pg-Up/Dn toggle */
+		case 0x4b: asus_map_key_clear(KEY_F14);		break; /* Arrows/Pg-Up/Dn toggle, Ally M1 */
+		case 0xa5: asus_map_key_clear(KEY_F15);		break; /* ROG Ally M2 */
+		case 0xa6: asus_map_key_clear(KEY_F16);		break; /* ROG Ally QAM button */
+		case 0xa7: asus_map_key_clear(KEY_F17);		break; /* ROG Ally ROG long-press */
+		case 0xa8: asus_map_key_clear(KEY_F18);		break; /* ROG Ally ROG long-press-release */
 
 
 		default:
@@ -1093,6 +1046,10 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		}
 	}
 
+	/* all ROG devices have this HID interface but we will focus on Ally for now */
+	if (drvdata->quirks & QUIRK_ROG_NKEY_KEYBOARD && hid_is_usb(hdev))
+		rog_ally.probe(hdev, &rog_ally);
+
 	ret = hid_parse(hdev);
 	if (ret) {
 		hid_err(hdev, "Asus hid parse failed: %d\n", ret);
@@ -1141,6 +1098,8 @@ static void asus_remove(struct hid_device *hdev)
 
 		cancel_work_sync(&drvdata->kbd_backlight->work);
 	}
+
+	rog_ally.remove(hdev, &rog_ally);
 
 	hid_hw_stop(hdev);
 }
@@ -1273,6 +1232,9 @@ static const struct hid_device_id asus_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
 	    USB_DEVICE_ID_ASUSTEK_ROG_NKEY_KEYBOARD3),
 	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
+	    USB_DEVICE_ID_ASUSTEK_ROG_NKEY_ALLY),
+	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD | QUIRK_ROG_ALLY_XPAD },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
 	    USB_DEVICE_ID_ASUSTEK_ROG_CLAYMORE_II_KEYBOARD),
 	  QUIRK_ROG_CLAYMORE_II_KEYBOARD },

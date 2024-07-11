@@ -1,0 +1,85 @@
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/gamepad_mode
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the mode the ROG Ally xpad operates in:
+		- 1 = Game mode
+		- 2 = WASD mode
+		- 3 = Mouse mode
+		This setting applies instantly and applies settings that were previously changed
+		under that mode which are:
+		- deadzones
+		- anti-deadzones
+		- button mapping
+		- button turbo settings
+		- response curves
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/apply
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Apply the settings that have been stored in attributes so far. Because there are
+		many individual settings across a dozen packets this separation is required to
+		prevent spamming the MCU when userspace applications apply many changes at once.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/reset_btn_mapping
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Reset a gamepad mode to its default button mapping.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y/z>_<left/right>/deadzone
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the inner and outer deadzones of joysticks and triggers. These settings are not
+		written to the MCU until `apply` is set.
+		- range 0-64 (corresponds to 0-100%)
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y/z>_<left/right>/deadzone_index
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Descriptive labels for joystick deadzone array.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y>_<left/right>/anti-deadzone
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the joystick anti-deadzone feature:
+		- range 0-32 (corresponds to 0-50%)
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y/z>_<left/right>/calibration
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Calibration values for the joysticks and trigger analogues. There are no default
+		values as the calibration is determined in userspace.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y/z>_<left/right>/calibration_index
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Descriptive labels for joystick and triggers calibration array.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y>_<left/right>/rc_point<n>
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the joystick response curve. There are 4 points available with 1 being the lowest
+		point and 4 being the highest point.
+		- range 0-64 (corresponds to 0-100%)
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/axis_<x/y>_<left/right>/rc_point_index
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Descriptive labels for joystick response curve points.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/btn_<label>/turbo
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the turbo mode of the button:
+		- 0 = no turbo, a separate press and release is registered on press and release
+		- 1-16 = interval between presses if button held down in steps of 1000ms/16
+		These settings are not written to the MCU until `apply` is set.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/vibration_intensity
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Set the vibration intensity for left and right haptics. Applies instantly.
+
+What:		/sys/bus/usb/devices/1-3:1.0/0003:0B05:1ABE.0001/vibration_intensity_index
+Date:		December 2023
+Contact:	linux-input@vger.kernel.org
+Description:	Descriptive labels for index points of vibration_intensity.
