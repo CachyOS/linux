@@ -197,4 +197,19 @@ static const struct dmi_system_id asus_use_hid_led_dmi_ids[] = {
 	{ },
 };
 
+/* To be used by both hid-asus and asus-wmi to determine which controls kbd_brightness */
+static const struct dmi_system_id asus_ally_mcu_quirk[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "RC71L"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "RC72L"),
+		},
+	},
+	{ },
+};
+
 #endif	/* __PLATFORM_DATA_X86_ASUS_WMI_H */
