@@ -1943,7 +1943,7 @@ STATIC_IFN_KUNIT void amdgpu_dm_plane_drm_plane_destroy_state(struct drm_plane *
 }
 EXPORT_IF_KUNIT(amdgpu_dm_plane_drm_plane_destroy_state);
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_AMD_PRIVATE_COLOR
 static void
 dm_atomic_plane_attach_color_mgmt_properties(struct amdgpu_display_manager *dm,
 					     struct drm_plane *plane)
@@ -2173,7 +2173,7 @@ static const struct drm_plane_funcs dm_plane_funcs = {
 	.atomic_destroy_state = amdgpu_dm_plane_drm_plane_destroy_state,
 	.format_mod_supported = amdgpu_dm_plane_format_mod_supported,
 	.format_mod_supported_async = amdgpu_dm_plane_format_mod_supported,
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_AMD_PRIVATE_COLOR
 	.atomic_set_property = dm_atomic_plane_set_property,
 	.atomic_get_property = dm_atomic_plane_get_property,
 #endif
@@ -2270,7 +2270,7 @@ int amdgpu_dm_plane_init(struct amdgpu_display_manager *dm,
 	else
 		drm_plane_helper_add(plane, &dm_plane_helper_funcs);
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_AMD_PRIVATE_COLOR
 	dm_atomic_plane_attach_color_mgmt_properties(dm, plane);
 #else
 	res = dm_plane_init_colorops(plane);
@@ -2296,4 +2296,3 @@ bool amdgpu_dm_plane_is_video_format(uint32_t format)
 	return false;
 }
 EXPORT_IF_KUNIT(amdgpu_dm_plane_is_video_format);
-
