@@ -32,6 +32,7 @@ Documentation/dev-tools/testing-overview.rst
    kunit/index
    ktap
    checkuapi
+   autofdo
 
 
 .. only::  subproject and html
