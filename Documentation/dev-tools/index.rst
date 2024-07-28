@@ -33,6 +33,7 @@ Documentation/dev-tools/testing-overview.rst
    ktap
    checkuapi
    autofdo
+   propeller
 
 
 .. only::  subproject and html

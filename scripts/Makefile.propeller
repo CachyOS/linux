@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0
+
+# Enable available and selected Clang Propeller features.
+# Propeller required debug information to embed module names in the profiles.
+CFLAGS_PROPELLER_CLANG := -fdebug-info-for-profiling
+
+ifdef CLANG_PROPELLER_PROFILE_PREFIX
+CFLAGS_PROPELLER_CLANG += -fbasic-block-sections=list=$(CLANG_PROPELLER_PROFILE_PREFIX)_cc_profile.txt -ffunction-sections
+KBUILD_LDFLAGS += --symbol-ordering-file=$(CLANG_PROPELLER_PROFILE_PREFIX)_ld_profile.txt --no-warn-symbol-ordering
+else
+CFLAGS_PROPELLER_CLANG += -fbasic-block-sections=labels
+endif
+
+ifdef CONFIG_LTO_CLANG
+ifdef CONFIG_LTO_CLANG_THIN
+ifdef CLANG_PROPELLER_PROFILE_PREFIX
+KBUILD_LDFLAGS += --lto-basic-block-sections=$(CLANG_PROPELLER_PROFILE_PREFIX)_cc_profile.txt
+else
+KBUILD_LDFLAGS += --lto-basic-block-sections=labels
+endif
+endif
+else
+endif
+
+export CFLAGS_PROPELLER_CLANG
