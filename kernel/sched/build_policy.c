@@ -16,7 +16,6 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/cputime.h>
 #include <linux/sched/hotplug.h>
-#include <linux/sched/isolation.h>
 #include <linux/sched/posix-timers.h>
 #include <linux/sched/rt.h>
 
