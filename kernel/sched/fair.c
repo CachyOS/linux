@@ -9352,18 +9352,28 @@ static inline void update_blocked_load_status(struct rq *rq, bool has_blocked) {
 
 static bool __update_blocked_others(struct rq *rq, bool *done)
 {
-	bool updated;
+	const struct sched_class *curr_class;
+	u64 now = rq_clock_pelt(rq);
+	unsigned long hw_pressure;
+	bool decayed;
 
 	/*
 	 * update_load_avg() can call cpufreq_update_util(). Make sure that RT,
 	 * DL and IRQ signals have been updated before updating CFS.
 	 */
-	updated = update_other_load_avgs(rq);
+	curr_class = rq->curr->sched_class;
+
+	hw_pressure = arch_scale_hw_pressure(cpu_of(rq));
+
+	decayed = update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) |
+		  update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class) |
+		  update_hw_load_avg(now, rq, hw_pressure) |
+		  update_irq_load_avg(rq, 0);
 
 	if (others_have_blocked(rq))
 		*done = false;
 
-	return updated;
+	return decayed;
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
