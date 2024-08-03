@@ -6114,10 +6114,8 @@ restart:
 
 	for_each_active_class(class) {
 		p = class->pick_next_task(rq);
-		if (p) {
-			scx_next_task_picked(rq, p, class);
+		if (p)
 			return p;
-		}
 	}
 
 	BUG(); /* The idle class should always have a runnable task. */
