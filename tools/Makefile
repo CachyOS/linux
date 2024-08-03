@@ -28,7 +28,6 @@ help:
 	@echo '  pci                    - PCI tools'
 	@echo '  perf                   - Linux performance measurement and analysis tool'
 	@echo '  selftests              - various kernel selftests'
-	@echo '  sched_ext              - sched_ext example schedulers'
 	@echo '  bootconfig             - boot config tool'
 	@echo '  spi                    - spi tools'
 	@echo '  tmon                   - thermal monitoring and tuning tool'
@@ -91,9 +90,6 @@ PERF_O   = $(if $(O),$(O)/tools/perf,)
 perf: FORCE
 	$(Q)mkdir -p $(PERF_O) .
 	$(Q)$(MAKE) --no-print-directory -C perf O=$(PERF_O) subdir=
-
-sched_ext: FORCE
-	$(call descend,sched_ext)
 
 selftests: FORCE
 	$(call descend,testing/$@)
@@ -188,9 +184,6 @@ perf_clean:
 	$(Q)mkdir -p $(PERF_O) .
 	$(Q)$(MAKE) --no-print-directory -C perf O=$(PERF_O) subdir= clean
 
-sched_ext_clean:
-	$(call descend,sched_ext,clean)
-
 selftests_clean:
 	$(call descend,testing/$(@:_clean=),clean)
 
@@ -220,7 +213,6 @@ clean: acpi_clean counter_clean cpupower_clean hv_clean firewire_clean \
 		mm_clean bpf_clean iio_clean x86_energy_perf_policy_clean tmon_clean \
 		freefall_clean build_clean libbpf_clean libsubcmd_clean \
 		gpio_clean objtool_clean leds_clean wmi_clean pci_clean firmware_clean debugging_clean \
-		intel-speed-select_clean tracing_clean thermal_clean thermometer_clean thermal-engine_clean \
-		sched_ext_clean
+		intel-speed-select_clean tracing_clean thermal_clean thermometer_clean thermal-engine_clean
 
 .PHONY: FORCE
