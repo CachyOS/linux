@@ -142,6 +142,11 @@ static struct quirk_entry quirk_amd_7k62 = {
 	.lowest_freq = 550,
 };
 
+static struct quirk_entry quirk_amd_mts = {
+	.nominal_freq = 3600,
+	.lowest_freq = 550,
+};
+
 static int __init dmi_matched_7k62_bios_bug(const struct dmi_system_id *dmi)
 {
 	/**
@@ -158,6 +163,21 @@ static int __init dmi_matched_7k62_bios_bug(const struct dmi_system_id *dmi)
 	return 0;
 }
 
+static int __init dmi_matched_mts_bios_bug(const struct dmi_system_id *dmi)
+{
+	/**
+	 * match the broken bios for ryzen 3000 series processor support CPPC V2
+	 * broken BIOS lack of nominal_freq and lowest_freq capabilities
+	 * definition in ACPI tables
+	 */
+	if (cpu_feature_enabled(X86_FEATURE_ZEN2)) {
+		quirks = dmi->driver_data;
+		pr_info("Overriding nominal and lowest frequencies for %s\n", dmi->ident);
+		return 1;
+	}
+
+	return 0;
+}
 static const struct dmi_system_id amd_pstate_quirks_table[] __initconst = {
 	{
 		.callback = dmi_matched_7k62_bios_bug,
@@ -167,6 +187,16 @@ static const struct dmi_system_id amd_pstate_quirks_table[] __initconst = {
 			DMI_MATCH(DMI_BIOS_RELEASE, "12/12/2019"),
 		},
 		.driver_data = &quirk_amd_7k62,
+	},
+	{
+		.callback = dmi_matched_mts_bios_bug,
+		.ident = "AMD Ryzen 3000",
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "B450M MORTAR MAX (MS-7B89)"),
+			DMI_MATCH(DMI_BIOS_RELEASE, "06/10/2020"),
+			DMI_MATCH(DMI_BIOS_VERSION, "5.14"),
+		},
+		.driver_data = &quirk_amd_mts,
 	},
 	{}
 };
