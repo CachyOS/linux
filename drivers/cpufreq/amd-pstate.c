@@ -1874,10 +1874,8 @@ static bool amd_cppc_supported(void)
 	 * the code is added for debugging purposes.
 	 */
 	if (!cpu_feature_enabled(X86_FEATURE_CPPC)) {
-		if (cpu_feature_enabled(X86_FEATURE_ZEN1) || cpu_feature_enabled(X86_FEATURE_ZEN2)) {
-			if (c->x86_model > 0x60 && c->x86_model < 0xaf)
-				warn = true;
-		} else if (cpu_feature_enabled(X86_FEATURE_ZEN3) || cpu_feature_enabled(X86_FEATURE_ZEN4)) {
+		if (cpu_feature_enabled(X86_FEATURE_ZEN3) ||
+		    cpu_feature_enabled(X86_FEATURE_ZEN4)) {
 			if ((c->x86_model > 0x10 && c->x86_model < 0x1F) ||
 					(c->x86_model > 0x40 && c->x86_model < 0xaf))
 				warn = true;
