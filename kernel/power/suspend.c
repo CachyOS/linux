@@ -254,6 +254,18 @@ static bool sleep_state_supported(suspend_state_t state)
 	       (valid_state(state) && !cxl_mem_active());
 }
 
+int platform_suspend_screen_off(void)
+{
+	return s2idle_ops && s2idle_ops->screen_off ? s2idle_ops->screen_off() : 0;
+}
+EXPORT_SYMBOL_GPL(platform_suspend_screen_off);
+
+int platform_suspend_screen_on(void)
+{
+	return s2idle_ops && s2idle_ops->screen_on ? s2idle_ops->screen_on() : 0;
+}
+EXPORT_SYMBOL_GPL(platform_suspend_screen_on);
+
 static int platform_suspend_prepare(suspend_state_t state)
 {
 	return state != PM_SUSPEND_TO_IDLE && suspend_ops->prepare ?

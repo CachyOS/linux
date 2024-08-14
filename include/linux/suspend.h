@@ -133,6 +133,8 @@ struct platform_suspend_ops {
 
 struct platform_s2idle_ops {
 	int (*begin)(void);
+	int (*screen_off)(void);
+	int (*screen_on)(void);
 	int (*prepare)(void);
 	int (*prepare_late)(void);
 	void (*check)(void);
@@ -159,6 +161,9 @@ extern unsigned int pm_suspend_global_flags;
 #define PM_SUSPEND_FLAG_FW_SUSPEND	BIT(0)
 #define PM_SUSPEND_FLAG_FW_RESUME	BIT(1)
 #define PM_SUSPEND_FLAG_NO_PLATFORM	BIT(2)
+
+int platform_suspend_screen_off(void);
+int platform_suspend_screen_on(void);
 
 static inline void pm_suspend_clear_flags(void)
 {
@@ -296,6 +301,9 @@ static inline bool idle_should_enter_s2idle(void) { return false; }
 static inline void __init pm_states_init(void) {}
 static inline void s2idle_set_ops(const struct platform_s2idle_ops *ops) {}
 static inline void s2idle_wake(void) {}
+static inline int platform_suspend_screen_off(void) { return -ENODEV };
+static inline int platform_suspend_screen_on(void) { return -ENODEV };
+
 #endif /* !CONFIG_SUSPEND */
 
 /* struct pbe is used for creating lists of pages that should be restored
