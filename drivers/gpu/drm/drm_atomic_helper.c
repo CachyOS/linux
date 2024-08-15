@@ -27,6 +27,7 @@
 
 #include <linux/dma-fence.h>
 #include <linux/ktime.h>
+#include <linux/suspend.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -3530,6 +3531,13 @@ struct drm_atomic_state *drm_atomic_helper_suspend(struct drm_device *dev)
 		goto unlock;
 	}
 
+	err = platform_suspend_screen_off();
+	if (err < 0) {
+		drm_atomic_state_put(state);
+		state = ERR_PTR(err);
+		goto unlock;
+	}
+
 unlock:
 	DRM_MODESET_LOCK_ALL_END(dev, ctx, err);
 	if (err)
@@ -3611,7 +3619,12 @@ int drm_atomic_helper_resume(struct drm_device *dev,
 	DRM_MODESET_LOCK_ALL_BEGIN(dev, ctx, 0, err);
 
 	err = drm_atomic_helper_commit_duplicated_state(state, &ctx);
+	if (err < 0)
+		goto unlock;
 
+	err = platform_suspend_screen_on();
+
+unlock:
 	DRM_MODESET_LOCK_ALL_END(dev, ctx, err);
 	drm_atomic_state_put(state);
 
