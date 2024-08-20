@@ -4955,11 +4955,6 @@ static bool update_planes_and_stream_v2(struct dc *dc,
 			surface_count,
 			&is_plane_addition);
 
-	/* on plane addition, minimal state is the current one */
-	if (force_minimal_pipe_splitting && is_plane_addition &&
-		!commit_minimal_transition_state(dc, dc->current_state))
-		return false;
-
 	if (!update_planes_and_stream_state(
 			dc,
 			srf_updates,
@@ -4970,13 +4965,14 @@ static bool update_planes_and_stream_v2(struct dc *dc,
 			&context))
 		return false;
 
-	/* on plane removal, minimal state is the new one */
-	if (force_minimal_pipe_splitting && !is_plane_addition) {
+	/* minimal state is the determined by update_planes_and_stream_state: current or new context */
+	if (force_minimal_pipe_splitting) {
 		if (!commit_minimal_transition_state(dc, context)) {
 			dc_state_release(context);
 			return false;
 		}
-		update_type = UPDATE_TYPE_FULL;
+		if (!is_plane_addition)
+			update_type = UPDATE_TYPE_FULL;
 	}
 
 	if (dc->hwss.is_pipe_topology_transition_seamless &&
