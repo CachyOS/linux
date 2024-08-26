@@ -34,6 +34,7 @@
 #include <linux/leds.h>
 
 #include "hid-ids.h"
+#include "hid-asus.h"
 
 MODULE_AUTHOR("Yusuke Fujimaki <usk.fujimaki@gmail.com>");
 MODULE_AUTHOR("Brendan McGrath <redmcg@redmandi.dyndns.org>");
@@ -354,7 +355,7 @@ static int asus_event(struct hid_device *hdev, struct hid_field *field,
 		      struct hid_usage *usage, __s32 value)
 {
 	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
-	
+
 	if ((usage->hid & HID_USAGE_PAGE) == HID_UP_ASUSVENDOR &&
 	    (usage->hid & HID_USAGE) != 0x00 &&
 	    (usage->hid & HID_USAGE) != 0xff && !usage->type) {
@@ -1198,6 +1199,8 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	struct asus_drvdata *drvdata;
 	struct hid_report *rep;
 	bool is_vendor = false;
+	struct usb_host_endpoint *ep;
+	struct usb_interface *intf;
 	int ret;
 
 	drvdata = devm_kzalloc(&hdev->dev, sizeof(*drvdata), GFP_KERNEL);
@@ -1209,6 +1212,18 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	hid_set_drvdata(hdev, drvdata);
 
 	drvdata->quirks = id->driver_data;
+
+	/* Ignore these endpoints as they are used by hid-asus-ally */
+	#if IS_REACHABLE(CONFIG_HID_ASUS_ALLY)
+	if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
+		intf = to_usb_interface(hdev->dev.parent);
+		ep = intf->cur_altsetting->endpoint;
+		if (ep->desc.bEndpointAddress == ROG_ALLY_X_INTF_IN ||
+			ep->desc.bEndpointAddress == ROG_ALLY_CFG_INTF_IN ||
+			ep->desc.bEndpointAddress == ROG_ALLY_CFG_INTF_OUT)
+			return -ENODEV;
+	}
+	#endif /* IS_REACHABLE(CONFIG_HID_ASUS_ALLY) */
 
 	/*
 	 * T90CHI's keyboard dock returns same ID values as T100CHI's dock.
