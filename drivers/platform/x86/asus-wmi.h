@@ -16,6 +16,7 @@
 
 #include <linux/platform_device.h>
 #include <linux/i8042.h>
+#include <linux/dmi.h>
 
 #define ASUS_WMI_KEY_IGNORE (-1)
 #define ASUS_WMI_BRN_DOWN	0x2e
