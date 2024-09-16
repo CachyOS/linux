@@ -173,8 +173,230 @@ else
 	# Use -mskip-rax-setup if supported.
 	KBUILD_CFLAGS += $(call cc-option,-mskip-rax-setup)
 
+ifdef CONFIG_X86_NATIVE_CPU
+        KBUILD_CFLAGS += -march=native
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=native
+endif
+
+ifdef CONFIG_MNATIVE_INTEL
+        KBUILD_CFLAGS += -march=native
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=native
+endif
+
+ifdef CONFIG_MNATIVE_AMD
+        KBUILD_CFLAGS += -march=native
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=native
+endif
+
+ifdef CONFIG_MK8
+        KBUILD_CFLAGS += -march=k8
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=k8
+endif
+
+ifdef CONFIG_MK8SSE3
+        KBUILD_CFLAGS += -march=k8-sse3
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=k8-sse3
+endif
+
+ifdef CONFIG_MK10
+        KBUILD_CFLAGS += -march=amdfam10
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=amdfam10
+endif
+
+ifdef CONFIG_MBARCELONA
+        KBUILD_CFLAGS += -march=barcelona
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=barcelona
+endif
+
+ifdef CONFIG_MBOBCAT
+        KBUILD_CFLAGS += -march=btver1
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=btver1
+endif
+
+ifdef CONFIG_MJAGUAR
+        KBUILD_CFLAGS += -march=btver2
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=btver2
+endif
+
+ifdef CONFIG_MBULLDOZER
+        KBUILD_CFLAGS += -march=bdver1
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=bdver1
+endif
+
+ifdef CONFIG_MPILEDRIVER
+        KBUILD_CFLAGS += -march=bdver2 -mno-tbm
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=bdver2 -mno-tbm
+endif
+
+ifdef CONFIG_MSTEAMROLLER
+        KBUILD_CFLAGS += -march=bdver3 -mno-tbm
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=bdver3 -mno-tbm
+endif
+
+ifdef CONFIG_MEXCAVATOR
+        KBUILD_CFLAGS += -march=bdver4 -mno-tbm
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=bdver4 -mno-tbm
+endif
+
+ifdef CONFIG_MZEN
+        KBUILD_CFLAGS += -march=znver1
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver1
+endif
+
+ifdef CONFIG_MZEN2
+        KBUILD_CFLAGS += -march=znver2
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver2
+endif
+
+ifdef CONFIG_MZEN3
+        KBUILD_CFLAGS += -march=znver3
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver3
+endif
+
+ifdef CONFIG_MZEN4
+        KBUILD_CFLAGS += -march=znver4
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver4
+endif
+
+ifdef CONFIG_MZEN5
+        KBUILD_CFLAGS += -march=znver5
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver5
+endif
+
+ifdef CONFIG_MPSC
+        KBUILD_CFLAGS += -march=nocona
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=nocona
+endif
+
+ifdef CONFIG_MCORE2
+        KBUILD_CFLAGS += -march=core2
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=core2
+endif
+
+ifdef CONFIG_MNEHALEM
+        KBUILD_CFLAGS += -march=nehalem
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=nehalem
+endif
+
+ifdef CONFIG_MWESTMERE
+        KBUILD_CFLAGS += -march=westmere
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=westmere
+endif
+
+ifdef CONFIG_MSILVERMONT
+        KBUILD_CFLAGS += -march=silvermont
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=silvermont
+endif
+
+ifdef CONFIG_MGOLDMONT
+        KBUILD_CFLAGS += -march=goldmont
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=goldmont
+endif
+
+ifdef CONFIG_MGOLDMONTPLUS
+        KBUILD_CFLAGS += -march=goldmont-plus
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=goldmont-plus
+endif
+
+ifdef CONFIG_MSANDYBRIDGE
+        KBUILD_CFLAGS += -march=sandybridge
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=sandybridge
+endif
+
+ifdef CONFIG_MIVYBRIDGE
+        KBUILD_CFLAGS += -march=ivybridge
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=ivybridge
+endif
+
+ifdef CONFIG_MHASWELL
+        KBUILD_CFLAGS += -march=haswell
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=haswell
+endif
+
+ifdef CONFIG_MBROADWELL
+        KBUILD_CFLAGS += -march=broadwell
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=broadwell
+endif
+
+ifdef CONFIG_MSKYLAKE
+        KBUILD_CFLAGS += -march=skylake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=skylake
+endif
+
+ifdef CONFIG_MSKYLAKEX
+        KBUILD_CFLAGS += -march=skylake-avx512
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=skylake-avx512
+endif
+
+ifdef CONFIG_MCANNONLAKE
+        KBUILD_CFLAGS += -march=connonlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=connonlike
+endif
+
+ifdef CONFIG_MICELAKE_CLIENT
+        KBUILD_CFLAGS += -march=icelake-client
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=icelake-client
+endif
+
+ifdef CONFIG_MICELAKE_SERVER
+        KBUILD_CFLAGS += -march=icelake-server
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=icelake-server
+endif
+
+ifdef CONFIG_MCOOPERLAKE
+        KBUILD_CFLAGS += -march=cooperlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=coolerlake
+endif
+
+ifdef CONFIG_MCASCADELAKE
+        KBUILD_CFLAGS += -march=cascadelake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=cascadelake
+endif
+
+ifdef CONFIG_MTIGERLAKE
+        KBUILD_CFLAGS += -march=tigerlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=tigerlake
+endif
+
+ifdef CONFIG_MSAPPHIRERAPIDS
+        KBUILD_CFLAGS += -march=sapphirerapids
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=sapphirerapids
+endif
+
+ifdef CONFIG_MROCKETLAKE
+        KBUILD_CFLAGS += -march=rocketlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=rocketlake
+endif
+
+ifdef CONFIG_MALDERLAKE
+        KBUILD_CFLAGS += -march=alderlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=alderlake
+endif
+
+ifdef CONFIG_MRAPTORLAKE
+        KBUILD_CFLAGS += -march=raptorlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=raptorlake
+endif
+
+ifdef CONFIG_MMETEORLAKE
+        KBUILD_CFLAGS += -march=meteorlake
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=meteorlake
+endif
+
+ifdef CONFIG_MEMERALDRAPIDS
+        KBUILD_CFLAGS += -march=emeraldrapids
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=emeraldrapids
+endif
+
+ifdef CONFIG_GENERIC_CPU
+ifeq ($(CONFIG_X86_64_VERSION),1)
         KBUILD_CFLAGS += -march=x86-64 -mtune=generic
         KBUILD_RUSTFLAGS += -Ctarget-cpu=x86-64 -Ztune-cpu=generic
+else
+        KBUILD_CFLAGS +=-march=x86-64-v$(CONFIG_X86_64_VERSION)
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=x86-64-v$(CONFIG_X86_64_VERSION)
+endif # CONFIG_X86_64_VERSION
+endif # CONFIG_GENERIC_CPU
 
         KBUILD_CFLAGS += -mno-red-zone
         KBUILD_CFLAGS += -mcmodel=kernel
