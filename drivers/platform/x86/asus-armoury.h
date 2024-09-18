@@ -23,6 +23,12 @@ static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return sysfs_emit(buf, "enumeration\n");
 }
 
+static ssize_t int_type_show(struct kobject *kobj, struct kobj_attribute *attr,
+			     char *buf)
+{
+	return sysfs_emit(buf, "integer\n");
+}
+
 #define __ASUS_ATTR_RO(_func, _name)                                  \
 	{                                                             \
 		.attr = { .name = __stringify(_name), .mode = 0444 }, \
@@ -142,6 +148,34 @@ static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 	};                                                                \
 	static const struct attribute_group _attrname##_attr_group = {    \
 		.name = _fsname, .attrs = _attrname##_attrs               \
+	}
+
+/* CPU core attributes need a little different in setup */
+#define ATTR_GROUP_CORES_RW(_attrname, _fsname, _dispname)              \
+	__ATTR_SHOW_FMT(scalar_increment, _attrname, "%d\n", 1);        \
+	__ATTR_SHOW_FMT(display_name, _attrname, "%s\n", _dispname);    \
+	static struct kobj_attribute attr_##_attrname##_current_value = \
+		__ASUS_ATTR_RW(_attrname, current_value);               \
+	static struct kobj_attribute attr_##_attrname##_default_value = \
+		__ASUS_ATTR_RO(_attrname, default_value);               \
+	static struct kobj_attribute attr_##_attrname##_min_value =     \
+		__ASUS_ATTR_RO(_attrname, min_value);                   \
+	static struct kobj_attribute attr_##_attrname##_max_value =     \
+		__ASUS_ATTR_RO(_attrname, max_value);                   \
+	static struct kobj_attribute attr_##_attrname##_type =          \
+		__ASUS_ATTR_RO_AS(type, int_type_show);                 \
+	static struct attribute *_attrname##_attrs[] = {                \
+		&attr_##_attrname##_current_value.attr,                 \
+		&attr_##_attrname##_default_value.attr,                 \
+		&attr_##_attrname##_min_value.attr,                     \
+		&attr_##_attrname##_max_value.attr,                     \
+		&attr_##_attrname##_scalar_increment.attr,              \
+		&attr_##_attrname##_display_name.attr,                  \
+		&attr_##_attrname##_type.attr,                          \
+		NULL                                                    \
+	};                                                              \
+	static const struct attribute_group _attrname##_attr_group = {  \
+		.name = _fsname, .attrs = _attrname##_attrs             \
 	}
 
 #endif /* _ASUS_ARMOURY_H_ */
