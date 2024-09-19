@@ -21,6 +21,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_data/x86/asus-wmi.h>
+#include <linux/power_supply.h>
 #include <linux/types.h>
 #include <linux/acpi.h>
 
@@ -68,11 +69,25 @@ struct cpu_cores {
 	u32 max_power_cores;
 };
 
+struct rog_tunables {
+	const struct power_data *tuning_limits;
+	u32 ppt_pl1_spl; // cpu
+	u32 ppt_pl2_sppt; // cpu
+	u32 ppt_pl3_fppt; // cpu
+	u32 ppt_apu_sppt; // plat
+	u32 ppt_platform_sppt; // plat
+
+	u32 nv_dynamic_boost;
+	u32 nv_temp_target;
+	u32 nv_tgp;
+};
+
 struct asus_armoury_priv {
 	struct device *fw_attr_dev;
 	struct kset *fw_attr_kset;
 
 	struct cpu_cores *cpu_cores;
+	struct rog_tunables *rog_tunables;
 	u32 mini_led_dev_id;
 	u32 gpu_mux_dev_id;
 
@@ -730,6 +745,26 @@ ATTR_GROUP_CORES_RW(cores_efficiency, "cores_efficiency",
 		    "Set the max available efficiency cores");
 
 /* Simple attribute creation */
+ATTR_GROUP_ROG_TUNABLE(ppt_pl1_spl, "ppt_pl1_spl", ASUS_WMI_DEVID_PPT_PL1_SPL,
+		       "Set the CPU slow package limit");
+ATTR_GROUP_ROG_TUNABLE(ppt_pl2_sppt, "ppt_pl2_sppt", ASUS_WMI_DEVID_PPT_PL2_SPPT,
+		       "Set the CPU fast package limit");
+ATTR_GROUP_ROG_TUNABLE(ppt_pl3_fppt, "ppt_pl3_fppt", ASUS_WMI_DEVID_PPT_FPPT,
+		       "Set the CPU fastest package limit");
+ATTR_GROUP_ROG_TUNABLE(ppt_apu_sppt, "ppt_apu_sppt", ASUS_WMI_DEVID_PPT_APU_SPPT,
+		       "Set the APU package limit");
+ATTR_GROUP_ROG_TUNABLE(ppt_platform_sppt, "ppt_platform_sppt", ASUS_WMI_DEVID_PPT_PLAT_SPPT,
+		       "Set the platform package limit");
+ATTR_GROUP_ROG_TUNABLE(nv_dynamic_boost, "nv_dynamic_boost", ASUS_WMI_DEVID_NV_DYN_BOOST,
+		       "Set the Nvidia dynamic boost limit");
+ATTR_GROUP_ROG_TUNABLE(nv_temp_target, "nv_temp_target", ASUS_WMI_DEVID_NV_THERM_TARGET,
+		       "Set the Nvidia max thermal limit");
+ATTR_GROUP_ROG_TUNABLE(nv_tgp, "dgpu_tgp", ASUS_WMI_DEVID_DGPU_SET_TGP,
+		       "Set the additional TGP on top of the base TGP");
+ATTR_GROUP_INT_VALUE_ONLY_RO(nv_base_tgp, "nv_base_tgp", ASUS_WMI_DEVID_DGPU_BASE_TGP,
+			     "Read the base TGP value");
+
+
 ATTR_GROUP_ENUM_INT_RO(charge_mode, "charge_mode", ASUS_WMI_DEVID_CHARGE_MODE, "0;1;2",
 		       "Show the current mode of charging");
 
@@ -753,6 +788,16 @@ static const struct asus_attr_group armoury_attr_groups[] = {
 	{ &cores_efficiency_attr_group, ASUS_WMI_DEVID_CORES_MAX },
 	{ &cores_performance_attr_group, ASUS_WMI_DEVID_CORES_MAX },
 
+	{ &ppt_pl1_spl_attr_group, ASUS_WMI_DEVID_PPT_PL1_SPL },
+	{ &ppt_pl2_sppt_attr_group, ASUS_WMI_DEVID_PPT_PL2_SPPT },
+	{ &ppt_pl3_fppt_attr_group, ASUS_WMI_DEVID_PPT_FPPT },
+	{ &ppt_apu_sppt_attr_group, ASUS_WMI_DEVID_PPT_APU_SPPT },
+	{ &ppt_platform_sppt_attr_group, ASUS_WMI_DEVID_PPT_PLAT_SPPT },
+	{ &nv_dynamic_boost_attr_group, ASUS_WMI_DEVID_NV_DYN_BOOST },
+	{ &nv_temp_target_attr_group, ASUS_WMI_DEVID_NV_THERM_TARGET },
+	{ &nv_base_tgp_attr_group, ASUS_WMI_DEVID_DGPU_BASE_TGP },
+	{ &nv_tgp_attr_group, ASUS_WMI_DEVID_DGPU_SET_TGP },
+
 	{ &charge_mode_attr_group, ASUS_WMI_DEVID_CHARGE_MODE },
 	{ &boot_sound_attr_group, ASUS_WMI_DEVID_BOOT_SOUND },
 	{ &mcu_powersave_attr_group, ASUS_WMI_DEVID_MCU_POWERSAVE },
@@ -762,6 +807,9 @@ static const struct asus_attr_group armoury_attr_groups[] = {
 
 static int asus_fw_attr_add(void)
 {
+	const struct power_limits *limits;
+	bool should_create;
+	const char *name;
 	int err, i;
 
 	asus_armoury.fw_attr_dev = device_create(&firmware_attributes_class, NULL, MKDEV(0, 0),
@@ -815,17 +863,55 @@ static int asus_fw_attr_add(void)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(armoury_attr_groups); i++) {
+		name = armoury_attr_groups[i].attr_group->name;
+		should_create = true;
+
 		if (!asus_wmi_is_present(armoury_attr_groups[i].wmi_devid))
 			continue;
 
-		err = sysfs_create_group(&asus_armoury.fw_attr_kset->kobj,
-					 armoury_attr_groups[i].attr_group);
-		if (err) {
-			pr_err("Failed to create sysfs-group for %s\n",
-			       armoury_attr_groups[i].attr_group->name);
-			goto err_remove_groups;
+		/*
+		 * Check ROG tunables against initialized limits, don't create attributes for any
+		 * that might have a supported WMI method but no associated data.
+		 */
+		if (!strcmp(name, "ppt_pl1_spl") || !strcmp(name, "ppt_pl2_sppt") ||
+			    !strcmp(name, "ppt_pl3_fppt") || !strcmp(name, "ppt_apu_sppt") ||
+			    !strcmp(name, "ppt_platform_sppt") || !strcmp(name, "nv_dynamic_boost") ||
+			    !strcmp(name, "nv_temp_target") || !strcmp(name, "nv_base_tgp") ||
+			    !strcmp(name, "dgpu_tgp"))
+		{
+			should_create = false;
+			if (asus_armoury.rog_tunables && asus_armoury.rog_tunables->tuning_limits &&
+				    asus_armoury.rog_tunables->tuning_limits->ac_data) {
+				/* Must have AC table, and a max value for each attribute */
+				limits = asus_armoury.rog_tunables->tuning_limits->ac_data;
+				should_create = limits && (
+				    (!strcmp(name, "ppt_pl1_spl") && limits->ppt_pl1_spl_max) ||
+				    (!strcmp(name, "ppt_pl2_sppt") && limits->ppt_pl2_sppt_max) ||
+				    (!strcmp(name, "ppt_pl3_fppt") && limits->ppt_pl3_fppt_max) ||
+				    (!strcmp(name, "ppt_apu_sppt") && limits->ppt_apu_sppt_max) ||
+				    (!strcmp(name, "ppt_platform_sppt") && limits->ppt_platform_sppt_max) ||
+				    (!strcmp(name, "nv_dynamic_boost") && limits->nv_dynamic_boost_max) ||
+				    (!strcmp(name, "nv_temp_target") && limits->nv_temp_target_max) ||
+				    (!strcmp(name, "nv_base_tgp") && limits->nv_tgp_max) ||
+				    (!strcmp(name, "dgpu_tgp") && limits->nv_tgp_max));
+
+				/* Log error so users can report upstream */
+				if (!should_create)
+					pr_err("Missing max value on %s for tunable: %s\n",
+						dmi_get_system_info(DMI_BOARD_NAME), name);
+			}
 		}
-	}
+
+		if (should_create) {
+			err = sysfs_create_group(&asus_armoury.fw_attr_kset->kobj,
+						armoury_attr_groups[i].attr_group);
+			if (err) {
+				pr_err("Failed to create sysfs-group for %s\n",
+				       armoury_attr_groups[i].attr_group->name);
+				goto err_remove_groups;
+			}
+		}
+}
 
 	return 0;
 
@@ -848,6 +934,87 @@ fail_class_get:
 }
 
 /* Init / exit ****************************************************************/
+
+/* Set up the min/max and defaults for ROG tunables */
+static bool init_rog_tunables(struct rog_tunables *rog)
+{
+	const struct dmi_system_id *dmi_id;
+	const struct power_data *power_data;
+	const struct power_limits *limits;
+
+	/* Match the system against the power_limits table */
+	dmi_id = dmi_first_match(power_limits);
+	if (!dmi_id) {
+		pr_warn("No matching power limits found for this system\n");
+		// rog->tuning_limits = &default_power_data;
+		rog->tuning_limits = NULL;
+		return false;
+	}
+
+	/* Get the power data for this system */
+	power_data = dmi_id->driver_data;
+	if (!power_data) {
+		pr_info("No power data available for this system\n");
+		return false;
+	}
+
+	/* Store the power limits for later use */
+	rog->tuning_limits = power_data;
+
+	if (power_supply_is_system_supplied()) {
+		limits = power_data->ac_data;
+		if (!limits) {
+			pr_warn("No AC power limits available\n");
+			return false;
+		}
+	} else {
+		limits = power_data->dc_data;
+		if (!limits) {
+			rog->ppt_pl1_spl = 0;
+			rog->ppt_pl2_sppt = 0;
+			rog->ppt_pl3_fppt = 0;
+			rog->ppt_apu_sppt = 0;
+			rog->ppt_platform_sppt = 0;
+			rog->nv_dynamic_boost = 0;
+			rog->nv_temp_target = 0;
+			rog->nv_tgp = 0;
+
+			pr_warn("No DC power limits available, initializing to 0\n");
+			return true;
+		}
+	}
+
+	/* Set initial values */
+	rog->ppt_pl1_spl = limits->ppt_pl1_spl_def ?
+			   limits->ppt_pl1_spl_def :
+			   limits->ppt_pl1_spl_max;
+
+	rog->ppt_pl2_sppt = limits->ppt_pl2_sppt_def ?
+			    limits->ppt_pl2_sppt_def :
+			    limits->ppt_pl2_sppt_max;
+
+	rog->ppt_pl3_fppt = limits->ppt_pl3_fppt_def ?
+			    limits->ppt_pl3_fppt_def :
+			    limits->ppt_pl3_fppt_max;
+
+	rog->ppt_apu_sppt = limits->ppt_apu_sppt_def ?
+			    limits->ppt_apu_sppt_def :
+			    limits->ppt_apu_sppt_max;
+
+	rog->ppt_platform_sppt = limits->ppt_platform_sppt_def ?
+				limits->ppt_platform_sppt_def :
+				limits->ppt_platform_sppt_max;
+
+	rog->nv_dynamic_boost = limits->nv_dynamic_boost_max;
+	rog->nv_temp_target = limits->nv_temp_target_max;
+	rog->nv_tgp = limits->nv_tgp_max;
+
+	pr_debug("Power limits initialized for %s (%s power)\n",
+		 dmi_id->matches[0].substr,
+		 power_supply_is_system_supplied() ? "AC" : "DC");
+
+	return true;
+}
 
 static int __init asus_fw_init(void)
 {
@@ -879,6 +1046,16 @@ static int __init asus_fw_init(void)
 		}
 	}
 
+	asus_armoury.rog_tunables = kzalloc(sizeof(struct rog_tunables), GFP_KERNEL);
+	if (!asus_armoury.rog_tunables)
+		return -ENOMEM;
+	/* Init logs warn/error and the driver should still be usable if init fails */
+	if (!init_rog_tunables(asus_armoury.rog_tunables)) {
+		kfree(asus_armoury.rog_tunables);
+		pr_err("Could not initialise PPT tunable control %d\n", err);
+	}
+
+	/* Must always be last step to ensure data is available */
 	err = asus_fw_attr_add();
 	if (err)
 		return err;
