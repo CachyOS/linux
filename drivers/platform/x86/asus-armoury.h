@@ -17,6 +17,12 @@ static ssize_t attr_uint_store(struct kobject *kobj, struct kobj_attribute *attr
 			      const char *buf, size_t count, u32 min, u32 max,
 			      u32 *store_value, u32 wmi_dev);
 
+static ssize_t int_type_show(struct kobject *kobj, struct kobj_attribute *attr,
+			     char *buf)
+{
+	return sysfs_emit(buf, "integer\n");
+}
+
 static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 			      char *buf)
 {
@@ -142,6 +148,65 @@ static ssize_t enum_type_show(struct kobject *kobj, struct kobj_attribute *attr,
 	};                                                                \
 	static const struct attribute_group _attrname##_attr_group = {    \
 		.name = _fsname, .attrs = _attrname##_attrs               \
+	}
+
+/*
+ * ROG PPT attributes need a little different in setup as they
+ * require rog_tunables members.
+ */
+
+#define __ROG_TUNABLE_RW(_attr, _min, _max, _wmi)                             \
+	static ssize_t _attr##_current_value_store(                           \
+		struct kobject *kobj, struct kobj_attribute *attr,            \
+		const char *buf, size_t count)                                \
+	{                                                                     \
+		return attr_uint_store(kobj, attr, buf, count,                 \
+				      asus_armoury.rog_tunables->_min,        \
+				      asus_armoury.rog_tunables->_max,        \
+				      &asus_armoury.rog_tunables->_attr,      \
+				      _wmi);                                  \
+	}                                                                     \
+	static ssize_t _attr##_current_value_show(                            \
+		struct kobject *kobj, struct kobj_attribute *attr, char *buf) \
+	{                                                                     \
+		return sysfs_emit(buf, "%u\n",                                \
+				  asus_armoury.rog_tunables->_attr);          \
+	}                                                                     \
+	static struct kobj_attribute attr_##_attr##_current_value =           \
+		__ASUS_ATTR_RW(_attr, current_value)
+
+#define __ROG_TUNABLE_SHOW(_prop, _attrname, _val)                            \
+	static ssize_t _attrname##_##_prop##_show(                            \
+		struct kobject *kobj, struct kobj_attribute *attr, char *buf) \
+	{                                                                     \
+		return sysfs_emit(buf, "%d\n",                                \
+				  asus_armoury.rog_tunables->_val);           \
+	}                                                                     \
+	static struct kobj_attribute attr_##_attrname##_##_prop =             \
+		__ASUS_ATTR_RO(_attrname, _prop)
+
+#define ATTR_GROUP_ROG_TUNABLE(_attrname, _fsname, _wmi, _default, _min, _max, \
+			       _incstep, _dispname)                            \
+	__ROG_TUNABLE_SHOW(default_value, _attrname, _default);                \
+	__ROG_TUNABLE_RW(_attrname, _min, _max, _wmi);                         \
+	__ROG_TUNABLE_SHOW(min_value, _attrname, _min);                        \
+	__ROG_TUNABLE_SHOW(max_value, _attrname, _max);                        \
+	__ATTR_SHOW_FMT(scalar_increment, _attrname, "%d\n", _incstep);        \
+	__ATTR_SHOW_FMT(display_name, _attrname, "%s\n", _dispname);           \
+	static struct kobj_attribute attr_##_attrname##_type =                 \
+		__ASUS_ATTR_RO_AS(type, int_type_show);                        \
+	static struct attribute *_attrname##_attrs[] = {                       \
+		&attr_##_attrname##_current_value.attr,                        \
+		&attr_##_attrname##_default_value.attr,                        \
+		&attr_##_attrname##_min_value.attr,                            \
+		&attr_##_attrname##_max_value.attr,                            \
+		&attr_##_attrname##_scalar_increment.attr,                     \
+		&attr_##_attrname##_display_name.attr,                         \
+		&attr_##_attrname##_type.attr,                                 \
+		NULL                                                           \
+	};                                                                     \
+	static const struct attribute_group _attrname##_attr_group = {         \
+		.name = _fsname, .attrs = _attrname##_attrs                    \
 	}
 
 #endif /* _ASUS_BIOSCFG_H_ */
