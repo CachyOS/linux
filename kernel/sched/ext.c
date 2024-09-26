@@ -1031,6 +1031,11 @@ static bool u32_before(u32 a, u32 b)
 	return (s32)(a - b) < 0;
 }
 
+static struct scx_dispatch_q *find_user_dsq(u64 dsq_id)
+{
+	return rhashtable_lookup_fast(&dsq_hash, &dsq_id, dsq_hash_params);
+}
+
 /*
  * scx_kf_mask enforcement. Some kfuncs can only be called from specific SCX
  * ops. When invoking SCX ops, SCX_CALL_OP[_RET]() should be used to indicate
@@ -1803,11 +1808,6 @@ static void dispatch_dequeue(struct rq *rq, struct task_struct *p)
 
 	if (!is_local)
 		raw_spin_unlock(&dsq->lock);
-}
-
-static struct scx_dispatch_q *find_user_dsq(u64 dsq_id)
-{
-	return rhashtable_lookup_fast(&dsq_hash, &dsq_id, dsq_hash_params);
 }
 
 static struct scx_dispatch_q *find_dsq_for_dispatch(struct rq *rq, u64 dsq_id,
