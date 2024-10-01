@@ -152,7 +152,7 @@ else
         cflags-$(CONFIG_MK8)		+= -march=k8
         cflags-$(CONFIG_MPSC)		+= -march=nocona
         cflags-$(CONFIG_MCORE2)		+= -march=core2
-        cflags-$(CONFIG_MATOM)		+= -march=atom
+        cflags-$(CONFIG_MATOM)		+= -march=bonnell
         ifeq ($(CONFIG_X86_64_VERSION),1)
           cflags-$(CONFIG_GENERIC_CPU)		+= -mtune=generic
           rustflags-$(CONFIG_GENERIC_CPU)	+= -Ztune-cpu=generic
@@ -176,8 +176,6 @@ else
         cflags-$(CONFIG_MZEN5) 	+= -march=znver5
         cflags-$(CONFIG_MNATIVE_INTEL) += -march=native
         cflags-$(CONFIG_MNATIVE_AMD) 	+= -march=native -mno-tbm
-        cflags-$(CONFIG_MATOM) 	+= -march=bonnell
-        cflags-$(CONFIG_MCORE2) 	+= -march=core2
         cflags-$(CONFIG_MNEHALEM) 	+= -march=nehalem
         cflags-$(CONFIG_MWESTMERE) 	+= -march=westmere
         cflags-$(CONFIG_MSILVERMONT) 	+= -march=silvermont
@@ -222,8 +220,6 @@ else
         rustflags-$(CONFIG_MZEN5) 	+= -Ctarget-cpu=znver5
         rustflags-$(CONFIG_MNATIVE_INTEL) += -Ctarget-cpu=native
         rustflags-$(CONFIG_MNATIVE_AMD) 	+= -Ctarget-cpu=native
-        rustflags-$(CONFIG_MATOM) 	+= -Ctarget-cpu=bonnell
-        rustflags-$(CONFIG_MCORE2) 	+= -Ctarget-cpu=core2
         rustflags-$(CONFIG_MNEHALEM) 	+= -Ctarget-cpu=nehalem
         rustflags-$(CONFIG_MWESTMERE) 	+= -Ctarget-cpu=westmere
         rustflags-$(CONFIG_MSILVERMONT) 	+= -Ctarget-cpu=silvermont
