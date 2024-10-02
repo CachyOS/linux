@@ -6,11 +6,8 @@
  */
 
 #include "linux/device.h"
-#include "linux/err.h"
-#include "linux/kstrtox.h"
 #include "linux/pm.h"
 #include "linux/slab.h"
-#include "linux/stddef.h"
 #include <linux/hid.h>
 #include <linux/types.h>
 #include <linux/usb.h>
@@ -38,6 +35,9 @@
 #define ALLY_MIN_BIOS 319
 #define ALLY_X_MIN_BIOS 313
 
+#define BTN_DATA_LEN 11;
+#define BTN_CODE_BYTES_LEN 8
+
 static const u8 EC_INIT_STRING[] = { 0x5A, 'A', 'S', 'U', 'S', ' ', 'T', 'e','c', 'h', '.', 'I', 'n', 'c', '.', '\0' };
 static const u8 EC_MODE_LED_APPLY[] = { 0x5A, 0xB4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 static const u8 EC_MODE_LED_SET[] = { 0x5A, 0xB5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -47,6 +47,58 @@ static const struct hid_device_id rog_ally_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK, USB_DEVICE_ID_ASUSTEK_ROG_NKEY_ALLY) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK, USB_DEVICE_ID_ASUSTEK_ROG_NKEY_ALLY_X) },
 	{}
+};
+
+struct btn_code_map {
+	u64 code;
+	const char *name;
+};
+
+/* byte_array must be >= 8 in length */
+static void btn_code_to_byte_array(u64 keycode, u8 *byte_array)
+{
+	/* Convert the u64 to bytes[8] */
+	for (int i = 0; i < 8; ++i) {
+		byte_array[i] = (keycode >> (56 - 8 * i)) & 0xFF;
+	}
+}
+
+struct btn_data {
+	u64 button;
+	u64 macro;
+};
+
+struct btn_mapping {
+	struct btn_data btn_a;
+	struct btn_data btn_b;
+	struct btn_data btn_x;
+	struct btn_data btn_y;
+	struct btn_data btn_lb;
+	struct btn_data btn_rb;
+	struct btn_data btn_ls;
+	struct btn_data btn_rs;
+	struct btn_data btn_lt;
+	struct btn_data btn_rt;
+	struct btn_data dpad_up;
+	struct btn_data dpad_down;
+	struct btn_data dpad_left;
+	struct btn_data dpad_right;
+	struct btn_data btn_view;
+	struct btn_data btn_menu;
+	struct btn_data btn_m1;
+	struct btn_data btn_m2;
+};
+
+/* ROG Ally has many settings related to the gamepad, all using the same n-key endpoint */
+struct ally_gamepad_cfg {
+	struct hid_device *hdev;
+	struct input_dev *input;
+
+	enum xpad_mode mode;
+	/*
+	 * index: [mode]
+	 */
+	struct btn_mapping *key_mapping[xpad_mode_mouse];
 };
 
 /* The hatswitch outputs integers, we use them to index this X|Y pair */
@@ -119,6 +171,7 @@ struct ally_rgb_data {
 static struct ally_drvdata {
 	struct hid_device *hdev;
 	struct ally_x_device *ally_x;
+	struct ally_gamepad_cfg *gamepad_cfg;
 	struct ally_rgb_dev *led_rgb_dev;
 	struct ally_rgb_data led_rgb_data;
 } drvdata;
@@ -171,6 +224,172 @@ static u8 get_endpoint_address(struct hid_device *hdev)
 	}
 
 	return -ENODEV;
+}
+
+/**************************************************************************************************/
+/* ROG Ally gamepad configuration                                                                 */
+/**************************************************************************************************/
+
+/* This should be called before any attempts to set device functions */
+static int ally_gamepad_check_ready(struct hid_device *hdev)
+{
+	int ret, count;
+	u8 *hidbuf;
+
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+
+	ret = 0;
+	for (count = 0; count < READY_MAX_TRIES; count++) {
+		hidbuf[0] = FEATURE_ROG_ALLY_REPORT_ID;
+		hidbuf[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+		hidbuf[2] = xpad_cmd_check_ready;
+		hidbuf[3] = 01;
+		ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+		if (ret < 0)
+			hid_dbg(hdev, "ROG Ally check failed set report: %d\n", ret);
+
+		hidbuf[0] = hidbuf[1] = hidbuf[2] = hidbuf[3] = 0;
+		ret = asus_dev_get_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+		if (ret < 0)
+			hid_dbg(hdev, "ROG Ally check failed get report: %d\n", ret);
+
+		ret = hidbuf[2] == xpad_cmd_check_ready;
+		if (ret)
+			break;
+		usleep_range(
+			1000,
+			2000); /* don't spam the entire loop in less than USB response time */
+	}
+
+	if (count == READY_MAX_TRIES)
+		hid_warn(hdev, "ROG Ally never responded with a ready\n");
+
+	kfree(hidbuf);
+	return ret;
+}
+
+/* A HID packet conatins mappings for two buttons: btn1, btn1_macro, btn2, btn2_macro */
+static void _btn_pair_to_hid_pkt(struct ally_gamepad_cfg *ally_cfg,
+				enum btn_pair_index pair,
+				struct btn_data *btn1, struct btn_data *btn2,
+				u8 *out, int out_len)
+{
+	int start = 5;
+
+	out[0] = FEATURE_ROG_ALLY_REPORT_ID;
+	out[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+	out[2] = xpad_cmd_set_mapping;
+	out[3] = pair;
+	out[4] = xpad_cmd_len_mapping;
+
+	btn_code_to_byte_array(btn1->button, &out[start]);
+	start += BTN_DATA_LEN;
+	btn_code_to_byte_array(btn1->macro, &out[start]);
+	start += BTN_DATA_LEN;
+	btn_code_to_byte_array(btn2->button, &out[start]);
+	start += BTN_DATA_LEN;
+	btn_code_to_byte_array(btn2->macro, &out[start]);
+	//print_hex_dump(KERN_DEBUG, "byte_array: ", DUMP_PREFIX_OFFSET, 64, 1, out, 64, false);
+}
+
+/* Apply the mapping pair to the device */
+static int _gamepad_apply_btn_pair(struct hid_device *hdev, struct ally_gamepad_cfg *ally_cfg,
+				 enum btn_pair_index btn_pair)
+{
+	u8 mode = ally_cfg->mode - 1;
+	struct btn_data *btn1, *btn2;
+	u8 *hidbuf;
+	int ret;
+
+	ret = ally_gamepad_check_ready(hdev);
+	if (ret < 0)
+		return ret;
+
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+
+	switch (btn_pair) {
+	case btn_pair_m1_m2:
+		btn1 = &ally_cfg->key_mapping[mode]->btn_m1;
+		btn2 = &ally_cfg->key_mapping[mode]->btn_m2;
+		break;
+	default:
+		break;
+	}
+
+	_btn_pair_to_hid_pkt(ally_cfg, btn_pair, btn1, btn2, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+
+	kfree(hidbuf);
+
+	return ret;
+}
+
+static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
+{
+	struct ally_gamepad_cfg *ally_cfg;
+	struct input_dev *input_dev;
+	int err;
+
+	ally_cfg = devm_kzalloc(&hdev->dev, sizeof(*ally_cfg), GFP_KERNEL);
+	if (!ally_cfg)
+		return ERR_PTR(-ENOMEM);
+	ally_cfg->hdev = hdev;
+	// Allocate memory for each mode's `btn_mapping`
+	ally_cfg->mode = xpad_mode_game;
+	for (int i = 0; i < xpad_mode_mouse; i++) {
+		ally_cfg->key_mapping[i] = devm_kzalloc(&hdev->dev, sizeof(struct btn_mapping), GFP_KERNEL);
+		if (!ally_cfg->key_mapping[i]) {
+			err = -ENOMEM;
+		goto free_key_mappings;
+		}
+	}
+
+	input_dev = devm_input_allocate_device(&hdev->dev);
+	if (!input_dev) {
+		err = -ENOMEM;
+		goto free_ally_cfg;
+	}
+
+	input_dev->id.bustype = hdev->bus;
+	input_dev->id.vendor = hdev->vendor;
+	input_dev->id.product = hdev->product;
+	input_dev->id.version = hdev->version;
+	input_dev->uniq = hdev->uniq;
+	input_dev->name = "ASUS ROG Ally Config";
+	input_set_capability(input_dev, EV_KEY, KEY_PROG1);
+	input_set_capability(input_dev, EV_KEY, KEY_F16);
+	input_set_capability(input_dev, EV_KEY, KEY_F17);
+	input_set_capability(input_dev, EV_KEY, KEY_F18);
+	input_set_drvdata(input_dev, hdev);
+
+	err = input_register_device(input_dev);
+	if (err)
+		goto free_input_dev;
+	ally_cfg->input = input_dev;
+
+	/* ignore all errors for this as they are related to USB HID I/O */
+	ally_cfg->key_mapping[ally_cfg->mode - 1]->btn_m1.button = BTN_KB_M1;
+	ally_cfg->key_mapping[ally_cfg->mode - 1]->btn_m2.button = BTN_KB_M2;
+	_gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_m1_m2);
+
+	return ally_cfg;
+
+free_input_dev:
+	devm_kfree(&hdev->dev, input_dev);
+
+free_key_mappings:
+	for (int i = 0; i < xpad_mode_mouse; i++) {
+		if (ally_cfg->key_mapping[i])
+			devm_kfree(&hdev->dev, ally_cfg->key_mapping[i]);
+	}
+
+free_ally_cfg:
+	devm_kfree(&hdev->dev, ally_cfg);
+	return ERR_PTR(err);
 }
 
 /**************************************************************************************************/
@@ -729,7 +948,7 @@ static void ally_rgb_remove(struct hid_device *hdev)
 static int ally_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data,
 			  int size)
 {
-	// struct ally_gamepad_cfg *cfg = drvdata.gamepad_cfg;
+	struct ally_gamepad_cfg *cfg = drvdata.gamepad_cfg;
 	struct ally_x_device *ally_x = drvdata.ally_x;
 
 	if (ally_x) {
@@ -741,13 +960,13 @@ static int ally_raw_event(struct hid_device *hdev, struct hid_report *report, u8
 			return -1;
 		}
 	}
-	// if (cfg && !ally_x) {
-	// 	input_report_key(cfg->input, KEY_PROG1, data[1] == 0x38);
-	// 	input_report_key(cfg->input, KEY_F16, data[1] == 0xA6);
-	// 	input_report_key(cfg->input, KEY_F17, data[1] == 0xA7);
-	// 	input_report_key(cfg->input, KEY_F18, data[1] == 0xA8);
-	// 	input_sync(cfg->input);
-	// }
+	if (cfg && !ally_x) {
+		input_report_key(cfg->input, KEY_PROG1, data[1] == 0x38);
+		input_report_key(cfg->input, KEY_F16, data[1] == 0xA6);
+		input_report_key(cfg->input, KEY_F17, data[1] == 0xA7);
+		input_report_key(cfg->input, KEY_F18, data[1] == 0xA8);
+		input_sync(cfg->input);
+	}
 
 	return 0;
 }
@@ -866,7 +1085,7 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 	if (ep < 0)
 		return ep;
 
-	if (ep != ALLY_CFG_INTF_IN_ADDRESS ||
+	if (ep != ALLY_CFG_INTF_IN_ADDRESS &&
 	    ep != ALLY_X_INTERFACE_ADDRESS)
 		return -ENODEV;
 
@@ -906,7 +1125,13 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 		else
 			hid_info(hdev, "Created Ally RGB LED controls.\n");
 
-		if (IS_ERR(drvdata.led_rgb_dev))
+		drvdata.gamepad_cfg = ally_gamepad_cfg_create(hdev);
+		if (IS_ERR(drvdata.gamepad_cfg))
+			hid_err(hdev, "Failed to create Ally gamepad attributes.\n");
+		else
+			hid_info(hdev, "Created Ally gamepad attributes.\n");
+
+		if (IS_ERR(drvdata.led_rgb_dev) && IS_ERR(drvdata.gamepad_cfg))
 			goto err_close;
 	}
 
@@ -921,10 +1146,10 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 		hid_info(hdev, "Created Ally X controller.\n");
 
 		// Not required since we send this inputs ep through the gamepad input dev
-		// if (drvdata.gamepad_cfg && drvdata.gamepad_cfg->input) {
-		// 	input_unregister_device(drvdata.gamepad_cfg->input);
-		// 	hid_info(hdev, "Ally X removed unrequired input dev.\n");
-		// }
+		if (drvdata.gamepad_cfg && drvdata.gamepad_cfg->input) {
+			input_unregister_device(drvdata.gamepad_cfg->input);
+			hid_info(hdev, "Ally X removed unrequired input dev.\n");
+		}
 	}
 
 	return 0;
