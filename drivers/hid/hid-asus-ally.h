@@ -36,3 +36,8 @@ enum xpad_cmd_len {
 	xpad_cmd_len_response_curve = 0x09,
 	xpad_cmd_len_adz = 0x02,
 };
+
+/* required so we can have nested attributes with same name but different functions */
+#define ALLY_DEVICE_ATTR_RW(_name, _sysfs_name)    \
+	struct device_attribute dev_attr_##_name = \
+		__ATTR(_sysfs_name, 0644, _name##_show, _name##_store)
