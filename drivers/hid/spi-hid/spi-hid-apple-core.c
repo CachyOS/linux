@@ -395,6 +395,7 @@ static struct hid_ll_driver apple_hid_ll = {
 	.parse = &apple_ll_parse,
 	.raw_request = &apple_ll_raw_request,
 	.output_report = &apple_ll_output_report,
+	.max_buffer_size = SPIHID_MAX_INPUT_REPORT_SIZE,
 };
 
 static struct spihid_interface *spihid_get_iface(struct spihid_apple *spihid,
@@ -971,9 +972,15 @@ int spihid_apple_core_probe(struct spi_device *spi, struct spihid_apple_ops *ops
 	// init spi
 	spi_set_drvdata(spi, spihid);
 
-	/* allocate SPI buffers */
+	/*
+	 * allocate SPI buffers
+	 * Overallocate the receice buffer since it passed directly into
+	 * hid_input_report / hid_report_raw_event. The later expects the buffer
+	 * to be HID_MAX_BUFFER_SIZE (16k) or hid_ll_driver.max_buffer_size if
+	 * set.
+	 */
 	spihid->rx_buf = devm_kmalloc(
-		&spi->dev, sizeof(struct spihid_transfer_packet), GFP_KERNEL);
+		&spi->dev, SPIHID_MAX_INPUT_REPORT_SIZE, GFP_KERNEL);
 	spihid->tx_buf = devm_kmalloc(
 		&spi->dev, sizeof(struct spihid_transfer_packet), GFP_KERNEL);
 	spihid->status_buf = devm_kmalloc(
