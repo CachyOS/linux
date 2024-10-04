@@ -17245,17 +17245,6 @@ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/overlayfs/vfs.git
 F:	Documentation/filesystems/overlayfs.rst
 F:	fs/overlayfs/
 
-OPENVPN DATA CHANNEL OFFLOAD
-M:	Antonio Quartulli <antonio@openvpn.net>
-L:	openvpn-devel@lists.sourceforge.net (moderated for non-subscribers)
-L:	netdev@vger.kernel.org
-S:	Maintained
-T:	git https://github.com/OpenVPN/linux-kernel-ovpn.git
-F:	drivers/net/ovpn/
-F:	include/uapi/linux/ovpn.h
-F:	Documentation/netlink/spec/ovpn.yaml
-F:	tools/testing/selftests/net/ovpn/
-
 P54 WIRELESS DRIVER
 M:	Christian Lamparter <chunkeey@googlemail.com>
 L:	linux-wireless@vger.kernel.org

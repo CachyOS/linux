@@ -69,7 +69,6 @@ TARGETS += net/mptcp
 TARGETS += net/openvswitch
 TARGETS += net/tcp_ao
 TARGETS += net/netfilter
-TARGETS += net/ovpn
 TARGETS += nsfs
 TARGETS += perf_events
 TARGETS += pidfd
