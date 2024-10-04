@@ -438,12 +438,7 @@ find_active_client(struct list_head *head)
 bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
 {
 	if ((pdev->class >> 16) == PCI_BASE_CLASS_DISPLAY) {
-		/*
-		 * apple-gmux is needed on pre-retina MacBook Pro
-		 * to probe the panel if pdev is the inactive GPU.
-		 */
-		if (apple_gmux_present() && pdev != vga_default_device() &&
-		    !vgasr_priv.handler_flags)
+		if (apple_gmux_present() && !vgasr_priv.handler_flags)
 			return true;
 	}
 
