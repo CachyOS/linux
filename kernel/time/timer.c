@@ -1561,10 +1561,19 @@ static inline void timer_base_unlock_expiry(struct timer_base *base)
  * the waiter to acquire the lock and make progress.
  */
 static void timer_sync_wait_running(struct timer_base *base)
+	__releases(&base->lock) __releases(&base->expiry_lock)
+	__acquires(&base->expiry_lock) __acquires(&base->lock)
 {
-	if (atomic_read(&base->timer_waiters)) {
+	bool need_preempt;
+
+	need_preempt = task_is_pi_boosted(current);
+	if (need_preempt || atomic_read(&base->timer_waiters)) {
 		raw_spin_unlock_irq(&base->lock);
 		spin_unlock(&base->expiry_lock);
+
+		if (need_preempt)
+			softirq_preempt();
+
 		spin_lock(&base->expiry_lock);
 		raw_spin_lock_irq(&base->lock);
 	}
@@ -2465,7 +2474,7 @@ static void run_local_timers(void)
 		/* Raise the softirq only if required. */
 		if (time_after_eq(jiffies, base->next_expiry) ||
 		    (i == BASE_DEF && tmigr_requires_handle_remote())) {
-			raise_softirq(TIMER_SOFTIRQ);
+			raise_timer_softirq();
 			return;
 		}
 	}
