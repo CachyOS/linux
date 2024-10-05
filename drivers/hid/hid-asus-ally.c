@@ -54,6 +54,152 @@ struct btn_code_map {
 	const char *name;
 };
 
+static const struct btn_code_map ally_btn_codes[] = {
+	{ 0, "NONE" },
+	/* Gamepad button codes */
+	{ BTN_PAD_A, "PAD_A" },
+	{ BTN_PAD_B, "PAD_B" },
+	{ BTN_PAD_X, "PAD_X" },
+	{ BTN_PAD_Y, "PAD_Y" },
+	{ BTN_PAD_LB, "PAD_LB" },
+	{ BTN_PAD_RB, "PAD_RB" },
+	{ BTN_PAD_LS, "PAD_LS" },
+	{ BTN_PAD_RS, "PAD_RS" },
+	{ BTN_PAD_DPAD_UP, "PAD_DPAD_UP" },
+	{ BTN_PAD_DPAD_DOWN, "PAD_DPAD_DOWN" },
+	{ BTN_PAD_DPAD_LEFT, "PAD_DPAD_LEFT" },
+	{ BTN_PAD_DPAD_RIGHT, "PAD_DPAD_RIGHT" },
+	{ BTN_PAD_VIEW, "PAD_VIEW" },
+	{ BTN_PAD_MENU, "PAD_MENU" },
+	{ BTN_PAD_XBOX, "PAD_XBOX" },
+
+	/* Triggers mapped to keyboard codes */
+	{ BTN_KB_M2, "KB_M2" },
+	{ BTN_KB_M1, "KB_M1" },
+	{ BTN_KB_ESC, "KB_ESC" },
+	{ BTN_KB_F1, "KB_F1" },
+	{ BTN_KB_F2, "KB_F2" },
+	{ BTN_KB_F3, "KB_F3" },
+	{ BTN_KB_F4, "KB_F4" },
+	{ BTN_KB_F5, "KB_F5" },
+	{ BTN_KB_F6, "KB_F6" },
+	{ BTN_KB_F7, "KB_F7" },
+	{ BTN_KB_F8, "KB_F8" },
+	{ BTN_KB_F9, "KB_F9" },
+	{ BTN_KB_F10, "KB_F10" },
+	{ BTN_KB_F11, "KB_F11" },
+	{ BTN_KB_F12, "KB_F12" },
+	{ BTN_KB_F14, "KB_F14" },
+	{ BTN_KB_F15, "KB_F15" },
+	{ BTN_KB_BACKTICK, "KB_BACKTICK" },
+	{ BTN_KB_1, "KB_1" },
+	{ BTN_KB_2, "KB_2" },
+	{ BTN_KB_3, "KB_3" },
+	{ BTN_KB_4, "KB_4" },
+	{ BTN_KB_5, "KB_5" },
+	{ BTN_KB_6, "KB_6" },
+	{ BTN_KB_7, "KB_7" },
+	{ BTN_KB_8, "KB_8" },
+	{ BTN_KB_9, "KB_9" },
+	{ BTN_KB_0, "KB_0" },
+	{ BTN_KB_HYPHEN, "KB_HYPHEN" },
+	{ BTN_KB_EQUALS, "KB_EQUALS" },
+	{ BTN_KB_BACKSPACE, "KB_BACKSPACE" },
+	{ BTN_KB_TAB, "KB_TAB" },
+	{ BTN_KB_Q, "KB_Q" },
+	{ BTN_KB_W, "KB_W" },
+	{ BTN_KB_E, "KB_E" },
+	{ BTN_KB_R, "KB_R" },
+	{ BTN_KB_T, "KB_T" },
+	{ BTN_KB_Y, "KB_Y" },
+	{ BTN_KB_U, "KB_U" },
+	{ BTN_KB_O, "KB_O" },
+	{ BTN_KB_P, "KB_P" },
+	{ BTN_KB_LBRACKET, "KB_LBRACKET" },
+	{ BTN_KB_RBRACKET, "KB_RBRACKET" },
+	{ BTN_KB_BACKSLASH, "KB_BACKSLASH" },
+	{ BTN_KB_CAPS, "KB_CAPS" },
+	{ BTN_KB_A, "KB_A" },
+	{ BTN_KB_S, "KB_S" },
+	{ BTN_KB_D, "KB_D" },
+	{ BTN_KB_F, "KB_F" },
+	{ BTN_KB_G, "KB_G" },
+	{ BTN_KB_H, "KB_H" },
+	{ BTN_KB_J, "KB_J" },
+	{ BTN_KB_K, "KB_K" },
+	{ BTN_KB_L, "KB_L" },
+	{ BTN_KB_SEMI, "KB_SEMI" },
+	{ BTN_KB_QUOTE, "KB_QUOTE" },
+	{ BTN_KB_RET, "KB_RET" },
+	{ BTN_KB_LSHIFT, "KB_LSHIFT" },
+	{ BTN_KB_Z, "KB_Z" },
+	{ BTN_KB_X, "KB_X" },
+	{ BTN_KB_C, "KB_C" },
+	{ BTN_KB_V, "KB_V" },
+	{ BTN_KB_B, "KB_B" },
+	{ BTN_KB_N, "KB_N" },
+	{ BTN_KB_M, "KB_M" },
+	{ BTN_KB_COMMA, "KB_COMMA" },
+	{ BTN_KB_PERIOD, "KB_PERIOD" },
+	{ BTN_KB_RSHIFT, "KB_RSHIFT" },
+	{ BTN_KB_LCTL, "KB_LCTL" },
+	{ BTN_KB_META, "KB_META" },
+	{ BTN_KB_LALT, "KB_LALT" },
+	{ BTN_KB_SPACE, "KB_SPACE" },
+	{ BTN_KB_RALT, "KB_RALT" },
+	{ BTN_KB_MENU, "KB_MENU" },
+	{ BTN_KB_RCTL, "KB_RCTL" },
+	{ BTN_KB_PRNTSCN, "KB_PRNTSCN" },
+	{ BTN_KB_SCRLCK, "KB_SCRLCK" },
+	{ BTN_KB_PAUSE, "KB_PAUSE" },
+	{ BTN_KB_INS, "KB_INS" },
+	{ BTN_KB_HOME, "KB_HOME" },
+	{ BTN_KB_PGUP, "KB_PGUP" },
+	{ BTN_KB_DEL, "KB_DEL" },
+	{ BTN_KB_END, "KB_END" },
+	{ BTN_KB_PGDWN, "KB_PGDWN" },
+	{ BTN_KB_UP_ARROW, "KB_UP_ARROW" },
+	{ BTN_KB_DOWN_ARROW, "KB_DOWN_ARROW" },
+	{ BTN_KB_LEFT_ARROW, "KB_LEFT_ARROW" },
+	{ BTN_KB_RIGHT_ARROW, "KB_RIGHT_ARROW" },
+
+	/* Numpad mappings */
+	{ BTN_NUMPAD_LOCK, "NUMPAD_LOCK" },
+	{ BTN_NUMPAD_FWDSLASH, "NUMPAD_FWDSLASH" },
+	{ BTN_NUMPAD_ASTERISK, "NUMPAD_ASTERISK" },
+	{ BTN_NUMPAD_HYPHEN, "NUMPAD_HYPHEN" },
+	{ BTN_NUMPAD_0, "NUMPAD_0" },
+	{ BTN_NUMPAD_1, "NUMPAD_1" },
+	{ BTN_NUMPAD_2, "NUMPAD_2" },
+	{ BTN_NUMPAD_3, "NUMPAD_3" },
+	{ BTN_NUMPAD_4, "NUMPAD_4" },
+	{ BTN_NUMPAD_5, "NUMPAD_5" },
+	{ BTN_NUMPAD_6, "NUMPAD_6" },
+	{ BTN_NUMPAD_7, "NUMPAD_7" },
+	{ BTN_NUMPAD_8, "NUMPAD_8" },
+	{ BTN_NUMPAD_9, "NUMPAD_9" },
+	{ BTN_NUMPAD_PLUS, "NUMPAD_PLUS" },
+	{ BTN_NUMPAD_ENTER, "NUMPAD_ENTER" },
+	{ BTN_NUMPAD_PERIOD, "NUMPAD_PERIOD" },
+
+	/* Mouse mappings */
+	{ BTN_MOUSE_LCLICK, "MOUSE_LCLICK" },
+	{ BTN_MOUSE_RCLICK, "MOUSE_RCLICK" },
+	{ BTN_MOUSE_MCLICK, "MOUSE_MCLICK" },
+	{ BTN_MOUSE_WHEEL_UP, "MOUSE_WHEEL_UP" },
+	{ BTN_MOUSE_WHEEL_DOWN, "MOUSE_WHEEL_DOWN" },
+
+	/* Media mappings */
+	{ BTN_MEDIA_SCREENSHOT, "MEDIA_SCREENSHOT" },
+	{ BTN_MEDIA_SHOW_KEYBOARD, "MEDIA_SHOW_KEYBOARD" },
+	{ BTN_MEDIA_SHOW_DESKTOP, "MEDIA_SHOW_DESKTOP" },
+	{ BTN_MEDIA_START_RECORDING, "MEDIA_START_RECORDING" },
+	{ BTN_MEDIA_MIC_OFF, "MEDIA_MIC_OFF" },
+	{ BTN_MEDIA_VOL_DOWN, "MEDIA_VOL_DOWN" },
+	{ BTN_MEDIA_VOL_UP, "MEDIA_VOL_UP" },
+};
+static const size_t keymap_len = ARRAY_SIZE(ally_btn_codes);
+
 /* byte_array must be >= 8 in length */
 static void btn_code_to_byte_array(u64 keycode, u8 *byte_array)
 {
@@ -61,6 +207,27 @@ static void btn_code_to_byte_array(u64 keycode, u8 *byte_array)
 	for (int i = 0; i < 8; ++i) {
 		byte_array[i] = (keycode >> (56 - 8 * i)) & 0xFF;
 	}
+}
+
+static u64 name_to_btn(const char *name)
+{
+	int len = strcspn(name, "\n");
+	for (size_t i = 0; i < keymap_len; ++i) {
+		if (strncmp(ally_btn_codes[i].name, name, len) == 0) {
+			return ally_btn_codes[i].code;
+		}
+	}
+	return -EINVAL;
+}
+
+static const char* btn_to_name(u64 key)
+{
+	for (size_t i = 0; i < keymap_len; ++i) {
+		if (ally_btn_codes[i].code == key) {
+			return ally_btn_codes[i].name;
+		}
+	}
+	return NULL;
 }
 
 struct btn_data {
@@ -98,7 +265,7 @@ struct ally_gamepad_cfg {
 	/*
 	 * index: [mode]
 	 */
-	struct btn_mapping *key_mapping[xpad_mode_mouse];
+	struct btn_mapping key_mapping[xpad_mode_mouse];
 };
 
 /* The hatswitch outputs integers, we use them to index this X|Y pair */
@@ -312,9 +479,41 @@ static int _gamepad_apply_btn_pair(struct hid_device *hdev, struct ally_gamepad_
 		return -ENOMEM;
 
 	switch (btn_pair) {
+	case btn_pair_dpad_u_d:
+		btn1 = &ally_cfg->key_mapping[mode].dpad_up;
+		btn2 = &ally_cfg->key_mapping[mode].dpad_down;
+		break;
+	case btn_pair_dpad_l_r:
+		btn1 = &ally_cfg->key_mapping[mode].dpad_left;
+		btn2 = &ally_cfg->key_mapping[mode].dpad_right;
+		break;
+	case btn_pair_ls_rs:
+		btn1 = &ally_cfg->key_mapping[mode].btn_ls;
+		btn2 = &ally_cfg->key_mapping[mode].btn_rs;
+		break;
+	case btn_pair_lb_rb:
+		btn1 = &ally_cfg->key_mapping[mode].btn_lb;
+		btn2 = &ally_cfg->key_mapping[mode].btn_rb;
+		break;
+	case btn_pair_lt_rt:
+		btn1 = &ally_cfg->key_mapping[mode].btn_lt;
+		btn2 = &ally_cfg->key_mapping[mode].btn_rt;
+		break;
+	case btn_pair_a_b:
+		btn1 = &ally_cfg->key_mapping[mode].btn_a;
+		btn2 = &ally_cfg->key_mapping[mode].btn_b;
+		break;
+	case btn_pair_x_y:
+		btn1 = &ally_cfg->key_mapping[mode].btn_x;
+		btn2 = &ally_cfg->key_mapping[mode].btn_y;
+		break;
+	case btn_pair_view_menu:
+		btn1 = &ally_cfg->key_mapping[mode].btn_view;
+		btn2 = &ally_cfg->key_mapping[mode].btn_menu;
+		break;
 	case btn_pair_m1_m2:
-		btn1 = &ally_cfg->key_mapping[mode]->btn_m1;
-		btn2 = &ally_cfg->key_mapping[mode]->btn_m2;
+		btn1 = &ally_cfg->key_mapping[mode].btn_m1;
+		btn2 = &ally_cfg->key_mapping[mode].btn_m2;
 		break;
 	default:
 		break;
@@ -328,6 +527,157 @@ static int _gamepad_apply_btn_pair(struct hid_device *hdev, struct ally_gamepad_
 	return ret;
 }
 
+static ssize_t _gamepad_apply_all(struct hid_device *hdev, struct ally_gamepad_cfg *ally_cfg)
+{
+	int ret;
+
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_dpad_u_d);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_dpad_l_r);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_ls_rs);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_lb_rb);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_a_b);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_x_y);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_view_menu);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_m1_m2);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_lt_rt);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static ssize_t gamepad_apply_all_store(struct device *dev, struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	struct hid_device *hdev = to_hid_device(dev);
+	int ret;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	ret = _gamepad_apply_all(hdev, ally_cfg);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+ALLY_DEVICE_ATTR_WO(gamepad_apply_all, apply_all);
+
+/* button map attributes, regular and macro*/
+ALLY_BTN_MAPPING(m1, btn_m1);
+ALLY_BTN_MAPPING(m2, btn_m2);
+ALLY_BTN_MAPPING(a, btn_a);
+ALLY_BTN_MAPPING(b, btn_b);
+ALLY_BTN_MAPPING(x, btn_x);
+ALLY_BTN_MAPPING(y, btn_y);
+ALLY_BTN_MAPPING(lb, btn_lb);
+ALLY_BTN_MAPPING(rb, btn_rb);
+ALLY_BTN_MAPPING(ls, btn_ls);
+ALLY_BTN_MAPPING(rs, btn_rs);
+ALLY_BTN_MAPPING(lt, btn_lt);
+ALLY_BTN_MAPPING(rt, btn_rt);
+ALLY_BTN_MAPPING(dpad_u, dpad_up);
+ALLY_BTN_MAPPING(dpad_d, dpad_down);
+ALLY_BTN_MAPPING(dpad_l, dpad_left);
+ALLY_BTN_MAPPING(dpad_r, dpad_right);
+ALLY_BTN_MAPPING(view, btn_view);
+ALLY_BTN_MAPPING(menu, btn_menu);
+
+static void _gamepad_set_xpad_default(struct ally_gamepad_cfg *ally_cfg)
+{
+	struct btn_mapping *map = &ally_cfg->key_mapping[ally_cfg->mode - 1];
+	map->btn_m1.button = BTN_KB_M1;
+	map->btn_m2.button = BTN_KB_M2;
+	map->btn_a.button = BTN_PAD_A;
+	map->btn_b.button = BTN_PAD_B;
+	map->btn_x.button = BTN_PAD_X;
+	map->btn_y.button = BTN_PAD_Y;
+	map->btn_lb.button = BTN_PAD_LB;
+	map->btn_rb.button = BTN_PAD_RB;
+	map->btn_lt.button = BTN_PAD_LT;
+	map->btn_rt.button = BTN_PAD_RT;
+	map->btn_ls.button = BTN_PAD_LS;
+	map->btn_rs.button = BTN_PAD_RS;
+	map->dpad_up.button = BTN_PAD_DPAD_UP;
+	map->dpad_down.button = BTN_PAD_DPAD_DOWN;
+	map->dpad_left.button = BTN_PAD_DPAD_LEFT;
+	map->dpad_right.button = BTN_PAD_DPAD_RIGHT;
+	map->btn_view.button = BTN_PAD_VIEW;
+	map->btn_menu.button = BTN_PAD_MENU;
+}
+
+static ssize_t btn_mapping_reset_store(struct device *dev, struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	switch (ally_cfg->mode) {
+	case xpad_mode_game:
+		_gamepad_set_xpad_default(ally_cfg);
+		break;
+	default:
+		_gamepad_set_xpad_default(ally_cfg);
+		break;
+	}
+
+	return count;
+}
+ALLY_DEVICE_ATTR_WO(btn_mapping_reset, reset_btn_mapping);
+
+/* ROOT LEVEL ATTRS *******************************************************************************/
+static struct attribute *gamepad_device_attrs[] = {
+	&dev_attr_btn_mapping_reset.attr,
+	&dev_attr_gamepad_apply_all.attr,
+	NULL
+};
+
+static const struct attribute_group ally_controller_attr_group = {
+	.attrs = gamepad_device_attrs,
+};
+
+static const struct attribute_group *gamepad_device_attr_groups[] = {
+	&ally_controller_attr_group,
+	&btn_mapping_m1_attr_group,
+	&btn_mapping_m2_attr_group,
+	&btn_mapping_a_attr_group,
+	&btn_mapping_b_attr_group,
+	&btn_mapping_x_attr_group,
+	&btn_mapping_y_attr_group,
+	&btn_mapping_lb_attr_group,
+	&btn_mapping_rb_attr_group,
+	&btn_mapping_ls_attr_group,
+	&btn_mapping_rs_attr_group,
+	&btn_mapping_lt_attr_group,
+	&btn_mapping_rt_attr_group,
+	&btn_mapping_dpad_u_attr_group,
+	&btn_mapping_dpad_d_attr_group,
+	&btn_mapping_dpad_l_attr_group,
+	&btn_mapping_dpad_r_attr_group,
+	&btn_mapping_view_attr_group,
+	&btn_mapping_menu_attr_group,
+	NULL,
+};
+
 static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
 {
 	struct ally_gamepad_cfg *ally_cfg;
@@ -340,13 +690,6 @@ static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
 	ally_cfg->hdev = hdev;
 	// Allocate memory for each mode's `btn_mapping`
 	ally_cfg->mode = xpad_mode_game;
-	for (int i = 0; i < xpad_mode_mouse; i++) {
-		ally_cfg->key_mapping[i] = devm_kzalloc(&hdev->dev, sizeof(struct btn_mapping), GFP_KERNEL);
-		if (!ally_cfg->key_mapping[i]) {
-			err = -ENOMEM;
-		goto free_key_mappings;
-		}
-	}
 
 	input_dev = devm_input_allocate_device(&hdev->dev);
 	if (!input_dev) {
@@ -372,24 +715,35 @@ static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
 	ally_cfg->input = input_dev;
 
 	/* ignore all errors for this as they are related to USB HID I/O */
-	ally_cfg->key_mapping[ally_cfg->mode - 1]->btn_m1.button = BTN_KB_M1;
-	ally_cfg->key_mapping[ally_cfg->mode - 1]->btn_m2.button = BTN_KB_M2;
+	_gamepad_set_xpad_default(ally_cfg);
+	ally_cfg->key_mapping[ally_cfg->mode - 1].btn_m1.button = BTN_KB_M1;
+	ally_cfg->key_mapping[ally_cfg->mode - 1].btn_m2.button = BTN_KB_M2;
 	_gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_m1_m2);
 
+	drvdata.gamepad_cfg = ally_cfg; // Must asign before attr group setup
+	if (sysfs_create_groups(&hdev->dev.kobj, gamepad_device_attr_groups)) {
+		err = -ENODEV;
+		goto unregister_input_dev;
+	}
+
 	return ally_cfg;
+
+unregister_input_dev:
+	input_unregister_device(input_dev);
+	ally_cfg->input = NULL; // Prevent double free when kfree(ally_cfg) happens
 
 free_input_dev:
 	devm_kfree(&hdev->dev, input_dev);
 
-free_key_mappings:
-	for (int i = 0; i < xpad_mode_mouse; i++) {
-		if (ally_cfg->key_mapping[i])
-			devm_kfree(&hdev->dev, ally_cfg->key_mapping[i]);
-	}
-
 free_ally_cfg:
 	devm_kfree(&hdev->dev, ally_cfg);
 	return ERR_PTR(err);
+}
+
+static void ally_cfg_remove(struct hid_device *hdev)
+{
+	// __gamepad_set_mode(hdev, drvdata.gamepad_cfg, xpad_mode_mouse);
+	sysfs_remove_groups(&hdev->dev.kobj, gamepad_device_attr_groups);
 }
 
 /**************************************************************************************************/
@@ -1168,6 +1522,9 @@ static void ally_hid_remove(struct hid_device *hdev)
 
 	if (drvdata.ally_x)
 		ally_x_remove(hdev);
+
+	if (drvdata.gamepad_cfg)
+		ally_cfg_remove(hdev);
 
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
