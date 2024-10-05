@@ -233,6 +233,7 @@ static const char* btn_to_name(u64 key)
 struct btn_data {
 	u64 button;
 	u64 macro;
+	bool turbo;
 };
 
 struct btn_mapping {
@@ -538,6 +539,46 @@ static int _gamepad_apply_btn_pair(struct hid_device *hdev, struct ally_gamepad_
 	return ret;
 }
 
+static int _gamepad_apply_turbo(struct hid_device *hdev, struct ally_gamepad_cfg *ally_cfg)
+{
+	struct btn_mapping *map = &ally_cfg->key_mapping[ally_cfg->mode - 1];
+	u8 *hidbuf;
+	int ret;
+
+	/* set turbo */
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+	hidbuf[0] = FEATURE_ROG_ALLY_REPORT_ID;
+	hidbuf[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+	hidbuf[2] = xpad_cmd_set_turbo;
+	hidbuf[3] = xpad_cmd_len_turbo;
+
+	hidbuf[4] = map->dpad_up.turbo;
+	hidbuf[6] = map->dpad_down.turbo;
+	hidbuf[8] = map->dpad_left.turbo;
+	hidbuf[10] = map->dpad_right.turbo;
+
+	hidbuf[12] = map->btn_ls.turbo;
+	hidbuf[14] = map->btn_rs.turbo;
+	hidbuf[16] = map->btn_lb.turbo;
+	hidbuf[18] = map->btn_rb.turbo;
+
+	hidbuf[20] = map->btn_a.turbo;
+	hidbuf[22] = map->btn_b.turbo;
+	hidbuf[24] = map->btn_x.turbo;
+	hidbuf[26] = map->btn_y.turbo;
+
+	hidbuf[28] = map->btn_lt.turbo;
+	hidbuf[30] = map->btn_rt.turbo;
+
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+
+	kfree(hidbuf);
+
+	return ret;
+}
+
 static ssize_t _gamepad_apply_all(struct hid_device *hdev, struct ally_gamepad_cfg *ally_cfg)
 {
 	int ret;
@@ -569,6 +610,9 @@ static ssize_t _gamepad_apply_all(struct hid_device *hdev, struct ally_gamepad_c
 	ret = _gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_lt_rt);
 	if (ret < 0)
 		return ret;
+	ret = _gamepad_apply_turbo(hdev, ally_cfg);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -594,22 +638,22 @@ ALLY_DEVICE_ATTR_WO(gamepad_apply_all, apply_all);
 /* button map attributes, regular and macro*/
 ALLY_BTN_MAPPING(m1, btn_m1);
 ALLY_BTN_MAPPING(m2, btn_m2);
-ALLY_BTN_MAPPING(a, btn_a);
-ALLY_BTN_MAPPING(b, btn_b);
-ALLY_BTN_MAPPING(x, btn_x);
-ALLY_BTN_MAPPING(y, btn_y);
-ALLY_BTN_MAPPING(lb, btn_lb);
-ALLY_BTN_MAPPING(rb, btn_rb);
-ALLY_BTN_MAPPING(ls, btn_ls);
-ALLY_BTN_MAPPING(rs, btn_rs);
-ALLY_BTN_MAPPING(lt, btn_lt);
-ALLY_BTN_MAPPING(rt, btn_rt);
-ALLY_BTN_MAPPING(dpad_u, dpad_up);
-ALLY_BTN_MAPPING(dpad_d, dpad_down);
-ALLY_BTN_MAPPING(dpad_l, dpad_left);
-ALLY_BTN_MAPPING(dpad_r, dpad_right);
 ALLY_BTN_MAPPING(view, btn_view);
 ALLY_BTN_MAPPING(menu, btn_menu);
+ALLY_TURBO_BTN_MAPPING(a, btn_a);
+ALLY_TURBO_BTN_MAPPING(b, btn_b);
+ALLY_TURBO_BTN_MAPPING(x, btn_x);
+ALLY_TURBO_BTN_MAPPING(y, btn_y);
+ALLY_TURBO_BTN_MAPPING(lb, btn_lb);
+ALLY_TURBO_BTN_MAPPING(rb, btn_rb);
+ALLY_TURBO_BTN_MAPPING(ls, btn_ls);
+ALLY_TURBO_BTN_MAPPING(rs, btn_rs);
+ALLY_TURBO_BTN_MAPPING(lt, btn_lt);
+ALLY_TURBO_BTN_MAPPING(rt, btn_rt);
+ALLY_TURBO_BTN_MAPPING(dpad_u, dpad_up);
+ALLY_TURBO_BTN_MAPPING(dpad_d, dpad_down);
+ALLY_TURBO_BTN_MAPPING(dpad_l, dpad_left);
+ALLY_TURBO_BTN_MAPPING(dpad_r, dpad_right);
 
 static void _gamepad_set_xpad_default(struct ally_gamepad_cfg *ally_cfg)
 {
