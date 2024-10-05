@@ -281,6 +281,8 @@ struct ally_gamepad_cfg {
 	/* deadzones */
 	struct deadzone ls_dz; // left stick
 	struct deadzone rs_dz; // right stick
+	struct deadzone lt_dz; // left trigger
+	struct deadzone rt_dz; // right trigger
 };
 
 /* The hatswitch outputs integers, we use them to index this X|Y pair */
@@ -560,7 +562,20 @@ static ssize_t _gamepad_apply_deadzones(struct hid_device *hdev,
 	hidbuf[7] = ally_cfg->rs_dz.outer;
 
 	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	if (ret < 0)
+		goto end;
 
+	hidbuf[2] = xpad_cmd_set_tr_dz;
+	hidbuf[4] = ally_cfg->lt_dz.inner;
+	hidbuf[5] = ally_cfg->lt_dz.outer;
+	hidbuf[6] = ally_cfg->rt_dz.inner;
+	hidbuf[7] = ally_cfg->rt_dz.outer;
+
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	if (ret < 0)
+		goto end;
+
+end:
 	kfree(hidbuf);
 	return ret;
 }
@@ -571,6 +586,10 @@ static void _gamepad_set_deadzones_default(struct ally_gamepad_cfg *ally_cfg)
 	ally_cfg->ls_dz.outer = 0x64;
 	ally_cfg->rs_dz.inner = 0x00;
 	ally_cfg->rs_dz.outer = 0x64;
+	ally_cfg->lt_dz.inner = 0x00;
+	ally_cfg->lt_dz.outer = 0x64;
+	ally_cfg->rt_dz.inner = 0x00;
+	ally_cfg->rt_dz.outer = 0x64;
 }
 
 static ssize_t axis_xyz_deadzone_index_show(struct device *dev, struct device_attribute *attr,
@@ -583,6 +602,8 @@ ALLY_DEVICE_ATTR_RO(axis_xyz_deadzone_index, deadzone_index);
 
 ALLY_DEADZONES(axis_xy_left, ls_dz);
 ALLY_DEADZONES(axis_xy_right, rs_dz);
+ALLY_DEADZONES(axis_z_left, lt_dz);
+ALLY_DEADZONES(axis_z_right, rt_dz);
 
 static struct attribute *axis_xy_left_attrs[] = {
 	&dev_attr_axis_xy_left_deadzone.attr,
@@ -602,6 +623,26 @@ static struct attribute *axis_xy_right_attrs[] = {
 static const struct attribute_group axis_xy_right_attr_group = {
 	.name = "axis_xy_right",
 	.attrs = axis_xy_right_attrs,
+};
+
+static struct attribute *axis_z_left_attrs[] = {
+	&dev_attr_axis_z_left_deadzone.attr,
+	&dev_attr_axis_xyz_deadzone_index.attr,
+	NULL,
+};
+static const struct attribute_group axis_z_left_attr_group = {
+	.name = "axis_z_left",
+	.attrs = axis_z_left_attrs,
+};
+
+static struct attribute *axis_z_right_attrs[] = {
+	&dev_attr_axis_z_right_deadzone.attr,
+	&dev_attr_axis_xyz_deadzone_index.attr,
+	NULL,
+};
+static const struct attribute_group axis_z_right_attr_group = {
+	.name = "axis_z_right",
+	.attrs = axis_z_right_attrs,
 };
 
 /* A HID packet conatins mappings for two buttons: btn1, btn1_macro, btn2, btn2_macro */
@@ -947,6 +988,8 @@ static const struct attribute_group *gamepad_device_attr_groups[] = {
 	&ally_controller_attr_group,
 	&axis_xy_left_attr_group,
 	&axis_xy_right_attr_group,
+	&axis_z_left_attr_group,
+	&axis_z_right_attr_group,
 	&btn_mapping_m1_attr_group,
 	&btn_mapping_m2_attr_group,
 	&btn_mapping_a_attr_group,
