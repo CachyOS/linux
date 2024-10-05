@@ -23,6 +23,7 @@ enum xpad_cmd {
 	xpad_cmd_set_mode = 0x01,
 	xpad_cmd_set_mapping = 0x02,
 	xpad_cmd_set_js_dz = 0x04, /* deadzones */
+	xpad_cmd_set_tr_dz = 0x05, /* deadzones */
 	xpad_cmd_set_vibe_intensity = 0x06,
 	xpad_cmd_set_leds = 0x08,
 	xpad_cmd_check_ready = 0x0A,
