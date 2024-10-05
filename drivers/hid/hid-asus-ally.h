@@ -22,6 +22,7 @@ enum xpad_mode {
 enum xpad_cmd {
 	xpad_cmd_set_mode = 0x01,
 	xpad_cmd_set_mapping = 0x02,
+	xpad_cmd_set_js_dz = 0x04, /* deadzones */
 	xpad_cmd_set_vibe_intensity = 0x06,
 	xpad_cmd_set_leds = 0x08,
 	xpad_cmd_check_ready = 0x0A,
@@ -32,6 +33,7 @@ enum xpad_cmd {
 enum xpad_cmd_len {
 	xpad_cmd_len_mode = 0x01,
 	xpad_cmd_len_mapping = 0x2c,
+	xpad_cmd_len_deadzone = 0x04,
 	xpad_cmd_len_vibe_intensity = 0x02,
 	xpad_cmd_len_leds = 0x0C,
 	xpad_cmd_len_turbo = 0x20,
@@ -266,6 +268,43 @@ enum btn_pair_index {
 		btn->turbo = turbo;                                            \
 		return count;                                                  \
 	}
+
+#define ALLY_DEADZONE_SHOW(_fname, _axis_name)                                 \
+	static ssize_t _fname##_show(struct device *dev,                       \
+				     struct device_attribute *attr, char *buf) \
+	{                                                                      \
+		struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;       \
+		struct deadzone *dz;                                           \
+		if (!drvdata.gamepad_cfg)                                      \
+			return -ENODEV;                                        \
+		dz = &ally_cfg->_axis_name;                                    \
+		return sysfs_emit(buf, "%d %d\n", dz->inner, dz->outer);       \
+	}
+
+#define ALLY_DEADZONE_STORE(_fname, _axis_name)                                \
+	static ssize_t _fname##_store(struct device *dev,                      \
+				      struct device_attribute *attr,           \
+				      const char *buf, size_t count)           \
+	{                                                                      \
+		struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;       \
+		struct hid_device *hdev = to_hid_device(dev);                  \
+		u32 inner, outer;                                              \
+		if (!drvdata.gamepad_cfg)                                      \
+			return -ENODEV;                                        \
+		if (sscanf(buf, "%d %d", &inner, &outer) != 2)                 \
+			return -EINVAL;                                        \
+		if (inner > 64 || outer > 64 || inner > outer)                 \
+			return -EINVAL;                                        \
+		ally_cfg->_axis_name.inner = inner;                            \
+		ally_cfg->_axis_name.outer = outer;                            \
+		_gamepad_apply_deadzones(hdev, ally_cfg);                      \
+		return count;                                                  \
+	}
+
+#define ALLY_DEADZONES(_fname, _mname)                                    \
+	ALLY_DEADZONE_SHOW(_fname##_deadzone, _mname);                    \
+	ALLY_DEADZONE_STORE(_fname##_deadzone, _mname);                   \
+	ALLY_DEVICE_ATTR_RW(_fname##_deadzone, deadzone)
 
 #define ALLY_BTN_ATTRS_GROUP(_name, _fname)                               \
 	static struct attribute *_fname##_attrs[] = {                     \
