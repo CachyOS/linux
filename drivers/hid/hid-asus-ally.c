@@ -267,6 +267,11 @@ struct ally_gamepad_cfg {
 	 * index: [mode]
 	 */
 	struct btn_mapping key_mapping[xpad_mode_mouse];
+	/*
+	 * index: left, right
+	 * max: 64
+	 */
+	u8 vibration_intensity[2];
 };
 
 /* The hatswitch outputs integers, we use them to index this X|Y pair */
@@ -437,6 +442,89 @@ static int ally_gamepad_check_ready(struct hid_device *hdev)
 	kfree(hidbuf);
 	return ret;
 }
+
+/* VIBRATION INTENSITY ****************************************************************************/
+static ssize_t gamepad_vibration_intensity_index_show(struct device *dev,
+						      struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "left right\n");
+}
+
+ALLY_DEVICE_ATTR_RO(gamepad_vibration_intensity_index, vibration_intensity_index);
+
+static ssize_t _gamepad_apply_intensity(struct hid_device *hdev,
+					struct ally_gamepad_cfg *ally_cfg)
+{
+	u8 *hidbuf;
+	int ret;
+
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+
+	hidbuf[0] = FEATURE_ROG_ALLY_REPORT_ID;
+	hidbuf[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+	hidbuf[2] = xpad_cmd_set_vibe_intensity;
+	hidbuf[3] = xpad_cmd_len_vibe_intensity;
+	hidbuf[4] = ally_cfg->vibration_intensity[0];
+	hidbuf[5] = ally_cfg->vibration_intensity[1];
+
+	ret = ally_gamepad_check_ready(hdev);
+	if (ret < 0)
+		goto report_fail;
+
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	if (ret < 0)
+		goto report_fail;
+
+report_fail:
+	kfree(hidbuf);
+	return ret;
+}
+
+static ssize_t gamepad_vibration_intensity_show(struct device *dev,
+						struct device_attribute *attr, char *buf)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	return sysfs_emit(
+		buf, "%d %d\n",
+		ally_cfg->vibration_intensity[0],
+		ally_cfg->vibration_intensity[1]);
+}
+
+static ssize_t gamepad_vibration_intensity_store(struct device *dev,
+						 struct device_attribute *attr, const char *buf,
+						 size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	u32 left, right;
+	int ret;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	if (sscanf(buf, "%d %d", &left, &right) != 2)
+		return -EINVAL;
+
+	if (left > 64 || right > 64)
+		return -EINVAL;
+
+	ally_cfg->vibration_intensity[0] = left;
+	ally_cfg->vibration_intensity[1] = right;
+
+	ret = _gamepad_apply_intensity(hdev, ally_cfg);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+ALLY_DEVICE_ATTR_RW(gamepad_vibration_intensity, vibration_intensity);
 
 /* A HID packet conatins mappings for two buttons: btn1, btn1_macro, btn2, btn2_macro */
 static void _btn_pair_to_hid_pkt(struct ally_gamepad_cfg *ally_cfg,
@@ -765,6 +853,8 @@ static struct attribute *gamepad_device_attrs[] = {
 	&dev_attr_btn_mapping_reset.attr,
 	&dev_attr_gamepad_mode.attr,
 	&dev_attr_gamepad_apply_all.attr,
+	&dev_attr_gamepad_vibration_intensity.attr,
+	&dev_attr_gamepad_vibration_intensity_index.attr,
 	NULL
 };
 
@@ -836,6 +926,9 @@ static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
 	ally_cfg->key_mapping[ally_cfg->mode - 1].btn_m1.button = BTN_KB_M1;
 	ally_cfg->key_mapping[ally_cfg->mode - 1].btn_m2.button = BTN_KB_M2;
 	_gamepad_apply_btn_pair(hdev, ally_cfg, btn_pair_m1_m2);
+
+	ally_cfg->vibration_intensity[0] = 0x64;
+	ally_cfg->vibration_intensity[1] = 0x64;
 
 	drvdata.gamepad_cfg = ally_cfg; // Must asign before attr group setup
 	if (sysfs_create_groups(&hdev->dev.kobj, gamepad_device_attr_groups)) {
