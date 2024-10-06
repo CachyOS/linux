@@ -28,6 +28,7 @@ enum xpad_cmd {
 	xpad_cmd_set_leds = 0x08,
 	xpad_cmd_check_ready = 0x0A,
 	xpad_cmd_set_turbo = 0x0F,
+	xpad_cmd_set_response_curve = 0x13,
 	xpad_cmd_set_adz = 0x18,
 };
 
@@ -39,6 +40,7 @@ enum xpad_cmd_len {
 	xpad_cmd_len_vibe_intensity = 0x02,
 	xpad_cmd_len_leds = 0x0C,
 	xpad_cmd_len_turbo = 0x20,
+	xpad_cmd_len_response_curve = 0x09,
 	xpad_cmd_len_adz = 0x02,
 };
 
@@ -308,6 +310,42 @@ enum btn_pair_index {
 	ALLY_DEADZONE_SHOW(_fname##_deadzone, _mname);                    \
 	ALLY_DEADZONE_STORE(_fname##_deadzone, _mname);                   \
 	ALLY_DEVICE_ATTR_RW(_fname##_deadzone, deadzone)
+
+/* response curve macros */
+#define ALLY_RESP_CURVE_SHOW(_fname, _mname)                             \
+static ssize_t _fname##_show(struct device *dev,                         \
+			struct device_attribute *attr,                   \
+			char *buf)                                       \
+	{                                                                \
+		struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg; \
+		if (!drvdata.gamepad_cfg)                                \
+			return -ENODEV;                                  \
+		return sysfs_emit(buf, "%d\n", ally_cfg->ls_rc._mname);  \
+	}
+
+#define ALLY_RESP_CURVE_STORE(_fname, _mname)                            \
+static ssize_t _fname##_store(struct device *dev,                        \
+			struct device_attribute *attr,                   \
+			const char *buf, size_t count)                   \
+	{                                                                \
+		struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg; \
+		int ret, val;                                            \
+		if (!drvdata.gamepad_cfg)                                \
+			return -ENODEV;                                  \
+		ret = kstrtoint(buf, 0, &val);                           \
+		if (ret)                                                 \
+			return ret;                                      \
+		if (val < 0 || val > 100)                                \
+			return -EINVAL;                                  \
+		ally_cfg->ls_rc._mname = val;                            \
+		return count;                                            \
+	}
+
+/* _point_n must start at 1 */
+#define ALLY_JS_RC_POINT(_fname, _mname, _num)                                 \
+	ALLY_RESP_CURVE_SHOW(_fname##_##_mname##_##_num, _mname##_pct_##_num); \
+	ALLY_RESP_CURVE_STORE(_fname##_##_mname##_##_num, _mname##_pct_##_num); \
+	ALLY_DEVICE_ATTR_RW(_fname##_##_mname##_##_num, curve_##_mname##_pct_##_num)
 
 #define ALLY_BTN_ATTRS_GROUP(_name, _fname)                               \
 	static struct attribute *_fname##_attrs[] = {                     \
