@@ -28,6 +28,7 @@ enum xpad_cmd {
 	xpad_cmd_set_leds = 0x08,
 	xpad_cmd_check_ready = 0x0A,
 	xpad_cmd_set_turbo = 0x0F,
+	xpad_cmd_set_adz = 0x18,
 };
 
 /* the xpad_cmd determines which feature is set or queried */
@@ -38,6 +39,7 @@ enum xpad_cmd_len {
 	xpad_cmd_len_vibe_intensity = 0x02,
 	xpad_cmd_len_leds = 0x0C,
 	xpad_cmd_len_turbo = 0x20,
+	xpad_cmd_len_adz = 0x02,
 };
 
 /* Values correspond to the actual HID byte value required */
