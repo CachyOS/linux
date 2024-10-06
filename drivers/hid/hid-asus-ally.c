@@ -283,6 +283,9 @@ struct ally_gamepad_cfg {
 	struct deadzone rs_dz; // right stick
 	struct deadzone lt_dz; // left trigger
 	struct deadzone rt_dz; // right trigger
+	/* anti-deadzones */
+	u8 ls_adz; // left stick
+	u8 rs_adz; // right stick
 };
 
 /* The hatswitch outputs integers, we use them to index this X|Y pair */
@@ -605,7 +608,109 @@ ALLY_DEADZONES(axis_xy_right, rs_dz);
 ALLY_DEADZONES(axis_z_left, lt_dz);
 ALLY_DEADZONES(axis_z_right, rt_dz);
 
+/* ANTI-DEADZONES *********************************************************************************/
+static ssize_t _gamepad_apply_js_ADZ(struct hid_device *hdev,
+					     struct ally_gamepad_cfg *ally_cfg)
+{
+	u8 *hidbuf;
+	int ret;
+
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+
+	hidbuf[0] = FEATURE_ROG_ALLY_REPORT_ID;
+	hidbuf[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+	hidbuf[2] = xpad_cmd_set_adz;
+	hidbuf[3] = xpad_cmd_len_adz;
+	hidbuf[4] = ally_cfg->ls_adz;
+	hidbuf[5] = ally_cfg->rs_adz;
+
+	ret = ally_gamepad_check_ready(hdev);
+	if (ret < 0)
+		goto report_fail;
+
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	if (ret < 0)
+		goto report_fail;
+
+report_fail:
+	kfree(hidbuf);
+	return ret;
+}
+
+static void _gamepad_set_anti_deadzones_default(struct ally_gamepad_cfg *ally_cfg)
+{
+	ally_cfg->ls_adz = 0x00;
+	ally_cfg->rs_adz = 0x00;
+}
+
+static ssize_t _gamepad_js_ADZ_store(struct device *dev, const char *buf, u8 *adz)
+{
+	int ret, val;
+
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0 || val > 32)
+		return -EINVAL;
+
+	*adz = val;
+
+	return ret;
+}
+
+static ssize_t axis_xy_left_anti_deadzone_show(struct device *dev,
+						struct device_attribute *attr,
+						char *buf)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+
+	return sysfs_emit(buf, "%d\n", ally_cfg->ls_adz);
+}
+
+static ssize_t axis_xy_left_anti_deadzone_store(struct device *dev,
+						struct device_attribute *attr,
+						const char *buf, size_t count)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	int ret;
+
+	ret = _gamepad_js_ADZ_store(dev, buf, &ally_cfg->ls_adz);
+	if (ret)
+		return ret;
+
+	return count;
+}
+ALLY_DEVICE_ATTR_RW(axis_xy_left_anti_deadzone, anti_deadzone);
+
+static ssize_t axis_xy_right_anti_deadzone_show(struct device *dev,
+						struct device_attribute *attr,
+						char *buf)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+
+	return sysfs_emit(buf, "%d\n", ally_cfg->rs_adz);
+}
+
+static ssize_t axis_xy_right_anti_deadzone_store(struct device *dev,
+						struct device_attribute *attr,
+						const char *buf, size_t count)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	int ret;
+
+	ret = _gamepad_js_ADZ_store(dev, buf, &ally_cfg->rs_adz);
+	if (ret)
+		return ret;
+
+	return count;
+}
+ALLY_DEVICE_ATTR_RW(axis_xy_right_anti_deadzone, anti_deadzone);
+
 static struct attribute *axis_xy_left_attrs[] = {
+	&dev_attr_axis_xy_left_anti_deadzone.attr,
 	&dev_attr_axis_xy_left_deadzone.attr,
 	&dev_attr_axis_xyz_deadzone_index.attr,
 	NULL
@@ -616,6 +721,7 @@ static const struct attribute_group axis_xy_left_attr_group = {
 };
 
 static struct attribute *axis_xy_right_attrs[] = {
+	&dev_attr_axis_xy_right_anti_deadzone.attr,
 	&dev_attr_axis_xy_right_deadzone.attr,
 	&dev_attr_axis_xyz_deadzone_index.attr,
 	NULL
@@ -810,6 +916,9 @@ static ssize_t _gamepad_apply_all(struct hid_device *hdev, struct ally_gamepad_c
 	if (ret < 0)
 		return ret;
 	ret = _gamepad_apply_deadzones(hdev, ally_cfg);
+	if (ret < 0)
+		return ret;
+	ret = _gamepad_apply_js_ADZ(hdev, ally_cfg);
 	if (ret < 0)
 		return ret;
 
@@ -1056,6 +1165,7 @@ static struct ally_gamepad_cfg *ally_gamepad_cfg_create(struct hid_device *hdev)
 	ally_cfg->vibration_intensity[0] = 0x64;
 	ally_cfg->vibration_intensity[1] = 0x64;
 	_gamepad_set_deadzones_default(ally_cfg);
+	_gamepad_set_anti_deadzones_default(ally_cfg);
 
 	drvdata.gamepad_cfg = ally_cfg; // Must asign before attr group setup
 	if (sysfs_create_groups(&hdev->dev.kobj, gamepad_device_attr_groups)) {
