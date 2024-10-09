@@ -129,6 +129,13 @@ static inline void psi_enqueue(struct task_struct *p, bool wakeup)
 	if (static_branch_likely(&psi_disabled))
 		return;
 
+	/*
+	 * Delayed task is not ready to run yet!
+	 * Wait for a requeue before accounting.
+	 */
+	if (p->se.sched_delayed)
+		return;
+
 	if (p->in_memstall)
 		set |= TSK_MEMSTALL_RUNNING;
 
@@ -147,6 +154,9 @@ static inline void psi_dequeue(struct task_struct *p, bool sleep)
 {
 	if (static_branch_likely(&psi_disabled))
 		return;
+
+	/* Delayed task can only be dequeued for migration. */
+	WARN_ON_ONCE(p->se.sched_delayed && sleep);
 
 	/*
 	 * A voluntary sleep is a dequeue followed by a task switch. To

@@ -1326,6 +1326,7 @@ static inline int cpu_of(struct rq *rq)
 }
 
 #define MDF_PUSH		0x01
+#define DELAYED_MIGRATED	0x02 /* Task was migrated when in DELAYED_DEQUEUE state */
 
 static inline bool is_migration_disabled(struct task_struct *p)
 {

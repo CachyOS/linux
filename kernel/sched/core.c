@@ -2009,12 +2009,19 @@ unsigned long get_wchan(struct task_struct *p)
 
 void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
+	bool wakee_not_migrated = (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED);
+
 	if (!(flags & ENQUEUE_NOCLOCK))
 		update_rq_clock(rq);
 
 	if (!(flags & ENQUEUE_RESTORE)) {
 		sched_info_enqueue(rq, p);
-		psi_enqueue(p, (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED));
+
+		/* Notify PSI that the task was migrated in a delayed state before wakeup. */
+		if ((p->migration_flags & DELAYED_MIGRATED) && !task_on_rq_migrating(p)) {
+			wakee_not_migrated = false;
+			p->migration_flags &= ~DELAYED_MIGRATED;
+		}
 	}
 
 	p->sched_class->enqueue_task(rq, p, flags);
@@ -2023,6 +2030,8 @@ void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	 * ->sched_delayed.
 	 */
 	uclamp_rq_inc(rq, p);
+	if (!(flags & ENQUEUE_RESTORE))
+		psi_enqueue(p, wakee_not_migrated);
 
 	if (sched_core_enabled(rq))
 		sched_core_enqueue(rq, p);
@@ -2042,6 +2051,9 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	if (!(flags & DEQUEUE_SAVE)) {
 		sched_info_dequeue(rq, p);
 		psi_dequeue(p, flags & DEQUEUE_SLEEP);
+
+		if (p->se.sched_delayed && task_on_rq_migrating(p))
+			p->migration_flags |= DELAYED_MIGRATED;
 	}
 
 	/*
@@ -3733,7 +3745,7 @@ static int ttwu_runnable(struct task_struct *p, int wake_flags)
 	if (task_on_rq_queued(p)) {
 		update_rq_clock(rq);
 		if (p->se.sched_delayed)
-			enqueue_task(rq, p, ENQUEUE_NOCLOCK | ENQUEUE_DELAYED);
+			enqueue_task(rq, p, ENQUEUE_NOCLOCK | ENQUEUE_WAKEUP | ENQUEUE_DELAYED);
 		if (!task_on_cpu(rq, p)) {
 			/*
 			 * When on_rq && !on_cpu the task is preempted, see if
@@ -6537,6 +6549,7 @@ static void __sched notrace __schedule(int sched_mode)
 	 * as a preemption by schedule_debug() and RCU.
 	 */
 	bool preempt = sched_mode > SM_NONE;
+	bool block = false;
 	unsigned long *switch_count;
 	unsigned long prev_state;
 	struct rq_flags rf;
@@ -6622,6 +6635,7 @@ static void __sched notrace __schedule(int sched_mode)
 			 * After this, schedule() must not care about p->state any more.
 			 */
 			block_task(rq, prev, flags);
+			block = true;
 		}
 		switch_count = &prev->nvcsw;
 	}
@@ -6667,7 +6681,7 @@ picked:
 
 		migrate_disable_switch(rq, prev);
 		psi_account_irqtime(rq, prev, next);
-		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
+		psi_sched_switch(prev, next, block);
 
 		trace_sched_switch(preempt, prev, next, prev_state);
 
