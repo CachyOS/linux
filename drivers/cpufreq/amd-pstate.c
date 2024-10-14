@@ -233,7 +233,7 @@ static int amd_pstate_get_energy_pref_index(struct amd_cpudata *cpudata)
 	return index;
 }
 
-static void pstate_update_perf(struct amd_cpudata *cpudata, u32 min_perf,
+static void msr_update_perf(struct amd_cpudata *cpudata, u32 min_perf,
 			       u32 des_perf, u32 max_perf, bool fast_switch)
 {
 	if (fast_switch)
@@ -243,7 +243,7 @@ static void pstate_update_perf(struct amd_cpudata *cpudata, u32 min_perf,
 			      READ_ONCE(cpudata->cppc_req_cached));
 }
 
-DEFINE_STATIC_CALL(amd_pstate_update_perf, pstate_update_perf);
+DEFINE_STATIC_CALL(amd_pstate_update_perf, msr_update_perf);
 
 static inline void amd_pstate_update_perf(struct amd_cpudata *cpudata,
 					  u32 min_perf, u32 des_perf,
@@ -306,7 +306,7 @@ static int amd_pstate_set_energy_pref_index(struct amd_cpudata *cpudata,
 	return ret;
 }
 
-static inline int pstate_enable(bool enable)
+static inline int msr_enable(bool enable)
 {
 	int ret, cpu;
 	unsigned long logical_proc_id_mask = 0;
@@ -332,7 +332,7 @@ static inline int pstate_enable(bool enable)
 	return 0;
 }
 
-static int cppc_enable(bool enable)
+static int shmem_enable(bool enable)
 {
 	int cpu, ret = 0;
 	struct cppc_perf_ctrls perf_ctrls;
@@ -359,14 +359,14 @@ static int cppc_enable(bool enable)
 	return ret;
 }
 
-DEFINE_STATIC_CALL(amd_pstate_enable, pstate_enable);
+DEFINE_STATIC_CALL(amd_pstate_enable, msr_enable);
 
 static inline int amd_pstate_enable(bool enable)
 {
 	return static_call(amd_pstate_enable)(enable);
 }
 
-static int pstate_init_perf(struct amd_cpudata *cpudata)
+static int msr_init_perf(struct amd_cpudata *cpudata)
 {
 	u64 cap1;
 
@@ -385,7 +385,7 @@ static int pstate_init_perf(struct amd_cpudata *cpudata)
 	return 0;
 }
 
-static int cppc_init_perf(struct amd_cpudata *cpudata)
+static int shmem_init_perf(struct amd_cpudata *cpudata)
 {
 	struct cppc_perf_caps cppc_perf;
 
@@ -420,14 +420,14 @@ static int cppc_init_perf(struct amd_cpudata *cpudata)
 	return ret;
 }
 
-DEFINE_STATIC_CALL(amd_pstate_init_perf, pstate_init_perf);
+DEFINE_STATIC_CALL(amd_pstate_init_perf, msr_init_perf);
 
 static inline int amd_pstate_init_perf(struct amd_cpudata *cpudata)
 {
 	return static_call(amd_pstate_init_perf)(cpudata);
 }
 
-static void cppc_update_perf(struct amd_cpudata *cpudata,
+static void shmem_update_perf(struct amd_cpudata *cpudata,
 			     u32 min_perf, u32 des_perf,
 			     u32 max_perf, bool fast_switch)
 {
@@ -536,11 +536,16 @@ static int amd_pstate_verify(struct cpufreq_policy_data *policy)
 
 static int amd_pstate_update_min_max_limit(struct cpufreq_policy *policy)
 {
-	u32 max_limit_perf, min_limit_perf, lowest_perf;
+	u32 max_limit_perf, min_limit_perf, lowest_perf, max_perf;
 	struct amd_cpudata *cpudata = policy->driver_data;
 
-	max_limit_perf = div_u64(policy->max * cpudata->highest_perf, cpudata->max_freq);
-	min_limit_perf = div_u64(policy->min * cpudata->highest_perf, cpudata->max_freq);
+	if (cpudata->boost_supported && !policy->boost_enabled)
+		max_perf = READ_ONCE(cpudata->nominal_perf);
+	else
+		max_perf = READ_ONCE(cpudata->highest_perf);
+
+	max_limit_perf = div_u64(policy->max * max_perf, policy->cpuinfo.max_freq);
+	min_limit_perf = div_u64(policy->min * max_perf, policy->cpuinfo.max_freq);
 
 	lowest_perf = READ_ONCE(cpudata->lowest_perf);
 	if (min_limit_perf < lowest_perf)
@@ -660,33 +665,11 @@ static void amd_pstate_adjust_perf(unsigned int cpu,
 static int amd_pstate_cpu_boost_update(struct cpufreq_policy *policy, bool on)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
-	struct cppc_perf_ctrls perf_ctrls;
-	u32 highest_perf, nominal_perf, nominal_freq, max_freq;
+	u32 nominal_freq, max_freq;
 	int ret = 0;
 
-	highest_perf = READ_ONCE(cpudata->highest_perf);
-	nominal_perf = READ_ONCE(cpudata->nominal_perf);
 	nominal_freq = READ_ONCE(cpudata->nominal_freq);
 	max_freq = READ_ONCE(cpudata->max_freq);
-
-	if (boot_cpu_has(X86_FEATURE_CPPC)) {
-		u64 value = READ_ONCE(cpudata->cppc_req_cached);
-
-		value &= ~GENMASK_ULL(7, 0);
-		value |= on ? highest_perf : nominal_perf;
-		WRITE_ONCE(cpudata->cppc_req_cached, value);
-
-		wrmsrl_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, value);
-	} else {
-		perf_ctrls.max_perf = on ? highest_perf : nominal_perf;
-		ret = cppc_set_perf(cpudata->cpu, &perf_ctrls);
-		if (ret) {
-			cpufreq_cpu_release(policy);
-			pr_debug("Failed to set max perf on CPU:%d. ret:%d\n",
-				cpudata->cpu, ret);
-			return ret;
-		}
-	}
 
 	if (on)
 		policy->cpuinfo.max_freq = max_freq;
@@ -696,7 +679,7 @@ static int amd_pstate_cpu_boost_update(struct cpufreq_policy *policy, bool on)
 	policy->max = policy->cpuinfo.max_freq;
 
 	if (cppc_state == AMD_PSTATE_PASSIVE) {
-		ret = freq_qos_update_request(&cpudata->req[1], policy->cpuinfo.max_freq);
+		ret = freq_qos_update_request(&cpudata->max_freq_req, policy->cpuinfo.max_freq);
 		if (ret < 0)
 			pr_debug("Failed to update freq constraint: CPU%d\n", cpudata->cpu);
 	}
@@ -963,17 +946,17 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
-		goto free_cpudata1;
+		goto free_cpudata;
 
 	amd_pstate_init_prefcore(cpudata);
 
 	ret = amd_pstate_init_freq(cpudata);
 	if (ret)
-		goto free_cpudata1;
+		goto free_cpudata;
 
 	ret = amd_pstate_init_boost_support(cpudata);
 	if (ret)
-		goto free_cpudata1;
+		goto free_cpudata;
 
 	min_freq = READ_ONCE(cpudata->min_freq);
 	max_freq = READ_ONCE(cpudata->max_freq);
@@ -995,18 +978,11 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 	if (cpu_feature_enabled(X86_FEATURE_CPPC))
 		policy->fast_switch_possible = true;
 
-	ret = freq_qos_add_request(&policy->constraints, &cpudata->req[0],
-				   FREQ_QOS_MIN, policy->cpuinfo.min_freq);
-	if (ret < 0) {
-		dev_err(dev, "Failed to add min-freq constraint (%d)\n", ret);
-		goto free_cpudata1;
-	}
-
-	ret = freq_qos_add_request(&policy->constraints, &cpudata->req[1],
+	ret = freq_qos_add_request(&policy->constraints, &cpudata->max_freq_req,
 				   FREQ_QOS_MAX, policy->cpuinfo.max_freq);
 	if (ret < 0) {
 		dev_err(dev, "Failed to add max-freq constraint (%d)\n", ret);
-		goto free_cpudata2;
+		goto free_cpudata;
 	}
 
 	cpudata->max_limit_freq = max_freq;
@@ -1019,9 +995,7 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 
 	return 0;
 
-free_cpudata2:
-	freq_qos_remove_request(&cpudata->req[0]);
-free_cpudata1:
+free_cpudata:
 	kfree(cpudata);
 	return ret;
 }
@@ -1030,8 +1004,7 @@ static void amd_pstate_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
 
-	freq_qos_remove_request(&cpudata->req[1]);
-	freq_qos_remove_request(&cpudata->req[0]);
+	freq_qos_remove_request(&cpudata->max_freq_req);
 	policy->fast_switch_possible = false;
 	kfree(cpudata);
 }
@@ -1492,23 +1465,13 @@ static void amd_pstate_epp_cpu_exit(struct cpufreq_policy *policy)
 static int amd_pstate_epp_update_limit(struct cpufreq_policy *policy)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
-	u32 max_perf, min_perf, min_limit_perf, max_limit_perf;
+	u32 max_perf, min_perf;
 	u64 value;
 	s16 epp;
 
 	max_perf = READ_ONCE(cpudata->highest_perf);
 	min_perf = READ_ONCE(cpudata->lowest_perf);
-	max_limit_perf = div_u64(policy->max * cpudata->highest_perf, cpudata->max_freq);
-	min_limit_perf = div_u64(policy->min * cpudata->highest_perf, cpudata->max_freq);
-
-	if (min_limit_perf < min_perf)
-		min_limit_perf = min_perf;
-
-	if (max_limit_perf < min_limit_perf)
-		max_limit_perf = min_limit_perf;
-
-	WRITE_ONCE(cpudata->max_limit_perf, max_limit_perf);
-	WRITE_ONCE(cpudata->min_limit_perf, min_limit_perf);
+	amd_pstate_update_min_max_limit(policy);
 
 	max_perf = clamp_t(unsigned long, max_perf, cpudata->min_limit_perf,
 			cpudata->max_limit_perf);
@@ -1544,12 +1507,6 @@ static int amd_pstate_epp_update_limit(struct cpufreq_policy *policy)
 
 	if (cpudata->policy == CPUFREQ_POLICY_PERFORMANCE)
 		epp = 0;
-
-	/* Set initial EPP value */
-	if (cpu_feature_enabled(X86_FEATURE_CPPC)) {
-		value &= ~GENMASK_ULL(31, 24);
-		value |= (u64)epp << 24;
-	}
 
 	WRITE_ONCE(cpudata->cppc_req_cached, value);
 	return amd_pstate_set_epp(cpudata, epp);
@@ -1706,6 +1663,13 @@ static int amd_pstate_epp_resume(struct cpufreq_policy *policy)
 	return 0;
 }
 
+static int amd_pstate_get_init_min_freq(struct cpufreq_policy *policy)
+{
+	struct amd_cpudata *cpudata = policy->driver_data;
+
+	return READ_ONCE(cpudata->lowest_nonlinear_freq);
+}
+
 static struct cpufreq_driver amd_pstate_driver = {
 	.flags		= CPUFREQ_CONST_LOOPS | CPUFREQ_NEED_UPDATE_LIMITS,
 	.verify		= amd_pstate_verify,
@@ -1719,6 +1683,7 @@ static struct cpufreq_driver amd_pstate_driver = {
 	.update_limits	= amd_pstate_update_limits,
 	.name		= "amd-pstate",
 	.attr		= amd_pstate_attr,
+	.get_init_min_freq = amd_pstate_get_init_min_freq,
 };
 
 static struct cpufreq_driver amd_pstate_epp_driver = {
@@ -1735,6 +1700,7 @@ static struct cpufreq_driver amd_pstate_epp_driver = {
 	.set_boost	= amd_pstate_set_boost,
 	.name		= "amd-pstate-epp",
 	.attr		= amd_pstate_epp_attr,
+	.get_init_min_freq = amd_pstate_get_init_min_freq,
 };
 
 static int __init amd_pstate_set_driver(int mode_idx)
@@ -1756,7 +1722,7 @@ static int __init amd_pstate_set_driver(int mode_idx)
 	return -EINVAL;
 }
 
-/**
+/*
  * CPPC function is not supported for family ID 17H with model_ID ranging from 0x10 to 0x2F.
  * show the debug message that helps to check if the CPU has CPPC support for loading issue.
  */
@@ -1879,9 +1845,9 @@ static int __init amd_pstate_init(void)
 			current_pstate_driver->adjust_perf = amd_pstate_adjust_perf;
 	} else {
 		pr_debug("AMD CPPC shared memory based functionality is supported\n");
-		static_call_update(amd_pstate_enable, cppc_enable);
-		static_call_update(amd_pstate_init_perf, cppc_init_perf);
-		static_call_update(amd_pstate_update_perf, cppc_update_perf);
+		static_call_update(amd_pstate_enable, shmem_enable);
+		static_call_update(amd_pstate_init_perf, shmem_init_perf);
+		static_call_update(amd_pstate_update_perf, shmem_update_perf);
 	}
 
 	if (amd_pstate_prefcore) {
