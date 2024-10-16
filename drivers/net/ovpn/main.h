@@ -19,4 +19,6 @@ bool ovpn_dev_is_valid(const struct net_device *dev);
 #define OVPN_HEAD_ROOM ALIGN(16 + SKB_HEADER_LEN, 4)
 #define OVPN_MAX_PADDING 16
 
+#define OVPN_QUEUE_LEN 1024
+
 #endif /* _NET_OVPN_MAIN_H_ */
