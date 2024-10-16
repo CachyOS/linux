@@ -12,6 +12,7 @@
 #include <linux/skbuff.h>
 #include <net/gro_cells.h>
 #include <net/gso.h>
+#include <net/ip.h>
 
 #include "ovpnstruct.h"
 #include "peer.h"
@@ -21,6 +22,7 @@
 #include "crypto_aead.h"
 #include "netlink.h"
 #include "proto.h"
+#include "socket.h"
 #include "udp.h"
 #include "skb.h"
 #include "socket.h"
@@ -68,6 +70,7 @@ void ovpn_decrypt_post(void *data, int ret)
 	unsigned int payload_offset = 0;
 	struct ovpn_peer *peer = NULL;
 	struct sk_buff *skb = data;
+	unsigned int orig_len = 0;
 	__be16 proto;
 	__be32 *pid;
 
@@ -82,6 +85,7 @@ void ovpn_decrypt_post(void *data, int ret)
 		payload_offset = ovpn_skb_cb(skb)->ctx->payload_offset;
 		ks = ovpn_skb_cb(skb)->ctx->ks;
 		peer = ovpn_skb_cb(skb)->ctx->peer;
+		orig_len = ovpn_skb_cb(skb)->ctx->orig_len;
 
 		aead_request_free(ovpn_skb_cb(skb)->ctx->req);
 		kfree(ovpn_skb_cb(skb)->ctx);
@@ -135,6 +139,10 @@ void ovpn_decrypt_post(void *data, int ret)
 		goto drop;
 	}
 
+	/* increment RX stats */
+	ovpn_peer_stats_increment_rx(&peer->vpn_stats, skb->len);
+	ovpn_peer_stats_increment_rx(&peer->link_stats, orig_len);
+
 	ovpn_netdev_write(peer, skb);
 	/* skb is passed to upper layer - don't free it */
 	skb = NULL;
@@ -173,6 +181,7 @@ void ovpn_encrypt_post(void *data, int ret)
 {
 	struct ovpn_peer *peer = NULL;
 	struct sk_buff *skb = data;
+	unsigned int orig_len = 0;
 
 	/* encryption is happening asynchronously. This function will be
 	 * called later by the crypto callback with a proper return value
@@ -183,6 +192,7 @@ void ovpn_encrypt_post(void *data, int ret)
 	/* crypto is done, cleanup skb CB and its members */
 	if (likely(ovpn_skb_cb(skb)->ctx)) {
 		peer = ovpn_skb_cb(skb)->ctx->peer;
+		orig_len = ovpn_skb_cb(skb)->ctx->orig_len;
 
 		ovpn_crypto_key_slot_put(ovpn_skb_cb(skb)->ctx->ks);
 		aead_request_free(ovpn_skb_cb(skb)->ctx->req);
@@ -194,6 +204,8 @@ void ovpn_encrypt_post(void *data, int ret)
 		goto err;
 
 	skb_mark_not_on_list(skb);
+	ovpn_peer_stats_increment_tx(&peer->link_stats, skb->len);
+	ovpn_peer_stats_increment_tx(&peer->vpn_stats, orig_len);
 
 	switch (peer->sock->sock->sk->sk_protocol) {
 	case IPPROTO_UDP:

@@ -128,6 +128,7 @@ int ovpn_aead_encrypt(struct ovpn_peer *peer, struct ovpn_crypto_key_slot *ks,
 	aead_request_set_crypt(req, sg, sg, skb->len - head_size, iv);
 	aead_request_set_ad(req, OVPN_OP_SIZE_V2 + NONCE_WIRE_SIZE);
 
+	ovpn_skb_cb(skb)->ctx->orig_len = skb->len;
 	ovpn_skb_cb(skb)->ctx->peer = peer;
 	ovpn_skb_cb(skb)->ctx->req = req;
 	ovpn_skb_cb(skb)->ctx->ks = ks;
@@ -216,6 +217,7 @@ int ovpn_aead_decrypt(struct ovpn_peer *peer, struct ovpn_crypto_key_slot *ks,
 
 	aead_request_set_ad(req, NONCE_WIRE_SIZE + OVPN_OP_SIZE_V2);
 
+	ovpn_skb_cb(skb)->ctx->orig_len = skb->len;
 	ovpn_skb_cb(skb)->ctx->payload_offset = payload_offset;
 	ovpn_skb_cb(skb)->ctx->peer = peer;
 	ovpn_skb_cb(skb)->ctx->req = req;

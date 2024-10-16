@@ -23,6 +23,7 @@ struct ovpn_cb_ctx {
 	struct ovpn_crypto_key_slot *ks;
 	struct aead_request *req;
 	struct scatterlist sg[MAX_SKB_FRAGS + 2];
+	size_t orig_len;
 	unsigned int payload_offset;
 };
 
