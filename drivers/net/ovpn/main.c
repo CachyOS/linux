@@ -22,6 +22,7 @@
 #include "io.h"
 #include "packet.h"
 #include "peer.h"
+#include "tcp.h"
 
 /* Driver info */
 #define DRV_DESCRIPTION	"OpenVPN data channel offload (ovpn)"
@@ -236,6 +237,8 @@ static int __init ovpn_init(void)
 		pr_err("ovpn: can't register netlink family: %d\n", err);
 		goto unreg_rtnl;
 	}
+
+	ovpn_tcp_init();
 
 	return 0;
 
