@@ -17,8 +17,17 @@
 #include <linux/socket.h>
 #include <linux/types.h>
 
-struct ovpn_cb {
+struct ovpn_cb_ctx {
 	struct ovpn_peer *peer;
+	struct sk_buff *skb;
+	struct ovpn_crypto_key_slot *ks;
+	struct aead_request *req;
+	struct scatterlist sg[MAX_SKB_FRAGS + 2];
+	unsigned int payload_offset;
+};
+
+struct ovpn_cb {
+	struct ovpn_cb_ctx *ctx;
 };
 
 static inline struct ovpn_cb *ovpn_skb_cb(struct sk_buff *skb)

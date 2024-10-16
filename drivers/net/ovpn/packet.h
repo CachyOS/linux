@@ -10,7 +10,7 @@
 #ifndef _NET_OVPN_PACKET_H_
 #define _NET_OVPN_PACKET_H_
 
-/* When the OpenVPN protocol is ran in AEAD mode, use
+/* When the OpenVPN protocol is run in AEAD mode, use
  * the OpenVPN packet ID as the AEAD nonce:
  *
  *    00000005 521c3b01 4308c041
