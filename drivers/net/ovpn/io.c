@@ -225,6 +225,7 @@ void ovpn_recv(struct ovpn_peer *peer, struct sk_buff *skb)
 
 void ovpn_encrypt_post(void *data, int ret)
 {
+	struct ovpn_crypto_key_slot *ks = NULL;
 	struct ovpn_peer *peer = NULL;
 	struct sk_buff *skb = data;
 	unsigned int orig_len = 0;
@@ -237,13 +238,26 @@ void ovpn_encrypt_post(void *data, int ret)
 
 	/* crypto is done, cleanup skb CB and its members */
 	if (likely(ovpn_skb_cb(skb)->ctx)) {
+		ks = ovpn_skb_cb(skb)->ctx->ks;
 		peer = ovpn_skb_cb(skb)->ctx->peer;
 		orig_len = ovpn_skb_cb(skb)->ctx->orig_len;
 
-		ovpn_crypto_key_slot_put(ovpn_skb_cb(skb)->ctx->ks);
 		aead_request_free(ovpn_skb_cb(skb)->ctx->req);
 		kfree(ovpn_skb_cb(skb)->ctx);
 		ovpn_skb_cb(skb)->ctx = NULL;
+	}
+
+	if (unlikely(ret == -ERANGE)) {
+		/* we ran out of IVs and we must kill the key as it can't be
+		 * use anymore
+		 */
+		netdev_warn(peer->ovpn->dev,
+			    "killing key %u for peer %u\n", ks->key_id,
+			    peer->id);
+		ovpn_crypto_kill_key(&peer->crypto, ks->key_id);
+		/* let userspace know so that a new key must be negotiated */
+		ovpn_nl_key_swap_notify(peer, ks->key_id);
+		goto err;
 	}
 
 	if (unlikely(ret < 0))
@@ -275,6 +289,8 @@ err:
 		dev_core_stats_tx_dropped_inc(peer->ovpn->dev);
 	if (likely(peer))
 		ovpn_peer_put(peer);
+	if (likely(ks))
+		ovpn_crypto_key_slot_put(ks);
 	kfree_skb(skb);
 }
 
