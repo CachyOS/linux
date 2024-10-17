@@ -1190,22 +1190,6 @@ unsigned long amd_get_dr_addr_mask(unsigned int dr)
 }
 EXPORT_SYMBOL_GPL(amd_get_dr_addr_mask);
 
-u32 amd_get_highest_perf(void)
-{
-	struct cpuinfo_x86 *c = &boot_cpu_data;
-
-	if (c->x86 == 0x17 && ((c->x86_model >= 0x30 && c->x86_model < 0x40) ||
-			       (c->x86_model >= 0x70 && c->x86_model < 0x80)))
-		return 166;
-
-	if (c->x86 == 0x19 && ((c->x86_model >= 0x20 && c->x86_model < 0x30) ||
-			       (c->x86_model >= 0x40 && c->x86_model < 0x70)))
-		return 166;
-
-	return 255;
-}
-EXPORT_SYMBOL_GPL(amd_get_highest_perf);
-
 static void zenbleed_check_cpu(void *unused)
 {
 	struct cpuinfo_x86 *c = &cpu_data(smp_processor_id());
@@ -1220,3 +1204,32 @@ void amd_check_microcode(void)
 
 	on_each_cpu(zenbleed_check_cpu, NULL, 1);
 }
+
+/**
+ * amd_get_core_type - Heterogeneous core type identification
+ *
+ * Returns the CPU type [31:28] (i.e., performance or efficient) of
+ * a CPU in the processor.
+ *
+ * If the processor has no core type support, returns
+ * CPU_CORE_TYPE_NO_HETERO_SUP.
+ */
+enum amd_core_type amd_get_core_type(void)
+{
+	struct {
+		u32  num_processors             :16,
+		     power_efficiency_ranking   :8,
+		     native_model_id            :4,
+		     core_type                  :4;
+	} props;
+
+	if (!cpu_feature_enabled(X86_FEATURE_HETERO_CORE_TOPOLOGY))
+		return CPU_CORE_TYPE_NO_HETERO_SUP;
+
+	cpuid_leaf_reg(0x80000026, CPUID_EBX, &props);
+	if (props.core_type >= CPU_CORE_TYPE_UNDEFINED)
+		return CPU_CORE_TYPE_UNDEFINED;
+
+	return props.core_type;
+}
+EXPORT_SYMBOL_GPL(amd_get_core_type);
