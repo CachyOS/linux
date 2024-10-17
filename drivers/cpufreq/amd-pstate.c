@@ -678,7 +678,7 @@ static int amd_pstate_cpu_boost_update(struct cpufreq_policy *policy, bool on)
 	policy->max = policy->cpuinfo.max_freq;
 
 	if (cppc_state == AMD_PSTATE_PASSIVE) {
-		ret = freq_qos_update_request(&cpudata->max_freq_req, policy->cpuinfo.max_freq);
+		ret = freq_qos_update_request(&cpudata->req[1], policy->cpuinfo.max_freq);
 		if (ret < 0)
 			pr_debug("Failed to update freq constraint: CPU%d\n", cpudata->cpu);
 	}
@@ -940,17 +940,17 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 
 	ret = amd_pstate_init_perf(cpudata);
 	if (ret)
-		goto free_cpudata;
+		goto free_cpudata1;
 
 	amd_pstate_init_prefcore(cpudata);
 
 	ret = amd_pstate_init_freq(cpudata);
 	if (ret)
-		goto free_cpudata;
+		goto free_cpudata1;
 
 	ret = amd_pstate_init_boost_support(cpudata);
 	if (ret)
-		goto free_cpudata;
+		goto free_cpudata1;
 
 	min_freq = READ_ONCE(cpudata->min_freq);
 	max_freq = READ_ONCE(cpudata->max_freq);
@@ -972,11 +972,11 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 	if (cpu_feature_enabled(X86_FEATURE_CPPC))
 		policy->fast_switch_possible = true;
 
-	ret = freq_qos_add_request(&policy->constraints, &cpudata->max_freq_req,
+	ret = freq_qos_add_request(&policy->constraints, &cpudata->req[1],
 				   FREQ_QOS_MAX, policy->cpuinfo.max_freq);
 	if (ret < 0) {
 		dev_err(dev, "Failed to add max-freq constraint (%d)\n", ret);
-		goto free_cpudata;
+		goto free_cpudata2;
 	}
 
 	cpudata->max_limit_freq = max_freq;
@@ -989,7 +989,9 @@ static int amd_pstate_cpu_init(struct cpufreq_policy *policy)
 
 	return 0;
 
-free_cpudata:
+free_cpudata2:
+	freq_qos_remove_request(&cpudata->req[0]);
+free_cpudata1:
 	kfree(cpudata);
 	return ret;
 }
@@ -998,7 +1000,8 @@ static void amd_pstate_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct amd_cpudata *cpudata = policy->driver_data;
 
-	freq_qos_remove_request(&cpudata->max_freq_req);
+	freq_qos_remove_request(&cpudata->req[1]);
+	freq_qos_remove_request(&cpudata->req[0]);
 	policy->fast_switch_possible = false;
 	kfree(cpudata);
 }
