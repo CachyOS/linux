@@ -1432,6 +1432,10 @@ static int nau8821_set_fll(struct snd_soc_component *component,
 	mdelay(2);
 	regmap_update_bits(nau8821->regmap, NAU8821_R03_CLK_DIVIDER,
 		NAU8821_CLK_SRC_MASK, NAU8821_CLK_SRC_VCO);
+	regmap_update_bits(nau8821->regmap, NAU8821_R03_CLK_DIVIDER,
+		NAU8821_CLK_SRC_MASK, NAU8821_CLK_SRC_MCLK);
+	regmap_update_bits(nau8821->regmap, NAU8821_R03_CLK_DIVIDER,
+		NAU8821_CLK_SRC_MASK, NAU8821_CLK_SRC_VCO);
 
 	return 0;
 }
