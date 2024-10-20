@@ -1573,10 +1573,17 @@ static inline void sk_mem_charge(struct sock *sk, int size)
 
 static inline void sk_mem_uncharge(struct sock *sk, int size)
 {
+	int reclaimable, reclaim_threshold;
+
+	reclaim_threshold = 64 * 1024;
 	if (!sk_has_account(sk))
 		return;
 	sk_forward_alloc_add(sk, size);
-	sk_mem_reclaim(sk);
+	reclaimable = sk->sk_forward_alloc - sk_unused_reserved_mem(sk);
+	if (reclaimable > reclaim_threshold) {
+		reclaimable -= reclaim_threshold;
+		__sk_mem_reclaim(sk, reclaimable);
+	}
 }
 
 /*
