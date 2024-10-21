@@ -57,6 +57,7 @@
 #include <asm/mce.h>
 #include <asm/msr.h>
 #include <asm/cacheinfo.h>
+#include <asm/hreset.h>
 #include <asm/memtype.h>
 #include <asm/microcode.h>
 #include <asm/intel-family.h>
@@ -403,6 +404,7 @@ static const unsigned long cr4_pinned_mask = X86_CR4_SMEP | X86_CR4_SMAP | X86_C
 					     X86_CR4_FSGSBASE | X86_CR4_CET | X86_CR4_FRED;
 static DEFINE_STATIC_KEY_FALSE_RO(cr_pinning);
 static unsigned long cr4_pinned_bits __ro_after_init;
+static DEFINE_STATIC_KEY_FALSE_RO(hardware_history_features);
 
 void native_write_cr0(unsigned long val)
 {
@@ -479,6 +481,12 @@ void cr4_init(void)
 
 	/* Initialize cr4 shadow for this CPU. */
 	this_cpu_write(cpu_tlbstate.cr4, cr4);
+}
+
+static void __init setup_hreset(struct cpuinfo_x86 *c)
+{
+	if (cpu_feature_enabled(X86_FEATURE_WORKLOAD_CLASS))
+		static_key_enable_cpuslocked(&hardware_history_features.key);
 }
 
 /*
@@ -1847,6 +1855,7 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 	setup_smep(c);
 	setup_smap(c);
 	setup_umip(c);
+	setup_hreset(c);
 
 	/* Enable FSGSBASE instructions if available. */
 	if (cpu_has(c, X86_FEATURE_FSGSBASE)) {
@@ -2412,4 +2421,10 @@ void __init arch_cpu_finalize_init(void)
 	 * hypercalls work when the SWIOTLB bounce buffers are decrypted.
 	 */
 	mem_encrypt_init();
+}
+
+__always_inline void reset_hardware_history_hetero(void)
+{
+	if (static_branch_unlikely(&hardware_history_features))
+		wrmsrl(AMD_WORKLOAD_HRST, 0x1);
 }

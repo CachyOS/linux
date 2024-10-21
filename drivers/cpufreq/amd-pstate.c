@@ -782,6 +782,10 @@ static void amd_pstate_init_prefcore(struct amd_cpudata *cpudata)
 	/* user disabled or not detected */
 	if (!amd_pstate_prefcore)
 		return;
+	/* should use amd-hfi instead */
+	if (boot_cpu_has(X86_FEATURE_WORKLOAD_CLASS) &&
+	    IS_ENABLED(CONFIG_AMD_HFI))
+		return;
 
 	cpudata->hw_prefcore = true;
 
