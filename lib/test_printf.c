@@ -745,18 +745,26 @@ static void __init fwnode_pointer(void)
 static void __init fourcc_pointer(void)
 {
 	struct {
+		char type;
 		u32 code;
 		char *str;
 	} const try[] = {
-		{ 0x3231564e, "NV12 little-endian (0x3231564e)", },
-		{ 0xb231564e, "NV12 big-endian (0xb231564e)", },
-		{ 0x10111213, ".... little-endian (0x10111213)", },
-		{ 0x20303159, "Y10  little-endian (0x20303159)", },
+		{ 'c', 0x3231564e, "NV12 little-endian (0x3231564e)", },
+		{ 'c', 0xb231564e, "NV12 big-endian (0xb231564e)", },
+		{ 'c', 0x10111213, ".... little-endian (0x10111213)", },
+		{ 'c', 0x20303159, "Y10  little-endian (0x20303159)", },
+		{ 'h', 0x67503030, "gP00 (0x67503030)", },
+		{ 'r', 0x30305067, "gP00 (0x67503030)", },
+		{ 'l', cpu_to_le32(0x67503030), "gP00 (0x67503030)", },
+		{ 'b', cpu_to_be32(0x67503030), "gP00 (0x67503030)", },
 	};
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(try); i++)
-		test(try[i].str, "%p4cc", &try[i].code);
+	for (i = 0; i < ARRAY_SIZE(try); i++) {
+		char fmt[] = { '%', 'p', '4', 'c', try[i].type, '\0' };
+
+		test(try[i].str, fmt, &try[i].code);
+	}
 }
 
 static void __init
