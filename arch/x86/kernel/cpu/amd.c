@@ -29,6 +29,9 @@
 
 #include "cpu.h"
 
+#define TOPO_HW_CPU_TYPE_AMD_PERFORMANCE 0
+#define TOPO_HW_CPU_TYPE_AMD_EFFICIENCY  1
+
 static inline int rdmsrl_amd_safe(unsigned msr, unsigned long long *p)
 {
 	u32 gprs[8] = { 0 };
@@ -1204,4 +1207,15 @@ void amd_check_microcode(void)
 
 	if (cpu_feature_enabled(X86_FEATURE_ZEN2))
 		on_each_cpu(zenbleed_check_cpu, NULL, 1);
+}
+
+enum x86_topology_cpu_type amd_cpu_type(struct cpuinfo_x86 *c)
+{
+	switch (c->topo.amd_type) {
+	case TOPO_HW_CPU_TYPE_AMD_PERFORMANCE:
+		return TOPO_CPU_TYPE_PERFORMANCE;
+	case TOPO_HW_CPU_TYPE_AMD_EFFICIENCY:
+		return TOPO_CPU_TYPE_EFFICIENCY;
+	}
+	return TOPO_CPU_TYPE_UNKNOWN;
 }

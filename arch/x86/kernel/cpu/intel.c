@@ -1283,6 +1283,8 @@ void __init sld_setup(struct cpuinfo_x86 *c)
 }
 
 #define X86_HYBRID_CPU_TYPE_ID_SHIFT	24
+#define TOPO_HW_CPU_TYPE_INTEL_ATOM	0x20
+#define TOPO_HW_CPU_TYPE_INTEL_CORE	0x40
 
 /**
  * get_this_hybrid_cpu_type() - Get the type of this hybrid CPU
@@ -1296,4 +1298,20 @@ u8 get_this_hybrid_cpu_type(void)
 		return 0;
 
 	return cpuid_eax(0x0000001a) >> X86_HYBRID_CPU_TYPE_ID_SHIFT;
+}
+
+u32 intel_native_model_id(struct cpuinfo_x86 *c)
+{
+	return c->topo.intel_native_model_id;
+}
+
+enum x86_topology_cpu_type intel_cpu_type(struct cpuinfo_x86 *c)
+{
+	switch (c->topo.intel_type) {
+	case TOPO_HW_CPU_TYPE_INTEL_ATOM:
+		return TOPO_CPU_TYPE_EFFICIENCY;
+	case TOPO_HW_CPU_TYPE_INTEL_CORE:
+		return TOPO_CPU_TYPE_PERFORMANCE;
+	}
+	return TOPO_CPU_TYPE_UNKNOWN;
 }
