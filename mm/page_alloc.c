@@ -271,7 +271,11 @@ const char * const migratetype_names[MIGRATE_TYPES] = {
 
 int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
+#ifdef CONFIG_CACHY
+static int watermark_boost_factor __read_mostly;
+#else
 static int watermark_boost_factor __read_mostly = 15000;
+#endif
 static int watermark_scale_factor = 10;
 
 /* movable_zone is the "real" zone pages in ZONE_MOVABLE are taken from */
@@ -2274,14 +2278,15 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 }
 
 /*
- * Obtain a specified number of elements from the buddy allocator, all under
- * a single hold of the lock, for efficiency.  Add them to the supplied list.
- * Returns the number of new pages which were placed at *list.
+ * Obtain a specified number of elements from the buddy allocator, and relax the
+ * zone lock when needed. Add them to the supplied list. Returns the number of
+ * new pages which were placed at *list.
  */
 static int rmqueue_bulk(struct zone *zone, unsigned int order,
 			unsigned long count, struct list_head *list,
 			int migratetype, unsigned int alloc_flags)
 {
+	const bool can_resched = !preempt_count() && !irqs_disabled();
 	unsigned long flags;
 	int i;
 
@@ -2291,6 +2296,15 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 								alloc_flags);
 		if (unlikely(page == NULL))
 			break;
+
+		/* Reschedule and ease the contention on the lock if needed */
+		if (i + 1 < count && ((can_resched && need_resched()) ||
+				      spin_needbreak(&zone->lock))) {
+			spin_unlock_irqrestore(&zone->lock, flags);
+			if (can_resched)
+				cond_resched();
+			spin_lock_irqsave(&zone->lock, flags);
+		}
 
 		/*
 		 * Split buddy pages returned by expand() are received here in
@@ -5509,11 +5523,11 @@ static int zone_batchsize(struct zone *zone)
 
 	/*
 	 * The number of pages to batch allocate is either ~0.1%
-	 * of the zone or 1MB, whichever is smaller. The batch
+	 * of the zone or 4MB, whichever is smaller. The batch
 	 * size is striking a balance between allocation latency
 	 * and zone lock contention.
 	 */
-	batch = min(zone_managed_pages(zone) >> 10, SZ_1M / PAGE_SIZE);
+	batch = min(zone_managed_pages(zone) >> 10, 4 * SZ_1M / PAGE_SIZE);
 	batch /= 4;		/* We effectively *= 4 below */
 	if (batch < 1)
 		batch = 1;

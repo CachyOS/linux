@@ -73,10 +73,19 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
  *
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_base_slice			= 350000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 350000ULL;
+#else
 unsigned int sysctl_sched_base_slice			= 750000ULL;
 static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
+#endif
 
+#ifdef CONFIG_CACHY
+const_debug unsigned int sysctl_sched_migration_cost	= 300000UL;
+#else
 const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+#endif
 
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
@@ -121,7 +130,11 @@ int __weak arch_asym_cpu_priority(int cpu)
  *
  * (default: 5 msec, units: microseconds)
  */
+#ifdef CONFIG_CACHY
+static unsigned int sysctl_sched_cfs_bandwidth_slice		= 3000UL;
+#else
 static unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
+#endif
 #endif
 
 #ifdef CONFIG_NUMA_BALANCING
@@ -12780,7 +12793,7 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
 
 		update_next_balance(sd, &next_balance);
 
-		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
+		if (this_rq->avg_idle/2 < curr_cost + sd->max_newidle_lb_cost)
 			break;
 
 		if (sd->flags & SD_BALANCE_NEWIDLE) {
