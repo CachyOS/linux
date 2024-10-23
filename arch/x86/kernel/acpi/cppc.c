@@ -234,8 +234,10 @@ EXPORT_SYMBOL_GPL(amd_detect_prefcore);
  */
 int amd_get_boost_ratio_numerator(unsigned int cpu, u64 *numerator)
 {
+	enum x86_topology_cpu_type core_type = get_topology_generic_cpu_type(&cpu_data(cpu));
 	bool prefcore;
 	int ret;
+	u32 tmp;
 
 	ret = amd_detect_prefcore(&prefcore);
 	if (ret)
@@ -261,6 +263,27 @@ int amd_get_boost_ratio_numerator(unsigned int cpu, u64 *numerator)
 			break;
 		}
 	}
+
+	/* detect if running on heterogeneous design */
+	switch (core_type) {
+	case TOPO_CPU_TYPE_UNKNOWN:
+		break;
+	case TOPO_CPU_TYPE_PERFORMANCE:
+		/* use the max scale for performance cores */
+		*numerator = CPPC_HIGHEST_PERF_PERFORMANCE;
+		return 0;
+	case TOPO_CPU_TYPE_EFFICIENCY:
+		/* use the highest perf value for efficiency cores */
+		ret = amd_get_highest_perf(cpu, &tmp);
+		if (ret)
+			return ret;
+		*numerator = tmp;
+		return 0;
+	default:
+		pr_warn("WARNING: Undefined core type %d found\n", core_type);
+		break;
+	}
+
 	*numerator = CPPC_HIGHEST_PERF_PREFCORE;
 
 	return 0;
