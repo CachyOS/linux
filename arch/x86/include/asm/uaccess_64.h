@@ -12,6 +12,13 @@
 #include <asm/cpufeatures.h>
 #include <asm/page.h>
 #include <asm/percpu.h>
+#include <asm/runtime-const.h>
+
+/*
+ * Virtual variable: there's no actual backing store for this,
+ * it can purely be used as 'runtime_const_ptr(USER_PTR_MAX)'
+ */
+extern unsigned long USER_PTR_MAX;
 
 #ifdef CONFIG_ADDRESS_MASKING
 /*
@@ -46,19 +53,23 @@ static inline unsigned long __untagged_addr_remote(struct mm_struct *mm,
 
 #endif
 
-/*
- * The virtual address space space is logically divided into a kernel
- * half and a user half.  When cast to a signed type, user pointers
- * are positive and kernel pointers are negative.
- */
-#define valid_user_address(x) ((__force long)(x) >= 0)
+#define valid_user_address(x) \
+	((__force unsigned long)(x) < runtime_const_ptr(USER_PTR_MAX))
 
 /*
  * Masking the user address is an alternative to a conditional
  * user_access_begin that can avoid the fencing. This only works
  * for dense accesses starting at the address.
  */
-#define mask_user_address(x) ((typeof(x))((long)(x)|((long)(x)>>63)))
+static inline void __user *mask_user_address(const void __user *ptr)
+{
+	void __user *ret;
+	asm("cmp %1,%0; sbb %0,%0; or %1,%0"
+		:"=r" (ret)
+		:"r" (ptr),
+		 "0" (runtime_const_ptr(USER_PTR_MAX)));
+	return ret;
+}
 #define masked_user_access_begin(x) ({				\
 	__auto_type __masked_ptr = (x);				\
 	__masked_ptr = mask_user_address(__masked_ptr);		\
