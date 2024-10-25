@@ -644,9 +644,82 @@ static ssize_t btn_mapping_reset_store(struct device *dev, struct device_attribu
 }
 ALLY_DEVICE_ATTR_WO(btn_mapping_reset, reset_btn_mapping);
 
+/* GAMEPAD MODE */
+static ssize_t _gamepad_set_mode(struct hid_device *hdev, struct ally_gamepad_cfg *ally_cfg,
+				  int val)
+{
+	u8 *hidbuf;
+	int ret;
+
+	hidbuf = kzalloc(FEATURE_ROG_ALLY_REPORT_SIZE, GFP_KERNEL);
+	if (!hidbuf)
+		return -ENOMEM;
+
+	hidbuf[0] = FEATURE_ROG_ALLY_REPORT_ID;
+	hidbuf[1] = FEATURE_ROG_ALLY_CODE_PAGE;
+	hidbuf[2] = xpad_cmd_set_mode;
+	hidbuf[3] = xpad_cmd_len_mode;
+	hidbuf[4] = val;
+
+	ret = ally_gamepad_check_ready(hdev);
+	if (ret < 0)
+		goto report_fail;
+
+	ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
+	if (ret < 0)
+		goto report_fail;
+
+	ret = _gamepad_apply_all(hdev, ally_cfg);
+	if (ret < 0)
+		goto report_fail;
+
+report_fail:
+	kfree(hidbuf);
+	return ret;
+}
+
+static ssize_t gamepad_mode_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n", ally_cfg->mode);
+}
+
+static ssize_t gamepad_mode_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct hid_device *hdev = to_hid_device(dev);
+	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	int ret, val;
+
+	if (!drvdata.gamepad_cfg)
+		return -ENODEV;
+
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < xpad_mode_game || val > xpad_mode_mouse)
+		return -EINVAL;
+
+	ally_cfg->mode = val;
+
+	ret = _gamepad_set_mode(hdev, ally_cfg, val);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+DEVICE_ATTR_RW(gamepad_mode);
+
 /* ROOT LEVEL ATTRS *******************************************************************************/
 static struct attribute *gamepad_device_attrs[] = {
 	&dev_attr_btn_mapping_reset.attr,
+	&dev_attr_gamepad_mode.attr,
 	&dev_attr_gamepad_apply_all.attr,
 	NULL
 };
