@@ -20,6 +20,7 @@ enum xpad_mode {
 
 /* the xpad_cmd determines which feature is set or queried */
 enum xpad_cmd {
+	xpad_cmd_set_mode = 0x01,
 	xpad_cmd_set_mapping = 0x02,
 	xpad_cmd_set_leds = 0x08,
 	xpad_cmd_check_ready = 0x0A,
@@ -27,6 +28,7 @@ enum xpad_cmd {
 
 /* the xpad_cmd determines which feature is set or queried */
 enum xpad_cmd_len {
+	xpad_cmd_len_mode = 0x01,
 	xpad_cmd_len_mapping = 0x2c,
 	xpad_cmd_len_leds = 0x0C,
 };
