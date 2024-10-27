@@ -33,6 +33,7 @@
 #include <linux/io.h>
 #include <linux/init.h>
 #include <linux/pci.h>
+#include <linux/dmi.h>
 #include <linux/dma-mapping.h>
 #include <linux/gameport.h>
 #include <linux/moduleparam.h>
@@ -841,6 +842,48 @@ static void aw87xxx_fw_load_work_routine(struct work_struct *work)
 	}
 }
 
+static const struct dmi_system_id firmware_names[] = {
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "AYANEO"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "KUN"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_kun.bin",
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "Loki MiniPro"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_minipro.bin",
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "AIR 1S"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_air1s.bin",
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "AIR Plus"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_airplus.bin",
+	},
+	{
+		.matches = {
+		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AYANEO"),
+		  DMI_MATCH(DMI_PRODUCT_NAME, "FLIP"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_flip.bin",
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_PRODUCT_NAME, "NEO-01"),
+		},
+		.driver_data = (void *)"aw87xxx_acf_orangepi.bin",
+	},
+	{}
+};
+
 static void aw87xxx_fw_load_init(struct aw87xxx *aw87xxx)
 {
 #ifdef AW_CFG_UPDATE_DELAY
@@ -848,8 +891,12 @@ static void aw87xxx_fw_load_init(struct aw87xxx *aw87xxx)
 #else
 	int cfg_timer_val = 0;
 #endif
-	AW_DEV_LOGI(aw87xxx->dev, "enter");
-	snprintf(aw87xxx->fw_name, AW87XXX_FW_NAME_MAX, "%s", AW87XXX_FW_BIN_NAME);
+	const struct dmi_system_id *fwname_sysid = dmi_first_match(firmware_names);
+	const char *fwname = fwname_sysid ?
+		fwname_sysid->driver_data : AW87XXX_FW_BIN_NAME;
+
+	AW_DEV_LOGI(aw87xxx->dev, "loading firmware name: [%s]", fwname);
+	snprintf(aw87xxx->fw_name, AW87XXX_FW_NAME_MAX, "%s", fwname);
 	aw87xxx_acf_init(&aw87xxx->aw_dev, &aw87xxx->acf_info, aw87xxx->dev_index);
 
 	INIT_DELAYED_WORK(&aw87xxx->fw_load_work, aw87xxx_fw_load_work_routine);
