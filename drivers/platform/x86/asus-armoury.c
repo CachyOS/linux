@@ -27,6 +27,8 @@
 #include "asus-armoury.h"
 #include "firmware_attributes_class.h"
 
+#define DEBUG
+
 #define ASUS_NB_WMI_EVENT_GUID "0B3CBB35-E3C2-45ED-91C2-4C5A6D195D1C"
 
 #define ASUS_MINI_LED_MODE_MASK   0x03

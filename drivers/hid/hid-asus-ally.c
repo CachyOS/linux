@@ -19,6 +19,8 @@
 #include "hid-ids.h"
 #include "hid-asus-ally.h"
 
+#define DEBUG
+
 #define READY_MAX_TRIES 3
 #define FEATURE_REPORT_ID 0x0d
 #define FEATURE_ROG_ALLY_REPORT_ID 0x5a
