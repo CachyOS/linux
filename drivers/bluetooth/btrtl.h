@@ -105,6 +105,7 @@ struct rtl_vendor_cmd {
 
 enum {
 	REALTEK_ALT6_CONTINUOUS_TX_CHIP,
+	REALTEK_CAN_IGNORE_BT_DIS,
 
 	__REALTEK_NUM_FLAGS,
 };
@@ -148,6 +149,8 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 			    unsigned int *controller_baudrate,
 			    u32 *device_baudrate, bool *flow_control);
 void btrtl_set_driver_name(struct hci_dev *hdev, const char *driver_name);
+int btrtl_early_suspend(struct hci_dev *hdev);
+int btrtl_late_resume(struct hci_dev *hdev);
 
 #else
 
@@ -193,6 +196,16 @@ static inline int btrtl_get_uart_settings(struct hci_dev *hdev,
 
 static inline void btrtl_set_driver_name(struct hci_dev *hdev, const char *driver_name)
 {
+}
+
+static inline int btrtl_early_suspend(struct hci_dev *hdev, pm_message_t message)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int btrtl_late_resume(struct hci_dev *hdev)
+{
+	return -EOPNOTSUPP;
 }
 
 #endif
