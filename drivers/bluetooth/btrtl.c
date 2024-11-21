@@ -9,6 +9,7 @@
 #include <linux/firmware.h>
 #include <linux/unaligned.h>
 #include <linux/usb.h>
+#include <linux/dmi.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -51,6 +52,9 @@
 #define	RTL_CHIP_SUBVER (&(struct rtl_vendor_cmd) {{0x10, 0x38, 0x04, 0x28, 0x80}})
 #define	RTL_CHIP_REV    (&(struct rtl_vendor_cmd) {{0x10, 0x3A, 0x04, 0x28, 0x80}})
 #define	RTL_SEC_PROJ    (&(struct rtl_vendor_cmd) {{0x10, 0xA4, 0xAD, 0x00, 0xb0}})
+#define	RTL_IGNORE_MASK (&(struct rtl_vendor_cmd) {{0x10, 0x34, 0x60, 0x00, 0xb0}})
+
+#define	RTL_IGNORE_BT_DIS BIT(0)
 
 #define RTL_PATCH_SNIPPETS		0x01
 #define RTL_PATCH_DUMMY_HEADER		0x02
@@ -443,6 +447,34 @@ static int btrtl_vendor_read_reg16(struct hci_dev *hdev,
 
 	if (rp)
 		memcpy(rp, skb->data + 1, 2);
+
+	kfree_skb(skb);
+
+	return 0;
+}
+
+static int btrtl_vendor_write_reg16(struct hci_dev *hdev,
+				    struct rtl_vendor_cmd *cmd, const u8 * const rp)
+{
+	struct sk_buff *skb;
+	u8 buf[sizeof(*cmd) + 2];
+	int err = 0;
+
+	memcpy(buf, cmd, sizeof(*cmd));
+	memcpy(buf + sizeof(*cmd), rp, 2);
+
+	skb = __hci_cmd_sync(hdev, 0xfc62, sizeof(buf), buf, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		err = PTR_ERR(skb);
+		rtl_dev_err(hdev, "RTL: Write reg16 failed (%d)", err);
+		return err;
+	}
+
+	if (skb->len != 1 || skb->data[0]) {
+		bt_dev_err(hdev, "RTL: Write reg16 length mismatch");
+		kfree_skb(skb);
+		return -EIO;
+	}
 
 	kfree_skb(skb);
 
@@ -1297,8 +1329,46 @@ done:
 }
 EXPORT_SYMBOL_GPL(btrtl_download_firmware);
 
+static const struct dmi_system_id btrtl_can_ignore_bt_dis_table[] = {
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Valve"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Jupiter"),
+		},
+	},
+	{}
+};
+
+static void btrtl_handle_fw_can_ignore_bt_dis(struct hci_dev *hdev)
+{
+	u16 ignore_mask;
+	u8 buf[2];
+	int ret;
+
+	if (!dmi_check_system(btrtl_can_ignore_bt_dis_table))
+		return;
+
+	ret = btrtl_vendor_read_reg16(hdev, RTL_IGNORE_MASK, buf);
+	if (ret) {
+		rtl_dev_warn(hdev, "failed to read ignore mask, will not wake on bluetooth");
+		return;
+	}
+
+	ignore_mask = get_unaligned_le16(buf);
+	ignore_mask |= RTL_IGNORE_BT_DIS;
+	put_unaligned_le16(ignore_mask, buf);
+
+	ret = btrtl_vendor_write_reg16(hdev, RTL_IGNORE_MASK, buf);
+	if (ret)
+		rtl_dev_warn(hdev, "Failed to enable wake-on-bluetooth. (possibly due to old fw)");
+	else
+		rtl_dev_info(hdev, "wake-on-bluetooth enabled");
+}
+
 void btrtl_set_quirks(struct hci_dev *hdev, struct btrtl_device_info *btrtl_dev)
 {
+	btrtl_handle_fw_can_ignore_bt_dis(hdev);
+
 	/* Enable controller to do both LE scan and BR/EDR inquiry
 	 * simultaneously.
 	 */
@@ -1510,6 +1580,7 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(btrtl_get_uart_settings);
+
 
 MODULE_AUTHOR("Daniel Drake <drake@endlessm.com>");
 MODULE_DESCRIPTION("Bluetooth support for Realtek devices ver " VERSION);
