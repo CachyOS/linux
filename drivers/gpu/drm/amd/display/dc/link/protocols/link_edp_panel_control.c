@@ -187,7 +187,8 @@ bool edp_set_backlight_level_nits(struct dc_link *link,
 			(uint8_t *)(target_luminance),
 			sizeof(struct target_luminance_value)) != DC_OK)
 			return false;
-	} else if (link->backlight_control_type == BACKLIGHT_CONTROL_AMD_AUX) {
+//	} else if (link->backlight_control_type == BACKLIGHT_CONTROL_AMD_AUX) {
+		} else {
 		struct dpcd_source_backlight_set dpcd_backlight_set;
 		*(uint32_t *)&dpcd_backlight_set.backlight_level_millinits = backlight_millinits;
 		*(uint16_t *)&dpcd_backlight_set.backlight_transition_time_ms = (uint16_t)transition_time_in_ms;
