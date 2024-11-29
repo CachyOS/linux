@@ -218,7 +218,8 @@ else
         cflags-$(CONFIG_MSKYLAKE) 	+= -march=skylake
         cflags-$(CONFIG_MSKYLAKEX) 	+= -march=skylake-avx512
         cflags-$(CONFIG_MCANNONLAKE) 	+= -march=cannonlake
-        cflags-$(CONFIG_MICELAKE) 	+= -march=icelake-client
+        cflags-$(CONFIG_MICELAKE_CLIENT) 	+= -march=icelake-client
+        cflags-$(CONFIG_MICELAKE_SERVER) 	+= -march=icelake-server
         cflags-$(CONFIG_MCASCADELAKE) 	+= -march=cascadelake
         cflags-$(CONFIG_MCOOPERLAKE) 	+= -march=cooperlake
         cflags-$(CONFIG_MTIGERLAKE) 	+= -march=tigerlake
@@ -262,7 +263,8 @@ else
         rustflags-$(CONFIG_MSKYLAKE) 	+= -Ctarget-cpu=skylake
         rustflags-$(CONFIG_MSKYLAKEX) 	+= -Ctarget-cpu=skylake-avx512
         rustflags-$(CONFIG_MCANNONLAKE) 	+= -Ctarget-cpu=cannonlake
-        rustflags-$(CONFIG_MICELAKE) 	+= -Ctarget-cpu=icelake-client
+        rustflags-$(CONFIG_MICELAKE_CLIENT) 	+= -Ctarget-cpu=icelake-client
+        rustflags-$(CONFIG_MICELAKE_SERVER) 	+= -Ctarget-cpu=icelake-server
         rustflags-$(CONFIG_MCASCADELAKE) 	+= -Ctarget-cpu=cascadelake
         rustflags-$(CONFIG_MCOOPERLAKE) 	+= -Ctarget-cpu=cooperlake
         rustflags-$(CONFIG_MTIGERLAKE) 	+= -Ctarget-cpu=tigerlake
