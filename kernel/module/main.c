@@ -67,7 +67,7 @@
 
 /*
  * Mutex protects:
- * 1) List of modules (also safely readable with preempt_disable),
+ * 1) List of modules (also safely readable within RCU read section),
  * 2) module_use links,
  * 3) mod_tree.addr_min/mod_tree.addr_max.
  * (delete and add uses RCU list operations).
@@ -331,7 +331,7 @@ static bool find_exported_symbol_in_section(const struct symsearch *syms,
 
 /*
  * Find an exported symbol and return it, along with, (optional) crc and
- * (optional) module which owns it.  Needs preempt disabled or module_mutex.
+ * (optional) module which owns it.  Needs RCU or module_mutex.
  */
 bool find_symbol(struct find_symbol_arg *fsa)
 {
@@ -344,8 +344,6 @@ bool find_symbol(struct find_symbol_arg *fsa)
 	};
 	struct module *mod;
 	unsigned int i;
-
-	module_assert_mutex_or_preempt();
 
 	for (i = 0; i < ARRAY_SIZE(arr); i++)
 		if (find_exported_symbol_in_section(&arr[i], NULL, fsa))
@@ -374,15 +372,13 @@ bool find_symbol(struct find_symbol_arg *fsa)
 }
 
 /*
- * Search for module by name: must hold module_mutex (or preempt disabled
- * for read-only access).
+ * Search for module by name: must hold module_mutex (or RCU for read-only
+ * access).
  */
 struct module *find_module_all(const char *name, size_t len,
 			       bool even_unformed)
 {
 	struct module *mod;
-
-	module_assert_mutex_or_preempt();
 
 	list_for_each_entry_rcu(mod, &modules, list,
 				lockdep_is_held(&module_mutex)) {
@@ -454,8 +450,7 @@ bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
 	struct module *mod;
 	unsigned int cpu;
 
-	preempt_disable();
-
+	guard(rcu)();
 	list_for_each_entry_rcu(mod, &modules, list) {
 		if (mod->state == MODULE_STATE_UNFORMED)
 			continue;
@@ -472,13 +467,10 @@ bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
 						per_cpu_ptr(mod->percpu,
 							    get_boot_cpu_id());
 				}
-				preempt_enable();
 				return true;
 			}
 		}
 	}
-
-	preempt_enable();
 	return false;
 }
 
@@ -814,10 +806,9 @@ void __symbol_put(const char *symbol)
 		.gplok	= true,
 	};
 
-	preempt_disable();
+	guard(rcu)();
 	BUG_ON(!find_symbol(&fsa));
 	module_put(fsa.owner);
-	preempt_enable();
 }
 EXPORT_SYMBOL(__symbol_put);
 
@@ -830,15 +821,10 @@ void symbol_put_addr(void *addr)
 	if (core_kernel_text(a))
 		return;
 
-	/*
-	 * Even though we hold a reference on the module; we still need to
-	 * disable preemption in order to safely traverse the data structure.
-	 */
-	preempt_disable();
+	guard(rcu)();
 	modaddr = __module_text_address(a);
 	BUG_ON(!modaddr);
 	module_put(modaddr);
-	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(symbol_put_addr);
 
@@ -1348,7 +1334,7 @@ static void free_module(struct module *mod)
 	mod_tree_remove(mod);
 	/* Remove this module from bug list, this uses list_del_rcu */
 	module_bug_cleanup(mod);
-	/* Wait for RCU-sched synchronizing before releasing mod->list and buglist. */
+	/* Wait for RCU synchronizing before releasing mod->list and buglist. */
 	synchronize_rcu();
 	if (try_add_tainted_module(mod))
 		pr_err("%s: adding tainted module to the unloaded tainted modules list failed.\n",
@@ -1371,21 +1357,17 @@ void *__symbol_get(const char *symbol)
 		.warn	= true,
 	};
 
-	preempt_disable();
+	guard(rcu)();
 	if (!find_symbol(&fsa))
-		goto fail;
+		return NULL;
 	if (fsa.license != GPL_ONLY) {
 		pr_warn("failing symbol_get of non-GPLONLY symbol %s.\n",
 			symbol);
-		goto fail;
+		return NULL;
 	}
 	if (strong_try_module_get(fsa.owner))
-		goto fail;
-	preempt_enable();
+		return NULL;
 	return (void *)kernel_symbol_value(fsa.sym);
-fail:
-	preempt_enable();
-	return NULL;
 }
 EXPORT_SYMBOL_GPL(__symbol_get);
 
@@ -2965,7 +2947,7 @@ static noinline int do_init_module(struct module *mod)
 #endif
 	/*
 	 * We want to free module_init, but be aware that kallsyms may be
-	 * walking this with preempt disabled.  In all the failure paths, we
+	 * walking this within an RCU read section. In all the failure paths, we
 	 * call synchronize_rcu(), but we don't want to slow down the success
 	 * path. execmem_free() cannot be called in an interrupt, so do the
 	 * work and call synchronize_rcu() in a work queue.
@@ -3636,7 +3618,7 @@ const struct exception_table_entry *search_module_extables(unsigned long addr)
 	const struct exception_table_entry *e = NULL;
 	struct module *mod;
 
-	preempt_disable();
+	guard(rcu)();
 	mod = __module_address(addr);
 	if (!mod)
 		goto out;
@@ -3648,8 +3630,6 @@ const struct exception_table_entry *search_module_extables(unsigned long addr)
 			   mod->num_exentries,
 			   addr);
 out:
-	preempt_enable();
-
 	/*
 	 * Now, if we found one, we are running inside it now, hence
 	 * we cannot unload the module, hence no refcnt needed.
@@ -3668,9 +3648,8 @@ bool is_module_address(unsigned long addr)
 {
 	bool ret;
 
-	preempt_disable();
+	guard(rcu)();
 	ret = __module_address(addr) != NULL;
-	preempt_enable();
 
 	return ret;
 }
@@ -3679,7 +3658,7 @@ bool is_module_address(unsigned long addr)
  * __module_address() - get the module which contains an address.
  * @addr: the address.
  *
- * Must be called with preempt disabled or module mutex held so that
+ * Must be called within RCU read section or module mutex held so that
  * module doesn't get freed during this.
  */
 struct module *__module_address(unsigned long addr)
@@ -3697,8 +3676,6 @@ struct module *__module_address(unsigned long addr)
 	return NULL;
 
 lookup:
-	module_assert_mutex_or_preempt();
-
 	mod = mod_find(addr, &mod_tree);
 	if (mod) {
 		BUG_ON(!within_module(addr, mod));
@@ -3720,9 +3697,8 @@ bool is_module_text_address(unsigned long addr)
 {
 	bool ret;
 
-	preempt_disable();
+	guard(rcu)();
 	ret = __module_text_address(addr) != NULL;
-	preempt_enable();
 
 	return ret;
 }
@@ -3731,7 +3707,7 @@ bool is_module_text_address(unsigned long addr)
  * __module_text_address() - get the module whose code contains an address.
  * @addr: the address.
  *
- * Must be called with preempt disabled or module mutex held so that
+ * Must be called within RCU read section or module mutex held so that
  * module doesn't get freed during this.
  */
 struct module *__module_text_address(unsigned long addr)
@@ -3753,8 +3729,7 @@ void print_modules(void)
 	char buf[MODULE_FLAGS_BUF_SIZE];
 
 	printk(KERN_DEFAULT "Modules linked in:");
-	/* Most callers should already have preempt disabled, but make sure */
-	preempt_disable();
+	guard(rcu)();
 	list_for_each_entry_rcu(mod, &modules, list) {
 		if (mod->state == MODULE_STATE_UNFORMED)
 			continue;
@@ -3762,7 +3737,6 @@ void print_modules(void)
 	}
 
 	print_unloaded_tainted_modules();
-	preempt_enable();
 	if (last_unloaded_module.name[0])
 		pr_cont(" [last unloaded: %s%s]", last_unloaded_module.name,
 			last_unloaded_module.taints);
