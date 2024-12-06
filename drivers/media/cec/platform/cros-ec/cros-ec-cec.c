@@ -313,6 +313,11 @@ static const char *const port_ab_conns[] = { "Port A", "Port B", NULL };
 static const char *const port_d_conns[] = { "Port D", NULL };
 
 static const struct cec_dmi_match cec_dmi_match_table[] = {
+	/* AMD Lilac */
+	{ "AMD", "Lilac", "0000:03:00.0", port_c_conns },
+	/* Valve Fremont */
+	{ "OEM", "F7F", "0000:03:00.0", port_c_conns },
+	{ "Valve", "Fremont", "0000:03:00.0", port_c_conns },
 	/* Google Fizz */
 	{ "Google", "Fizz", "0000:00:02.0", port_b_conns },
 	/* Google Brask */
