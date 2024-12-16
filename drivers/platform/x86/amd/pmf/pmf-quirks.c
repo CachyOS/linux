@@ -30,6 +30,22 @@ static const struct dmi_system_id fwbug_list[] = {
 		.driver_data = &quirk_no_sps_bug,
 	},
 	{
+		.ident = "ROG Zephyrus G16",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "GA605W"),
+		},
+		.driver_data = &quirk_no_sps_bug,
+	},
+	{
+		.ident = "ProArt P16",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "H7606W"),
+		},
+		.driver_data = &quirk_no_sps_bug,
+	},
+	{
 		.ident = "ROG Ally X",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
