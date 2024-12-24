@@ -101,17 +101,28 @@ static void cros_ec_cec_read_message(struct cros_ec_cec_port *port)
 		.port = port->port_num,
 	};
 	struct ec_response_cec_read response;
-	int ret;
+	int ret = 0;
+	int count = 0;
 
-	ret = cros_ec_cmd(cros_ec, 0, EC_CMD_CEC_READ_MSG, &params,
-			  sizeof(params), &response, sizeof(response));
-	if (ret < 0) {
+	/* NOTE read as many messages as we can, return value from cros_ec_cmd
+	 *      here should either equal to the bytes transferred or a negative
+	 *      error code, so as long as we get positive integers we are
+	 *      reading messages!
+	 */
+	do {
+		ret = cros_ec_cmd(cros_ec, 0, EC_CMD_CEC_READ_MSG, &params,
+				  sizeof(params), &response, sizeof(response));
+		if (ret > 0) {
+			++count;
+			cros_ec_cec_received_message(port, response.msg, response.msg_len);
+		}
+	}
+	while (ret > 0);
+
+	if (ret < 0 && count == 0) {
 		dev_err(cros_ec->dev,
 			"error reading CEC message on EC: %d\n", ret);
-		return;
 	}
-
-	cros_ec_cec_received_message(port, response.msg, response.msg_len);
 }
 
 static void handle_cec_event(struct cros_ec_cec *cros_ec_cec)
