@@ -9891,8 +9891,6 @@ struct sg_lb_stats {
 	unsigned int sum_nr_running;		/* Nr of all tasks running in the group */
 	unsigned int sum_h_nr_running;		/* Nr of CFS tasks running in the group */
 	unsigned int idle_cpus;                 /* Nr of idle CPUs         in the group */
-	unsigned int asym_prefer_cpu;		/* CPU with highest asym priority */
-	int highest_asym_prio;			/* Asym priority of asym_prefer_cpu */
 	unsigned int group_weight;
 	enum group_type group_type;
 	unsigned int group_asym_packing;	/* Tasks should be moved to preferred CPU */
@@ -10225,7 +10223,7 @@ sched_group_asym(struct lb_env *env, struct sg_lb_stats *sgs, struct sched_group
 	    (sgs->group_weight - sgs->idle_cpus != 1))
 		return false;
 
-	return sched_asym(env->sd, env->dst_cpu, sgs->asym_prefer_cpu);
+	return sched_asym(env->sd, env->dst_cpu, group->asym_prefer_cpu);
 }
 
 /* One group has more than one SMT CPU while the other group does not */
@@ -10306,17 +10304,6 @@ sched_reduced_capacity(struct rq *rq, struct sched_domain *sd)
 	return check_cpu_capacity(rq, sd);
 }
 
-static inline void
-update_sg_pick_asym_prefer(struct sg_lb_stats *sgs, int cpu)
-{
-	int asym_prio = arch_asym_cpu_priority(cpu);
-
-	if (asym_prio > sgs->highest_asym_prio) {
-		sgs->asym_prefer_cpu = cpu;
-		sgs->highest_asym_prio = asym_prio;
-	}
-}
-
 /**
  * update_sg_lb_stats - Update sched_group's statistics for load balancing.
  * @env: The load balancing environment.
@@ -10333,12 +10320,11 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 				      bool *sg_overloaded,
 				      bool *sg_overutilized)
 {
-	int i, nr_running, local_group, sd_flags = env->sd->flags;
+	int i, nr_running, local_group;
 
 	memset(sgs, 0, sizeof(*sgs));
 
 	local_group = group == sds->local;
-	sgs->highest_asym_prio = INT_MIN;
 
 	for_each_cpu_and(i, sched_group_span(group), env->cpus) {
 		struct rq *rq = cpu_rq(i);
@@ -10352,12 +10338,16 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 		nr_running = rq->nr_running;
 		sgs->sum_nr_running += nr_running;
 
-		if (sd_flags & SD_ASYM_PACKING)
-			update_sg_pick_asym_prefer(sgs, i);
+		if (nr_running > 1)
+			*sg_overloaded = 1;
 
 		if (cpu_overutilized(i))
 			*sg_overutilized = 1;
 
+#ifdef CONFIG_NUMA_BALANCING
+		sgs->nr_numa_running += rq->nr_numa_running;
+		sgs->nr_preferred_running += rq->nr_preferred_running;
+#endif
 		/*
 		 * No need to call idle_cpu() if nr_running is not 0
 		 */
@@ -10367,21 +10357,10 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 			continue;
 		}
 
-		/* Overload indicator is only updated at root domain */
-		if (!env->sd->parent && nr_running > 1)
-			*sg_overloaded = 1;
-
-#ifdef CONFIG_NUMA_BALANCING
-		/* Only fbq_classify_group() uses this to classify NUMA groups */
-		if (sd_flags & SD_NUMA) {
-			sgs->nr_numa_running += rq->nr_numa_running;
-			sgs->nr_preferred_running += rq->nr_preferred_running;
-		}
-#endif
 		if (local_group)
 			continue;
 
-		if (sd_flags & SD_ASYM_CPUCAPACITY) {
+		if (env->sd->flags & SD_ASYM_CPUCAPACITY) {
 			/* Check for a misfit task on the cpu */
 			if (sgs->group_misfit_task_load < rq->misfit_task_load) {
 				sgs->group_misfit_task_load = rq->misfit_task_load;
@@ -10476,7 +10455,7 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 
 	case group_asym_packing:
 		/* Prefer to move from lowest priority CPU's work */
-		return sched_asym_prefer(busiest->asym_prefer_cpu, sgs->asym_prefer_cpu);
+		return sched_asym_prefer(sds->busiest->asym_prefer_cpu, sg->asym_prefer_cpu);
 
 	case group_misfit_task:
 		/*
