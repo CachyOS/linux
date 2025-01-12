@@ -65,13 +65,14 @@ int check_modstruct_version(const struct load_info *info,
 
 	/*
 	 * Since this should be found in kernel (which can't be removed), no
-	 * locking is necessary. Regardless use a RCU read section to keep
-	 * lockdep happy.
+	 * locking is necessary -- use preempt_disable() to placate lockdep.
 	 */
-	scoped_guard(rcu) {
-		if (!find_symbol(&fsa))
-			BUG();
+	preempt_disable();
+	if (!find_symbol(&fsa)) {
+		preempt_enable();
+		BUG();
 	}
+	preempt_enable();
 	return check_version(info, "module_layout", mod, fsa.crc);
 }
 
