@@ -903,6 +903,7 @@ static int spihid_register_hid_device(struct spihid_apple *spihid,
 				      struct spihid_interface *iface, u8 device)
 {
 	int ret;
+	char *suffix;
 	struct hid_device *hid;
 
 	iface->id = device;
@@ -911,7 +912,16 @@ static int spihid_register_hid_device(struct spihid_apple *spihid,
 	if (IS_ERR(hid))
 		return PTR_ERR(hid);
 
-	strscpy(hid->name, spihid->product, sizeof(hid->name));
+	/*
+	 * Use 'Apple SPI Keyboard' and 'Apple SPI Trackpad' as input device
+	 * names. The device names need to be distinct since at least Kwin uses
+	 * the tripple Vendor ID, Product ID, Name to identify devices.
+	 */
+	snprintf(hid->name, sizeof(hid->name), "Apple SPI %s", iface->name);
+	// strip ' / Boot' suffix from the name
+	suffix = strstr(hid->name, " / Boot");
+	if (suffix)
+		suffix[0] = '\0';
 	snprintf(hid->phys, sizeof(hid->phys), "%s (%hhx)",
 		 dev_name(&spihid->spidev->dev), device);
 	strscpy(hid->uniq, spihid->serial, sizeof(hid->uniq));
