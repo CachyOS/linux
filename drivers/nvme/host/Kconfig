@@ -80,8 +80,7 @@ config NVME_TCP
 	depends on INET
 	depends on BLOCK
 	select NVME_FABRICS
-	select CRYPTO
-	select CRYPTO_CRC32C
+	select CRC32
 	help
 	  This provides support for the NVMe over Fabrics protocol using
 	  the TCP transport.  This allows you to use remote block devices
