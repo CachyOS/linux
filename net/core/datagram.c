@@ -385,10 +385,10 @@ INDIRECT_CALLABLE_DECLARE(static size_t simple_copy_to_iter(const void *addr,
 						void *data __always_unused,
 						struct iov_iter *i));
 
-static int __skb_datagram_iter(const struct sk_buff *skb, int offset,
-			       struct iov_iter *to, int len, bool fault_short,
-			       size_t (*cb)(const void *, size_t, void *,
-					    struct iov_iter *), void *data)
+int __skb_datagram_iter(const struct sk_buff *skb, int offset,
+			struct iov_iter *to, int len, bool fault_short,
+			size_t (*cb)(const void *, size_t, void *,
+				     struct iov_iter *), void *data)
 {
 	int start = skb_headlen(skb);
 	int i, copy = start - offset, start_off = offset, n;
@@ -481,6 +481,7 @@ short_copy:
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(__skb_datagram_iter);
 
 static size_t hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
 				    struct iov_iter *i)
