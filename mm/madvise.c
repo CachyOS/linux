@@ -1566,13 +1566,28 @@ int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 }
 #endif /* CONFIG_ANON_VMA_NAME */
 
+#ifdef CONFIG_MEMORY_FAILURE
+static bool is_memory_failure(int behavior)
+{
+	switch (behavior) {
+	case MADV_HWPOISON:
+	case MADV_SOFT_OFFLINE:
+		return true;
+	default:
+		return false;
+	}
+}
+#else
+static bool is_memory_failure(int behavior)
+{
+	return false;
+}
+#endif
+
 static int madvise_lock(struct mm_struct *mm, int behavior)
 {
-
-#ifdef CONFIG_MEMORY_FAILURE
-	if (behavior == MADV_HWPOISON || behavior == MADV_SOFT_OFFLINE)
-		return 0;
-#endif
+	if (is_memory_failure(behavior))
+	    return 0;
 
 	if (madvise_need_mmap_write(behavior)) {
 		if (mmap_write_lock_killable(mm))
@@ -1581,11 +1596,13 @@ static int madvise_lock(struct mm_struct *mm, int behavior)
 		mmap_read_lock(mm);
 	}
 	return 0;
-
 }
 
 static void madvise_unlock(struct mm_struct *mm, int behavior)
 {
+	if (is_memory_failure(behavior))
+	    return;
+
 	if (madvise_need_mmap_write(behavior))
 		mmap_write_unlock(mm);
 	else
