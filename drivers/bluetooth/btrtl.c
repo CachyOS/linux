@@ -453,18 +453,6 @@ static int btrtl_vendor_read_reg16(struct hci_dev *hdev,
 	return 0;
 }
 
-static int btrtl_vendor_read_reg16_unlocked(struct hci_dev *hdev,
-					    struct rtl_vendor_cmd *cmd, u8 *rp)
-{
-	int ret;
-
-	hci_req_sync_lock(hdev);
-	ret = btrtl_vendor_read_reg16(hdev, cmd, rp);
-	hci_req_sync_unlock(hdev);
-
-	return ret;
-}
-
 static int btrtl_vendor_write_reg16(struct hci_dev *hdev,
 				    struct rtl_vendor_cmd *cmd, const u8 * const rp)
 {
@@ -491,18 +479,6 @@ static int btrtl_vendor_write_reg16(struct hci_dev *hdev,
 	kfree_skb(skb);
 
 	return 0;
-}
-
-static int btrtl_vendor_write_reg16_unlocked(struct hci_dev *hdev,
-					    struct rtl_vendor_cmd *cmd, u8 *rp)
-{
-	int ret;
-
-	hci_req_sync_lock(hdev);
-	ret = btrtl_vendor_write_reg16(hdev, cmd, rp);
-	hci_req_sync_unlock(hdev);
-
-	return ret;
 }
 
 static void *rtl_iov_pull_data(struct rtl_iovec *iov, u32 len)
@@ -1363,33 +1339,49 @@ static const struct dmi_system_id btrtl_can_ignore_bt_dis_table[] = {
 	{}
 };
 
-static bool btrtl_fw_can_ignore_bt_dis(struct hci_dev *hdev)
+static void btrtl_handle_fw_can_ignore_bt_dis(struct hci_dev *hdev)
 {
 	struct sk_buff *skb;
 	struct hci_rp_read_local_version *rp;
-	bool ret = false;
+	bool can_ignore = false;
+	u16 ignore_mask;
+	u8 buf[2];
+	int ret;
 
 	if (!dmi_check_system(btrtl_can_ignore_bt_dis_table))
-		return false;
+		return;
 
 	skb = btrtl_read_local_version(hdev);
 	if (IS_ERR(skb))
-		return false;
+		return;
 
 	rp = (struct hci_rp_read_local_version *)skb->data;
 	if (le16_to_cpu(rp->hci_rev) == 0x98d7 &&
 	    le16_to_cpu(rp->lmp_subver) == 0x081e)
-		ret = true;
+		can_ignore = true;
 
 	kfree_skb(skb);
+	if (!can_ignore)
+		return;
 
-	return ret;
+	ret = btrtl_vendor_read_reg16(hdev, RTL_IGNORE_MASK, buf);
+	if (ret) {
+		rtl_dev_warn(hdev, "failed to read ignore mask, will not wake on bluetooth");
+		return;
+	}
+
+	ignore_mask = get_unaligned_le16(buf);
+	ignore_mask |= RTL_IGNORE_BT_DIS;
+	put_unaligned_le16(ignore_mask, buf);
+
+	ret = btrtl_vendor_write_reg16(hdev, RTL_IGNORE_MASK, buf);
+	if (ret)
+		rtl_dev_warn(hdev, "failed to write ignore mask, will not wake on bluetooth");
 }
 
 void btrtl_set_quirks(struct hci_dev *hdev, struct btrtl_device_info *btrtl_dev)
 {
-	if (btrtl_fw_can_ignore_bt_dis(hdev))
-		btrealtek_set_flag(hdev, REALTEK_CAN_IGNORE_BT_DIS);
+	btrtl_handle_fw_can_ignore_bt_dis(hdev);
 
 	/* Enable controller to do both LE scan and BR/EDR inquiry
 	 * simultaneously.
@@ -1603,57 +1595,6 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 }
 EXPORT_SYMBOL_GPL(btrtl_get_uart_settings);
 
-int btrtl_early_suspend(struct hci_dev *hdev)
-{
-	int ret = 0;
-	u16 ignore_mask;
-	u8 buf[2];
-
-	if (!btrealtek_test_flag(hdev, REALTEK_CAN_IGNORE_BT_DIS))
-		return -EOPNOTSUPP;
-
-	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN))
-		return 0;
-
-	ret = btrtl_vendor_read_reg16_unlocked(hdev, RTL_IGNORE_MASK, buf);
-	if (ret)
-		return ret;
-
-	ignore_mask = get_unaligned_le16(buf);
-	ignore_mask |= RTL_IGNORE_BT_DIS;
-	put_unaligned_le16(ignore_mask, buf);
-
-	ret = btrtl_vendor_write_reg16_unlocked(hdev, RTL_IGNORE_MASK, buf);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(btrtl_early_suspend);
-
-int btrtl_late_resume(struct hci_dev *hdev)
-{
-	int ret = 0;
-	u16 ignore_mask;
-	u8 buf[2];
-
-	if (!btrealtek_test_flag(hdev, REALTEK_CAN_IGNORE_BT_DIS))
-		return -EOPNOTSUPP;
-
-	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN))
-		return 0;
-
-	ret = btrtl_vendor_read_reg16_unlocked(hdev, RTL_IGNORE_MASK, buf);
-	if (ret)
-		return ret;
-
-	ignore_mask = get_unaligned_le16(buf);
-	ignore_mask &= ~RTL_IGNORE_BT_DIS;
-	put_unaligned_le16(ignore_mask, buf);
-
-	ret = btrtl_vendor_write_reg16_unlocked(hdev, RTL_IGNORE_MASK, buf);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(btrtl_late_resume);
 
 MODULE_AUTHOR("Daniel Drake <drake@endlessm.com>");
 MODULE_DESCRIPTION("Bluetooth support for Realtek devices ver " VERSION);
