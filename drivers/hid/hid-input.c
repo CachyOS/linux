@@ -390,6 +390,8 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	 * set HID_BATTERY_QUIRK_IGNORE for all Elan I2C-HID devices.
 	 */
 	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, HID_ANY_ID), HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_NOVATEK, I2C_DEVICE_ID_ONEXPLAYER_X1),
+	  HID_BATTERY_QUIRK_IGNORE },
 	{}
 };
 
