@@ -1459,4 +1459,6 @@ endif # HID
 
 source "drivers/hid/usbhid/Kconfig"
 
+source "drivers/hid/zotac-zone-hid/Kconfig"
+
 endif # HID_SUPPORT
