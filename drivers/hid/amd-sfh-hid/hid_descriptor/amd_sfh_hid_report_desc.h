@@ -665,6 +665,26 @@ static const u8 als_report_descriptor[] = {
 0xC0			/* HID end collection */
 };
 
+/* TABLET MODE SWITCH */
+__maybe_unused // Used by sfh1.0, but not yet implemented in sfh1.1
+static const u8 tms_report_descriptor[] = {
+0x06, 0x43, 0xFF,  // Usage Page (Vendor Defined 0xFF43)
+0x0A, 0x02, 0x02,  // Usage (0x0202)
+0xA1, 0x01, // Collection (Application)
+0x85, 0x11, //   Report ID (17)
+0x15, 0x00, //   Logical Minimum (0)
+0x25, 0x01, //   Logical Maximum (1)
+0x35, 0x00, //   Physical Minimum (0)
+0x45, 0x01, //   Physical Maximum (1)
+0x65, 0x00, //   Unit (None)
+0x55, 0x00, //   Unit Exponent (0)
+0x75, 0x01, //   Report Size (1)
+0x95, 0x98, //   Report Count (-104)
+0x81, 0x03, //   Input (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
+0x91, 0x03, //   Output (Const,Var,Abs,No Wrap,Linear,Preferred State,No Null Position,Non-volatile)
+0xC1, 0x00, // End Collection
+};
+
 /* BIOMETRIC PRESENCE*/
 static const u8 hpd_report_descriptor[] = {
 0x05, 0x20,          /* Usage page */

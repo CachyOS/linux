@@ -114,4 +114,12 @@ struct hpd_input_report {
 	u8 human_presence;
 } __packed;
 
+struct tms_feature_report {
+	struct common_feature_property common_property;
+} __packed;
+
+struct tms_input_report {
+	struct common_input_property common_property;
+} __packed;
+
 #endif
