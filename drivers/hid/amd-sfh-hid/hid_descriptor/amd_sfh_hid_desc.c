@@ -47,6 +47,11 @@ static int get_report_descriptor(int sensor_idx, u8 *rep_desc)
 		memcpy(rep_desc, comp3_report_descriptor,
 		       sizeof(comp3_report_descriptor));
 		break;
+	case tms_idx: /* tablet mode switch */
+		memset(rep_desc, 0, sizeof(tms_report_descriptor));
+		memcpy(rep_desc, tms_report_descriptor,
+		       sizeof(tms_report_descriptor));
+		break;
 	case als_idx: /* ambient light sensor */
 	case ACS_IDX: /* ambient color sensor */
 		memset(rep_desc, 0, sizeof(als_report_descriptor));
@@ -97,6 +102,16 @@ static u32 get_descr_sz(int sensor_idx, int descriptor_name)
 			return sizeof(struct magno_feature_report);
 		}
 		break;
+	case tms_idx:
+		switch (descriptor_name) {
+		case descr_size:
+			return sizeof(tms_report_descriptor);
+		case input_size:
+			return sizeof(struct tms_input_report);
+		case feature_size:
+			return sizeof(struct tms_feature_report);
+		}
+		break;
 	case als_idx:
 	case ACS_IDX: /* ambient color sensor */
 		switch (descriptor_name) {
@@ -140,6 +155,7 @@ static u8 get_feature_report(int sensor_idx, int report_id, u8 *feature_report)
 	struct accel3_feature_report acc_feature;
 	struct gyro_feature_report gyro_feature;
 	struct magno_feature_report magno_feature;
+	struct tms_feature_report tms_feature;
 	struct hpd_feature_report hpd_feature;
 	struct als_feature_report als_feature;
 	u8 report_size = 0;
@@ -174,6 +190,11 @@ static u8 get_feature_report(int sensor_idx, int report_id, u8 *feature_report)
 		magno_feature.flux_max = HID_DEFAULT_MAX_VALUE;
 		memcpy(feature_report, &magno_feature, sizeof(magno_feature));
 		report_size = sizeof(magno_feature);
+		break;
+	case tms_idx:  /* tablet mode switch */
+		get_common_features(&tms_feature.common_property, report_id);
+		memcpy(feature_report, &tms_feature, sizeof(tms_feature));
+		report_size = sizeof(tms_feature);
 		break;
 	case als_idx:  /* ambient light sensor */
 	case ACS_IDX: /* ambient color sensor */
@@ -214,6 +235,7 @@ static u8 get_input_report(u8 current_index, int sensor_idx, int report_id,
 	struct accel3_input_report acc_input;
 	struct gyro_input_report gyro_input;
 	struct hpd_input_report hpd_input;
+	struct tms_input_report tms_input;
 	struct als_input_report als_input;
 	struct hpd_status hpdstatus;
 	u8 report_size = 0;
@@ -246,6 +268,11 @@ static u8 get_input_report(u8 current_index, int sensor_idx, int report_id,
 		magno_input.in_magno_accuracy = (u16)sensor_virt_addr[3] / AMD_SFH_FW_MULTIPLIER;
 		memcpy(input_report, &magno_input, sizeof(magno_input));
 		report_size = sizeof(magno_input);
+		break;
+case tms_idx: /* tablet mode switch */
+		get_common_inputs(&tms_input.common_property, report_id);
+		report_size = sizeof(tms_input);
+		memcpy(input_report, &tms_input, sizeof(tms_input));
 		break;
 	case als_idx: /* Als */
 	case ACS_IDX: /* ambient color sensor */
