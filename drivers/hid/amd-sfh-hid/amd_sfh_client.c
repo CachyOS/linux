@@ -146,6 +146,8 @@ static const char *get_sensor_name(int idx)
 		return "gyroscope";
 	case mag_idx:
 		return "magnetometer";
+	case tms_idx:
+		return "tablet-mode-switch";
 	case als_idx:
 	case ACS_IDX: /* ambient color sensor */
 		return "ALS";
