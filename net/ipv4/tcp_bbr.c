@@ -456,7 +456,8 @@ static void bbr_init_pacing_rate_from_rtt(struct sock *sk)
 	bw = (u64)tcp_snd_cwnd(tp) * BW_UNIT;
 	do_div(bw, rtt_us);
 	WRITE_ONCE(sk->sk_pacing_rate,
-		   bbr_bw_to_pacing_rate(sk, bw, bbr_param(sk, startup_pacing_gain)));
+		   bbr_bw_to_pacing_rate(sk, bw,
+					 bbr_param(sk, startup_pacing_gain)));
 }
 
 /* Pace using current bw estimate and a gain factor. */
@@ -2033,7 +2034,8 @@ static bool bbr_run_fast_path(struct sock *sk, bool *update_model,
 	return false;
 }
 
-__bpf_kfunc static void bbr_main(struct sock *sk, u32 ack, int flag, const struct rate_sample *rs)
+__bpf_kfunc static void bbr_main(struct sock *sk, u32 ack, int flag,
+				 const struct rate_sample *rs)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bbr *bbr = inet_csk_ca(sk);
