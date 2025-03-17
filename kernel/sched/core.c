@@ -648,7 +648,7 @@ void raw_spin_rq_lock_nested(struct rq *rq, int subclass)
 
 	/* Matches synchronize_rcu() in __sched_core_enable() */
 	preempt_disable();
-	if (sched_core_disabled()) {
+	if (likely(sched_core_disabled())) {
 		raw_spin_lock_nested(&rq->__lock, subclass);
 		/* preempt_count *MUST* be > 1 */
 		preempt_enable_no_resched();
@@ -860,7 +860,7 @@ void update_rq_clock(struct rq *rq)
 	scx_rq_clock_update(rq, clock);
 
 	delta = clock - rq->clock;
-	if (delta < 0)
+	if (unlikely(delta < 0))
 		return;
 	rq->clock += delta;
 
@@ -6108,7 +6108,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	struct rq *rq_i;
 	bool need_sync;
 
-	if (!sched_core_enabled(rq))
+	if (likely(!sched_core_enabled(rq)))
 		return __pick_next_task(rq, prev, rf);
 
 	cpu = cpu_of(rq);
@@ -7692,7 +7692,7 @@ out_unlock:
 #if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
 int __sched __cond_resched(void)
 {
-	if (should_resched(0) && !irqs_disabled()) {
+	if (unlikely(should_resched(0) && !irqs_disabled())) {
 		preempt_schedule_common();
 		return 1;
 	}
