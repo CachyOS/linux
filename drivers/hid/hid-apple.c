@@ -530,6 +530,7 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 			table = apple2021_fn_keys;
 		else if (hid->product == USB_DEVICE_ID_APPLE_WELLSPRINGT2_J132 ||
 			 hid->product == USB_DEVICE_ID_APPLE_WELLSPRINGT2_J680 ||
+			 hid->product == USB_DEVICE_ID_APPLE_WELLSPRINGT2_J680_ALT ||
 			 hid->product == USB_DEVICE_ID_APPLE_WELLSPRINGT2_J213)
 				table = macbookpro_no_esc_fn_keys;
 		else if (hid->product == USB_DEVICE_ID_APPLE_WELLSPRINGT2_J214K ||
@@ -1196,6 +1197,9 @@ static const struct hid_device_id apple_devices[] = {
 		.driver_data = APPLE_HAS_FN | APPLE_BACKLIGHT_CTL | APPLE_ISO_TILDE_QUIRK |
 				APPLE_IGNORE_MOUSE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_WELLSPRINGT2_J680),
+		.driver_data = APPLE_HAS_FN | APPLE_BACKLIGHT_CTL | APPLE_ISO_TILDE_QUIRK |
+				APPLE_IGNORE_MOUSE },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_WELLSPRINGT2_J680_ALT),
 		.driver_data = APPLE_HAS_FN | APPLE_BACKLIGHT_CTL | APPLE_ISO_TILDE_QUIRK |
 				APPLE_IGNORE_MOUSE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_WELLSPRINGT2_J213),
