@@ -528,7 +528,7 @@ static const struct dmi_system_id orientation_data[] = {
 		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "ONEXPLAYER X1Mini Pro"),
 		},
 		.driver_data = (void *)&lcd1600x2560_leftside_up,
-	}, {	/* OneXPlayer OneXFly F1 Pro (OLED) */
+	}, {	/* OneXPlayer OneXFly F1 Pro (OLED) Strix Point */
 		.matches = {
 		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "ONE-NETBOOK"),
 		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "ONEXPLAYER F1Pro"),
@@ -538,6 +538,12 @@ static const struct dmi_system_id orientation_data[] = {
 		.matches = {
 		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "ONE-NETBOOK"),
 		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "ONEXPLAYER F1 EVA-02"),
+		},
+		.driver_data = (void *)&lcd1080x1920_leftside_up,
+	}, {	/* OneXPlayer OneXFly F1 Pro (OLED) Hawk Point */
+		.matches = {
+		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "ONE-NETBOOK"),
+		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "ONEXPLAYER F1 OLED"),
 		},
 		.driver_data = (void *)&lcd1080x1920_leftside_up,
 	}, {	/* Zotac Gaming Zone (OLED) */
