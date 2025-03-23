@@ -56,12 +56,14 @@
 
 
 /* Enable runtime BMI2 dispatch based on the CPU.
- * Enabled for clang & gcc >=4.8 on x86 when BMI2 isn't enabled by default.
+ * Enabled for clang & gcc >= 11.4 on x86 when BMI2 isn't enabled by default.
+ * Disabled for gcc < 11.4 because of a segfault while compiling
+ * HUF_compress1X_usingCTable_internal_body().
  */
 #ifndef DYNAMIC_BMI2
 #  if ((defined(__clang__) && __has_attribute(__target__)) \
       || (defined(__GNUC__) \
-          && (__GNUC__ >= 11))) \
+          && (__GNUC__ >= 12 || (__GNUC__ == 11 && __GNUC_MINOR__ >= 4)))) \
       && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)) \
       && !defined(__BMI2__)
 #    define DYNAMIC_BMI2 1
