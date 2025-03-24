@@ -388,6 +388,9 @@ static int ally_hid_init(struct hid_device *hdev)
 
 static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_id)
 {
+	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
+	struct usb_device *udev = interface_to_usbdev(intf);
+	u16 idProduct = le16_to_cpu(udev->descriptor.idProduct);
 	int ret, ep;
 
 	ep = get_endpoint_address(hdev);
@@ -425,6 +428,8 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 
 	/* This should almost always exist */
 	if (ep == ROG_ALLY_CFG_INTF_IN) {
+		validate_mcu_fw_version(hdev, idProduct);
+
 		drvdata.led_rgb_dev = ally_rgb_create(hdev);
 		if (IS_ERR(drvdata.led_rgb_dev))
 			hid_err(hdev, "Failed to create Ally gamepad LEDs.\n");
@@ -513,6 +518,8 @@ static void __exit rog_ally_exit(void)
 module_init(rog_ally_init);
 module_exit(rog_ally_exit);
 
+MODULE_IMPORT_NS("ASUS_WMI");
+MODULE_IMPORT_NS("HID_ASUS");
 MODULE_AUTHOR("Luke D. Jones");
 MODULE_DESCRIPTION("HID Driver for ASUS ROG Ally gamepad configuration.");
 MODULE_LICENSE("GPL");
