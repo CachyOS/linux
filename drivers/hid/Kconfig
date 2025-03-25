@@ -189,6 +189,7 @@ config HID_APPLETB_KBD
 config HID_ASUS
 	tristate "Asus"
 	depends on USB_HID
+	depends on LEDS_CLASS_MULTICOLOR
 	depends on LEDS_CLASS
 	depends on ASUS_WMI || ASUS_WMI=n
 	select POWER_SUPPLY
