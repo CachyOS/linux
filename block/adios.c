@@ -24,7 +24,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.3"
+#define ADIOS_VERSION "1.5.4"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -61,10 +61,7 @@ static u32 default_batch_limit[ADIOS_OPTYPES] = {
 	[ADIOS_OTHER]   =  1,
 };
 
-static u32 default_dl_prio[2] = {
-	[0] = 7,
-	[1] = 0,
-};
+static u32 default_dl_prio[2] = {7, 0};
 
 // Thresholds for latency model control
 #define LM_BLOCK_SIZE_THRESHOLD 4096
@@ -392,9 +389,7 @@ static void latency_model_input(struct latency_model *model,
 
 	if (block_size <= LM_BLOCK_SIZE_THRESHOLD) {
 		// Handle small requests
-
-		bucket_index =
-			lm_input_bucket_index(model, latency, (model->base ?: 1));
+		bucket_index = lm_input_bucket_index(model, latency, model->base ?: 1);
 
 		if (bucket_index >= LM_LAT_BUCKET_COUNT)
 			bucket_index = LM_LAT_BUCKET_COUNT - 1;
@@ -414,8 +409,7 @@ static void latency_model_input(struct latency_model *model,
 			return;
 		}
 
-		bucket_index =
-			lm_input_bucket_index(model, latency, pred_lat);
+		bucket_index = lm_input_bucket_index(model, latency, pred_lat);
 
 		if (bucket_index >= LM_LAT_BUCKET_COUNT)
 			bucket_index = LM_LAT_BUCKET_COUNT - 1;
@@ -444,8 +438,7 @@ static u64 latency_model_predict(struct latency_model *model, u32 block_size) {
 
 // Determine the type of operation based on request flags
 static u8 adios_optype(struct request *rq) {
-	blk_opf_t opf = rq->cmd_flags;
-	switch (opf & REQ_OP_MASK) {
+	switch (rq->cmd_flags & REQ_OP_MASK) {
 	case REQ_OP_READ:
 		return ADIOS_READ;
 	case REQ_OP_WRITE:
@@ -463,7 +456,7 @@ static inline u8 adios_optype_not_read(struct request *rq) {
 
 // Helper function to retrieve adios_rq_data from a request
 static inline struct adios_rq_data *get_rq_data(struct request *rq) {
-	return (struct adios_rq_data *)rq->elv.priv[0];
+	return rq->elv.priv[0];
 }
 
 // Add a request to the deadline-sorted red-black tree
@@ -692,10 +685,8 @@ static struct adios_rq_data *get_dl_first_rd(struct adios_data *ad, bool idx) {
 	struct rb_root_cached *root = &ad->dl_tree[idx];
 	struct rb_node *first = rb_first_cached(root);
 	struct dl_group *dl_group = rb_entry(first, struct dl_group, node);
-	struct adios_rq_data *rd =
-		list_first_entry(&dl_group->rqs, struct adios_rq_data, dl_node);
 
-	return rd;
+	return list_first_entry(&dl_group->rqs, struct adios_rq_data, dl_node);
 }
 
 // Select the next request to dispatch from the deadline-sorted red-black tree
@@ -755,8 +746,7 @@ static void init_batch_queues(struct adios_data *ad) {
 static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 	unsigned long flags;
 	u32 count = 0;
-	u32 optype_count[ADIOS_OPTYPES];
-	memset(optype_count, 0, sizeof(optype_count));
+	u32 optype_count[ADIOS_OPTYPES] = {0};
 	u8 page = (ad->bq_page + 1) % ADIOS_BQ_PAGES;
 
 	reset_batch_counts(ad, page);
@@ -968,7 +958,7 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 	}
 
 	eq->elevator_data = ad;
-	
+
 	ad->global_latency_window = default_global_latency_window;
 	ad->bq_refill_below_ratio = default_bq_refill_below_ratio;
 

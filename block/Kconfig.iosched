@@ -18,7 +18,7 @@ config MQ_IOSCHED_KYBER
 
 config MQ_IOSCHED_ADIOS
 	tristate "Adaptive Deadline I/O scheduler"
-	default y
+	default m
 	help
 	  ADIOS is a multi-queue I/O scheduler for the Linux kernel, based on
 	  mq-deadline and Kyber, with learning-based adaptive latency control.
