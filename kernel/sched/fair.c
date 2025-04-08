@@ -85,9 +85,9 @@ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
 #endif /* CONFIG_CACHY */
 
 #ifdef CONFIG_CACHY
-const_debug unsigned int sysctl_sched_migration_cost	= 300000UL;
+__read_mostly unsigned int sysctl_sched_migration_cost	= 300000UL;
 #else
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+__read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
 #endif
 
 static int __init setup_sched_thermal_decay_shift(char *str)
