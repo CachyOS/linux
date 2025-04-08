@@ -1267,10 +1267,19 @@ void mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful)
 }
 EXPORT_SYMBOL_GPL(mhi_power_down);
 
+static void __mhi_power_down_unprepare_keep_dev(struct mhi_controller *mhi_cntrl)
+{
+	mhi_cntrl->bhi = NULL;
+	mhi_cntrl->bhie = NULL;
+
+	mhi_deinit_dev_ctxt(mhi_cntrl);
+}
+
 void mhi_power_down_keep_dev(struct mhi_controller *mhi_cntrl,
 			       bool graceful)
 {
 	__mhi_power_down(mhi_cntrl, graceful, false);
+	__mhi_power_down_unprepare_keep_dev(mhi_cntrl);
 }
 EXPORT_SYMBOL_GPL(mhi_power_down_keep_dev);
 

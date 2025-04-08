@@ -252,7 +252,7 @@ error_request:
 	return ret;
 }
 
-static void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
+void mhi_deinit_dev_ctxt(struct mhi_controller *mhi_cntrl)
 {
 	int i;
 	struct mhi_ctxt *mhi_ctxt = mhi_cntrl->mhi_ctxt;
@@ -1159,8 +1159,9 @@ int mhi_prepare_for_power_up(struct mhi_controller *mhi_cntrl)
 		/*
 		 * Allocate RDDM table for debugging purpose if specified
 		 */
-		mhi_alloc_bhie_table(mhi_cntrl, &mhi_cntrl->rddm_image,
-				     mhi_cntrl->rddm_size);
+		if (!mhi_cntrl->rddm_image)
+			mhi_alloc_bhie_table(mhi_cntrl, &mhi_cntrl->rddm_image,
+					     mhi_cntrl->rddm_size);
 		if (mhi_cntrl->rddm_image) {
 			ret = mhi_rddm_prepare(mhi_cntrl,
 					       mhi_cntrl->rddm_image);
