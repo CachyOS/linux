@@ -1,4 +1,5 @@
-#pragma once
+#ifndef APPLE_BCE_H
+#define APPLE_BCE_H
 
 #include <linux/pci.h>
 #include <linux/spinlock.h>
@@ -36,3 +37,5 @@ struct apple_bce_device {
 };
 
 extern struct apple_bce_device *global_bce;
+
+#endif //APPLE_BCE_H
