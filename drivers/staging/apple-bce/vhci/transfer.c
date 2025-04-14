@@ -400,6 +400,7 @@ int bce_vhci_urb_request_cancel(struct bce_vhci_transfer_queue *q, struct urb *u
     struct bce_vhci_urb *vurb;
     unsigned long flags;
     int ret;
+    enum bce_vhci_urb_state old_state;
 
     spin_lock_irqsave(&q->urb_lock, flags);
     if ((ret = usb_hcd_check_unlink_urb(q->vhci->hcd, urb, status))) {
@@ -408,8 +409,19 @@ int bce_vhci_urb_request_cancel(struct bce_vhci_transfer_queue *q, struct urb *u
     }
 
     vurb = urb->hcpriv;
+
+    old_state = vurb->state; /* save old state to use later because we'll set state as cancelled */
+
+    if (old_state == BCE_VHCI_URB_CANCELLED) {
+        spin_unlock_irqrestore(&q->urb_lock, flags);
+        pr_debug("bce-vhci: URB %p is already cancelled, skipping\n", urb);
+        return 0;
+    }
+
+    vurb->state = BCE_VHCI_URB_CANCELLED;
+
     /* If the URB wasn't posted to the device yet, we can still remove it on the host without pausing the queue. */
-    if (vurb->state != BCE_VHCI_URB_INIT_PENDING) {
+    if (old_state != BCE_VHCI_URB_INIT_PENDING) {
         pr_debug("bce-vhci: [%02x] Cancelling URB\n", q->endp_addr);
 
         spin_unlock_irqrestore(&q->urb_lock, flags);
@@ -425,7 +437,7 @@ int bce_vhci_urb_request_cancel(struct bce_vhci_transfer_queue *q, struct urb *u
 
     usb_hcd_giveback_urb(q->vhci->hcd, urb, status);
 
-    if (vurb->state != BCE_VHCI_URB_INIT_PENDING)
+    if (old_state != BCE_VHCI_URB_INIT_PENDING)
         bce_vhci_transfer_queue_resume(q, BCE_VHCI_PAUSE_INTERNAL_WQ);
 
     kfree(vurb);
