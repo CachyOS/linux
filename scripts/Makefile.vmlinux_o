@@ -9,6 +9,14 @@ include $(srctree)/scripts/Kbuild.include
 # for objtool
 include $(srctree)/scripts/Makefile.lib
 
+ifeq ($(thinlto_final_pass),1)
+vmlinux_a := vmlinux.final_a
+vmlinux_libs := $(patsubst %.a,%.final_a,$(KBUILD_VMLINUX_LIBS))
+else
+vmlinux_a := vmlinux.a
+vmlinux_libs := $(KBUILD_VMLINUX_LIBS)
+endif
+
 # Generate a linker script to ensure correct ordering of initcalls for Clang LTO
 # ---------------------------------------------------------------------------
 
@@ -18,7 +26,7 @@ quiet_cmd_gen_initcalls_lds = GEN     $@
 	$(PERL) $(real-prereqs) > $@
 
 .tmp_initcalls.lds: $(srctree)/scripts/generate_initcall_order.pl \
-		vmlinux.a $(KBUILD_VMLINUX_LIBS) FORCE
+		$(vmlinux_a) $(vmlinux_libs) FORCE
 	$(call if_changed,gen_initcalls_lds)
 
 targets := .tmp_initcalls.lds
@@ -59,8 +67,8 @@ quiet_cmd_ld_vmlinux.o = LD      $@
 	$(LD) ${KBUILD_LDFLAGS} -r -o $@ \
 	$(vmlinux-o-ld-args-y) \
 	$(addprefix -T , $(initcalls-lds)) \
-	--whole-archive vmlinux.a --no-whole-archive \
-	--start-group $(KBUILD_VMLINUX_LIBS) --end-group \
+	--whole-archive $(vmlinux_a) --no-whole-archive \
+	--start-group $(vmlinux_libs) --end-group \
 	$(cmd_objtool)
 
 define rule_ld_vmlinux.o
@@ -68,7 +76,7 @@ define rule_ld_vmlinux.o
 	$(call cmd,gen_objtooldep)
 endef
 
-vmlinux.o: $(initcalls-lds) vmlinux.a $(KBUILD_VMLINUX_LIBS) FORCE
+vmlinux.o: $(initcalls-lds) $(vmlinux_a) $(vmlinux_libs) FORCE
 	$(call if_changed_rule,ld_vmlinux.o)
 
 targets += vmlinux.o
