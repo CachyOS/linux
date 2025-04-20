@@ -298,7 +298,8 @@ no-dot-config-targets := $(clean-targets) \
 			 outputmakefile rustavailable rustfmt rustfmtcheck
 no-sync-config-targets := $(no-dot-config-targets) %install modules_sign kernelrelease \
 			  image_name
-single-targets := %.a %.i %.ko %.lds %.ll %.lst %.mod %.o %.rsi %.s %/
+single-targets := %.a %.i %.ko %.lds %.ll %.lst %.mod %.o %.rsi %.s %.final_o \
+	          %.final_a %.o.thinlto.bc %/
 
 config-build	:=
 mixed-build	:=
@@ -1000,10 +1001,10 @@ export CC_FLAGS_SCS
 endif
 
 ifdef CONFIG_LTO_CLANG
-ifdef CONFIG_LTO_CLANG_THIN
-CC_FLAGS_LTO	:= -flto=thin -fsplit-lto-unit
-else
+ifdef CONFIG_LTO_CLANG_FULL
 CC_FLAGS_LTO	:= -flto
+else # for CONFIG_LTO_CLANG_THIN or CONFIG_LTO_CLANG_THIN_DIST
+CC_FLAGS_LTO	:= -flto=thin -fsplit-lto-unit
 endif
 CC_FLAGS_LTO	+= -fvisibility=hidden
 
@@ -1224,8 +1225,34 @@ vmlinux.a: $(KBUILD_VMLINUX_OBJS) scripts/head-object-list.txt FORCE
 	$(call if_changed,ar_vmlinux.a)
 
 PHONY += vmlinux_o
+ifdef CONFIG_LTO_CLANG_THIN_DIST
+vmlinux.thinlink: vmlinux.a $(KBUILD_VMLINUX_LIBS) FORCE
+	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.vmlinux_thinlink
+targets += vmlinux.thinlink
+
+vmlinux_final_a := $(patsubst %.a,%.final_a,$(KBUILD_VMLINUX_OBJS))
+quiet_cmd_ar_vmlinux.final_a = AR      $@
+      cmd_ar_vmlinux.final_a = \
+	rm -f $@; \
+	$(AR) cDPrST $@ $(vmlinux_final_a); \
+	$(AR) mPiT $$($(AR) t $@ | sed -n 1p) $@ $$($(AR) t $@ | grep -F -f $(srctree)/scripts/head-object-list.txt)
+
+define rule_gen_vmlinux_final_a
+	+$(Q)$(MAKE) $(build)=. need-builtin=1 thinlto_final_pass=1 need-modorder=1 built-in.final_a
+	$(call cmd_and_savecmd,ar_vmlinux.final_a)
+endef
+
+vmlinux.final_a: vmlinux.thinlink scripts/head-object-list.txt FORCE
+	$(call if_changed_rule,gen_vmlinux_final_a)
+
+targets += vmlinux.final_a
+
+vmlinux_o: vmlinux.final_a
+	$(Q)$(MAKE) thinlto_final_pass=1 -f $(srctree)/scripts/Makefile.vmlinux_o
+else
 vmlinux_o: vmlinux.a $(KBUILD_VMLINUX_LIBS)
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.vmlinux_o
+endif
 
 vmlinux.o modules.builtin.modinfo modules.builtin: vmlinux_o
 	@:
@@ -1583,7 +1610,8 @@ CLEAN_FILES += vmlinux.symvers modules-only.symvers \
 	       modules.builtin.ranges vmlinux.o.map vmlinux.unstripped \
 	       compile_commands.json rust/test \
 	       rust-project.json .vmlinux.objs .vmlinux.export.c \
-               .builtin-dtbs-list .builtin-dtb.S
+	       .builtin-dtbs-list .builtin-dtb.S \
+	       .vmlinux_thinlto_bc_files vmlinux.thinlink
 
 # Directories & files removed with 'make mrproper'
 MRPROPER_FILES += include/config include/generated          \
@@ -2034,6 +2062,8 @@ clean: $(clean-dirs)
 		-o -name '*.symtypes' -o -name 'modules.order' \
 		-o -name '*.c.[012]*.*' \
 		-o -name '*.ll' \
+		-o -name '*.final_a' -o -name '*.final_o' \
+		-o -name '*.o.thinlto.bc' \
 		-o -name '*.gcno' \
 		\) -type f -print \
 		-o -name '.tmp_*' -print \

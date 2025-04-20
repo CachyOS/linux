@@ -18,6 +18,7 @@ arch/arm/kernel/head.o
 arch/csky/kernel/head.o
 arch/hexagon/kernel/head.o
 arch/loongarch/kernel/head.o
+arch/loongarch/kernel/head.final_o
 arch/m68k/68000/head.o
 arch/m68k/coldfire/head.o
 arch/m68k/kernel/head.o

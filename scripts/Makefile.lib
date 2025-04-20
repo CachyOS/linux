@@ -34,8 +34,13 @@ else
 obj-m := $(filter-out %/, $(obj-m))
 endif
 
+builtin_suffix := $(if $(filter %.final_a, $(MAKECMDGOALS)),final_a,a)
+ifeq ($(thinlto_final_pass),1)
+        builtin_suffix := final_a
+endif
+
 ifdef need-builtin
-obj-y		:= $(patsubst %/, %/built-in.a, $(obj-y))
+obj-y		:= $(patsubst %/, %/built-in.$(builtin_suffix), $(obj-y))
 else
 obj-y		:= $(filter-out %/, $(obj-y))
 endif

@@ -5782,6 +5782,11 @@ F:	scripts/Makefile.clang
 F:	scripts/clang-tools/
 K:	\b(?i:clang|llvm)\b
 
+CLANG/LLVM THINLTO DISTRIBUTED BUILD
+M:	Rong Xu <xur@google.com>
+S:	Supported
+F:	scripts/Makefile.vmlinux_thinlink
+
 CLK API
 M:	Russell King <linux@armlinux.org.uk>
 L:	linux-clk@vger.kernel.org
