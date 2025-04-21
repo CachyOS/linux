@@ -800,6 +800,12 @@ struct mm_cid {
 };
 #endif
 
+struct mm_sched {
+	u64 runtime;
+	unsigned long epoch;
+	unsigned long occ;
+};
+
 struct kioctx_table;
 struct iommu_mm_data;
 struct mm_struct {
@@ -890,6 +896,17 @@ struct mm_struct {
 		 */
 		raw_spinlock_t cpus_allowed_lock;
 #endif
+#ifdef CONFIG_SCHED_CACHE
+		/*
+		 * Track per-cpu-per-process occupancy as a proxy for cache residency.
+		 * See account_mm_sched() and ...
+		 */
+		struct mm_sched __percpu *pcpu_sched;
+		raw_spinlock_t mm_sched_lock;
+		unsigned long mm_sched_epoch;
+		int mm_sched_cpu;
+#endif
+
 #ifdef CONFIG_MMU
 		atomic_long_t pgtables_bytes;	/* size of all page tables */
 #endif
@@ -1295,6 +1312,33 @@ static inline unsigned int mm_cid_size(void)
 }
 static inline void mm_set_cpus_allowed(struct mm_struct *mm, const struct cpumask *cpumask) { }
 #endif /* CONFIG_SCHED_MM_CID */
+
+#ifdef CONFIG_SCHED_CACHE
+extern void mm_init_sched(struct mm_struct *mm, struct mm_sched *pcpu_sched);
+
+static inline int mm_alloc_sched_noprof(struct mm_struct *mm)
+{
+	struct mm_sched *pcpu_sched = alloc_percpu_noprof(struct mm_sched);
+	if (!pcpu_sched)
+		return -ENOMEM;
+
+	mm_init_sched(mm, pcpu_sched);
+	return 0;
+}
+
+#define mm_alloc_sched(...)	alloc_hooks(mm_alloc_sched_noprof(__VA_ARGS__))
+
+static inline void mm_destroy_sched(struct mm_struct *mm)
+{
+	free_percpu(mm->pcpu_sched);
+	mm->pcpu_sched = NULL;
+}
+#else /* !CONFIG_SCHED_CACHE */
+
+static inline int mm_alloc_sched(struct mm_struct *mm) { return 0; }
+static inline void mm_destroy_sched(struct mm_struct *mm) { }
+
+#endif /* CONFIG_SCHED_CACHE */
 
 struct mmu_gather;
 extern void tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm);
