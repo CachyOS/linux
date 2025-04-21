@@ -8815,6 +8815,12 @@ static int select_cache_cpu(struct task_struct *p, int prev_cpu)
 	if (cpu < 0)
 		return prev_cpu;
 
+	/*
+	 * No need to migrate the task if previous and preferred CPU
+	 * are in the same LLC.
+	 */
+	if (cpus_share_cache(prev_cpu, cpu))
+		return prev_cpu;
 
 	if (static_branch_likely(&sched_numa_balancing) &&
 	    __migrate_degrades_locality(p, prev_cpu, cpu, false) > 0) {
@@ -9562,14 +9568,13 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 		return 0;
 
 #ifdef CONFIG_SCHED_CACHE
-	if (sched_feat(SCHED_CACHE) && p->mm && p->mm->pcpu_sched) {
-		/*
-		 * XXX things like Skylake have non-inclusive L3 and might not
-		 * like this L3 centric view. What to do about L2 stickyness ?
-		 */
-		return per_cpu_ptr(p->mm->pcpu_sched, env->src_cpu)->occ >
-		       per_cpu_ptr(p->mm->pcpu_sched, env->dst_cpu)->occ;
-	}
+	/*
+	 * Don't migrate task out of its preferred LLC.
+	 */
+	if (sched_feat(SCHED_CACHE) && p->mm && p->mm->mm_sched_cpu >= 0 &&
+	    cpus_share_cache(env->src_cpu, p->mm->mm_sched_cpu) &&
+	    !cpus_share_cache(env->src_cpu, env->dst_cpu))
+		return 1;
 #endif
 
 	delta = rq_clock_task(env->src_rq) - p->se.exec_start;
