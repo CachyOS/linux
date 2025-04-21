@@ -8800,6 +8800,58 @@ unlock:
 #ifdef CONFIG_SCHED_CACHE
 static long __migrate_degrades_locality(struct task_struct *p, int src_cpu, int dst_cpu, bool idle);
 
+/* expected to be protected by rcu_read_lock() */
+static bool get_llc_stats(int cpu, int *nr, int *weight, unsigned long *util)
+{
+	struct sched_domain_shared *sd_share;
+
+	sd_share = rcu_dereference(per_cpu(sd_llc_shared, cpu));
+	if (!sd_share)
+		return false;
+
+	*nr = READ_ONCE(sd_share->nr_avg);
+	*util = READ_ONCE(sd_share->util_avg);
+	*weight = per_cpu(sd_llc_size, cpu);
+
+	return true;
+}
+
+static bool valid_target_cpu(int cpu, struct task_struct *p)
+{
+	int nr_running, llc_weight;
+	unsigned long util, llc_cap;
+
+	if (!get_llc_stats(cpu, &nr_running, &llc_weight,
+			   &util))
+		return false;
+
+	llc_cap = llc_weight * SCHED_CAPACITY_SCALE;
+
+	/*
+	 * If this process has many threads, be careful to avoid
+	 * task stacking on the preferred LLC, by checking the system's
+	 * utilization and runnable tasks. Otherwise, if this
+	 * process does not have many threads, honor the cache
+	 * aware wakeup.
+	 */
+	if (get_nr_threads(p) < llc_weight)
+		return true;
+
+	/*
+	 * Check if it exceeded 25% of average utiliazation,
+	 * or if it exceeded 33% of CPUs. This is a magic number
+	 * that did not cause heavy cache contention on Xeon or
+	 * Zen.
+	 */
+	if (util * 4 >= llc_cap)
+		return false;
+
+	if (nr_running * 3 >= llc_weight)
+		return false;
+
+	return true;
+}
+
 static int select_cache_cpu(struct task_struct *p, int prev_cpu)
 {
 	struct mm_struct *mm = p->mm;
@@ -8820,6 +8872,9 @@ static int select_cache_cpu(struct task_struct *p, int prev_cpu)
 	 * are in the same LLC.
 	 */
 	if (cpus_share_cache(prev_cpu, cpu))
+		return prev_cpu;
+
+	if (!valid_target_cpu(cpu, p))
 		return prev_cpu;
 
 	if (static_branch_likely(&sched_numa_balancing) &&
@@ -9573,7 +9628,8 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 	 */
 	if (sched_feat(SCHED_CACHE) && p->mm && p->mm->mm_sched_cpu >= 0 &&
 	    cpus_share_cache(env->src_cpu, p->mm->mm_sched_cpu) &&
-	    !cpus_share_cache(env->src_cpu, env->dst_cpu))
+	    !cpus_share_cache(env->src_cpu, env->dst_cpu) &&
+	     !valid_target_cpu(env->dst_cpu, p))
 		return 1;
 #endif
 
@@ -10644,6 +10700,48 @@ sched_reduced_capacity(struct rq *rq, struct sched_domain *sd)
 	return check_cpu_capacity(rq, sd);
 }
 
+#ifdef CONFIG_SCHED_CACHE
+/*
+ * Save this sched group's statistic for later use:
+ * The task wakeup and load balance can make better
+ * decision based on these statistics.
+ */
+static void update_sg_if_llc(struct lb_env *env, struct sg_lb_stats *sgs,
+			     struct sched_group *group)
+{
+	/* Find the sched domain that spans this group. */
+	struct sched_domain *sd = env->sd->child;
+	struct sched_domain_shared *sd_share;
+	u64 last_nr;
+
+	if (!sched_feat(SCHED_CACHE) || env->idle == CPU_NEWLY_IDLE)
+		return;
+
+	/* only care the sched domain that spans 1 LLC */
+	if (!sd || !(sd->flags & SD_SHARE_LLC) ||
+	    !sd->parent || (sd->parent->flags & SD_SHARE_LLC))
+		return;
+
+	sd_share = rcu_dereference(per_cpu(sd_llc_shared,
+				   cpumask_first(sched_group_span(group))));
+	if (!sd_share)
+		return;
+
+	last_nr = READ_ONCE(sd_share->nr_avg);
+	update_avg(&last_nr, sgs->sum_nr_running);
+
+	if (likely(READ_ONCE(sd_share->util_avg) != sgs->group_util))
+		WRITE_ONCE(sd_share->util_avg, sgs->group_util);
+
+	WRITE_ONCE(sd_share->nr_avg, last_nr);
+}
+#else
+static inline void update_sg_if_llc(struct lb_env *env, struct sg_lb_stats *sgs,
+				    struct sched_group *group)
+{
+}
+#endif
+
 /**
  * update_sg_lb_stats - Update sched_group's statistics for load balancing.
  * @env: The load balancing environment.
@@ -10733,6 +10831,7 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 
 	sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs);
 
+	update_sg_if_llc(env, sgs, group);
 	/* Computing avg_load makes sense only when group is overloaded */
 	if (sgs->group_type == group_overloaded)
 		sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) /
