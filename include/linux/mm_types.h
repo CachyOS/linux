@@ -1314,11 +1314,11 @@ static inline void mm_set_cpus_allowed(struct mm_struct *mm, const struct cpumas
 #endif /* CONFIG_SCHED_MM_CID */
 
 #ifdef CONFIG_SCHED_CACHE
-extern void mm_init_sched(struct mm_struct *mm, struct mm_sched *pcpu_sched);
+extern void mm_init_sched(struct mm_struct *mm, struct mm_sched __percpu *pcpu_sched);
 
 static inline int mm_alloc_sched_noprof(struct mm_struct *mm)
 {
-	struct mm_sched *pcpu_sched = alloc_percpu_noprof(struct mm_sched);
+	struct mm_sched __percpu *pcpu_sched = alloc_percpu_noprof(struct mm_sched);
 	if (!pcpu_sched)
 		return -ENOMEM;
 
