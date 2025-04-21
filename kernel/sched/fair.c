@@ -8911,7 +8911,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	struct sched_domain *tmp, *sd = NULL;
 	int cpu = smp_processor_id();
-	int new_cpu = prev_cpu;
+	int new_cpu = prev_cpu, orig_prev_cpu = prev_cpu;
 	int want_affine = 0;
 	/* SD_flags and WF_flags share the first nibble */
 	int sd_flag = wake_flags & 0xF;
@@ -8973,6 +8973,10 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 		/* Fast path */
 		new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
 	}
+
+	trace_sched_select_task_rq(new_cpu, orig_prev_cpu,
+				   per_cpu(sd_llc_id, new_cpu),
+				   per_cpu(sd_llc_id, orig_prev_cpu));
 
 	return new_cpu;
 }
@@ -10036,11 +10040,17 @@ next:
 /*
  * attach_task() -- attach the task detached by detach_task() to its new rq.
  */
-static void attach_task(struct rq *rq, struct task_struct *p)
+static void attach_task(struct rq *rq, struct task_struct *p, struct lb_env *env)
 {
 	lockdep_assert_rq_held(rq);
 
 	WARN_ON_ONCE(task_rq(p) != rq);
+
+	if (env)
+		trace_sched_attach_task(env->src_cpu, env->dst_cpu,
+					per_cpu(sd_llc_id, env->src_cpu),
+					per_cpu(sd_llc_id, env->dst_cpu),
+					env->idle);
 	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	wakeup_preempt(rq, p, 0);
 }
@@ -10049,13 +10059,13 @@ static void attach_task(struct rq *rq, struct task_struct *p)
  * attach_one_task() -- attaches the task returned from detach_one_task() to
  * its new rq.
  */
-static void attach_one_task(struct rq *rq, struct task_struct *p)
+static void attach_one_task(struct rq *rq, struct task_struct *p, struct lb_env *env)
 {
 	struct rq_flags rf;
 
 	rq_lock(rq, &rf);
 	update_rq_clock(rq);
-	attach_task(rq, p);
+	attach_task(rq, p, env);
 	rq_unlock(rq, &rf);
 }
 
@@ -10076,7 +10086,7 @@ static void attach_tasks(struct lb_env *env)
 		p = list_first_entry(tasks, struct task_struct, se.group_node);
 		list_del_init(&p->se.group_node);
 
-		attach_task(env->dst_rq, p);
+		attach_task(env->dst_rq, p, env);
 	}
 
 	rq_unlock(env->dst_rq, &rf);
@@ -12466,6 +12476,7 @@ static int active_load_balance_cpu_stop(void *data)
 	struct sched_domain *sd;
 	struct task_struct *p = NULL;
 	struct rq_flags rf;
+	struct lb_env env_tmp;
 
 	rq_lock_irq(busiest_rq, &rf);
 	/*
@@ -12521,6 +12532,7 @@ static int active_load_balance_cpu_stop(void *data)
 		} else {
 			schedstat_inc(sd->alb_failed);
 		}
+		memcpy(&env_tmp, &env, sizeof(env));
 	}
 	rcu_read_unlock();
 out_unlock:
@@ -12528,7 +12540,7 @@ out_unlock:
 	rq_unlock(busiest_rq, &rf);
 
 	if (p)
-		attach_one_task(target_rq, p);
+		attach_one_task(target_rq, p, sd ? &env_tmp : NULL);
 
 	local_irq_enable();
 

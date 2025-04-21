@@ -10,6 +10,57 @@
 #include <linux/tracepoint.h>
 #include <linux/binfmts.h>
 
+TRACE_EVENT(sched_attach_task,
+
+	TP_PROTO(int src_cpu, int dst_cpu, int src_llc, int dst_llc, int idle),
+
+	TP_ARGS(src_cpu, dst_cpu, src_llc, dst_llc, idle),
+
+	TP_STRUCT__entry(
+		__field(	int,	src_cpu		)
+		__field(	int,	dst_cpu		)
+		__field(	int,	src_llc		)
+		__field(	int,	dst_llc		)
+		__field(	int,	idle		)
+	),
+
+	TP_fast_assign(
+		__entry->src_cpu	= src_cpu;
+		__entry->dst_cpu	= dst_cpu;
+		__entry->src_llc	= src_llc;
+		__entry->dst_llc	= dst_llc;
+		__entry->idle		= idle;
+	),
+
+	TP_printk("src_cpu=%d dst_cpu=%d src_llc=%d dst_llc=%d idle=%d",
+		  __entry->src_cpu, __entry->dst_cpu, __entry->src_llc,
+		  __entry->dst_llc, __entry->idle)
+);
+
+TRACE_EVENT(sched_select_task_rq,
+
+	TP_PROTO(int new_cpu, int old_cpu, int new_llc, int old_llc),
+
+	TP_ARGS(new_cpu, old_cpu, new_llc, old_llc),
+
+	TP_STRUCT__entry(
+		__field(	int,	new_cpu		)
+		__field(	int,	old_cpu		)
+		__field(	int,	new_llc		)
+		__field(	int,	old_llc		)
+	),
+
+	TP_fast_assign(
+		__entry->new_cpu	= new_cpu;
+		__entry->old_cpu	= old_cpu;
+		__entry->new_llc	= new_llc;
+		__entry->old_llc	= old_llc;
+	),
+
+	TP_printk("new_cpu=%d old_cpu=%d new_llc=%d old_llc=%d",
+		  __entry->new_cpu, __entry->old_cpu, __entry->new_llc, __entry->old_llc)
+);
+
 /*
  * Tracepoint for calling kthread_stop, performed to end a kthread:
  */
