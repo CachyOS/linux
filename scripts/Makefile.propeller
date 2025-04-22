@@ -24,7 +24,7 @@ ifndef CONFIG_DEBUG_INFO
   endif
 endif
 
-ifdef CONFIG_LTO_CLANG_THIN
+ifeq ($(or $(CONFIG_LTO_CLANG_THIN),$(CONFIG_LTO_CLANG_THIN_DIST)),y)
   ifdef CLANG_PROPELLER_PROFILE_PREFIX
     KBUILD_LDFLAGS += --lto-basic-block-sections=$(CLANG_PROPELLER_PROFILE_PREFIX)_cc_profile.txt
   else

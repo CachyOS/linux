@@ -13,7 +13,7 @@ ifdef CLANG_AUTOFDO_PROFILE
   CFLAGS_AUTOFDO_CLANG += -fsplit-machine-functions
 endif
 
-ifdef CONFIG_LTO_CLANG_THIN
+ifeq ($(or $(CONFIG_LTO_CLANG_THIN),$(CONFIG_LTO_CLANG_THIN_DIST)),y)
   ifdef CLANG_AUTOFDO_PROFILE
     KBUILD_LDFLAGS += --lto-sample-profile=$(CLANG_AUTOFDO_PROFILE)
   endif
