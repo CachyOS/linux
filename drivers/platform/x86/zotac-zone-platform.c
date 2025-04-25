@@ -359,7 +359,7 @@ static int set_pwm_enable(struct device *dev, u8 mode)
 		data->curve_enabled = false;
 		if (data->curve_enabled) {
 			data->curve_enabled = false;
-			del_timer(&fan_curve_timer);
+			timer_delete(&fan_curve_timer);
 		}
 		break;
 	case PWM_ENABLE_AUTO:
@@ -368,7 +368,7 @@ static int set_pwm_enable(struct device *dev, u8 mode)
 		data->curve_enabled = false;
 		if (data->curve_enabled) {
 			data->curve_enabled = false;
-			del_timer(&fan_curve_timer);
+			timer_delete(&fan_curve_timer);
 		}
 		break;
 	case PWM_ENABLE_CURVE:
@@ -1106,7 +1106,7 @@ err_release:
 
 static void __exit zotac_platform_exit(void)
 {
-	del_timer_sync(&fan_curve_timer);
+	timer_delete_sync(&fan_curve_timer);
 
 	platform_driver_unregister(&zotac_platform_driver);
 	platform_device_unregister(zotac_platform_device);
