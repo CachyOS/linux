@@ -24,7 +24,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.4"
+#define ADIOS_VERSION "1.5.5"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -213,7 +213,7 @@ static bool lm_update_small_buckets(struct latency_model *model,
 				threshold_count - (cumulative_count - bucket->count);
 			if (bucket->count > 0) {
 				sum_latency +=
-					(bucket->sum_latency * remaining_count) / bucket->count;
+					div_u64((bucket->sum_latency * remaining_count), bucket->count);
 				sum_count += remaining_count;
 			}
 		}
@@ -285,9 +285,9 @@ static bool lm_update_large_buckets(
 				threshold_count - (cumulative_count - bucket->count);
 			if (bucket->count > 0) {
 				sum_latency +=
-					(bucket->sum_latency * remaining_count) / bucket->count;
+					div_u64((bucket->sum_latency * remaining_count), bucket->count);
 				sum_block_size +=
-					(bucket->sum_block_size * remaining_count) / bucket->count;
+					div_u64((bucket->sum_block_size * remaining_count), bucket->count);
 			}
 		}
 	}
@@ -370,11 +370,11 @@ static u8 lm_input_bucket_index(
 	u8 bucket_index;
 
 	if (measured < predicted * 2)
-		bucket_index = (measured * 20) / predicted;
+		bucket_index = div_u64((measured * 20), predicted);
 	else if (measured < predicted * 5)
-		bucket_index = (measured * 10) / predicted + 20;
+		bucket_index = div_u64((measured * 10), predicted) + 20;
 	else
-		bucket_index = (measured * 3) / predicted + 40;
+		bucket_index = div_u64((measured * 3), predicted) + 40;
 
 	return bucket_index;
 }
@@ -807,7 +807,7 @@ static struct request *dispatch_from_bq(struct adios_data *ad) {
 	tpl = atomic64_read(&ad->total_pred_lat);
 
 	if (!ad->more_bq_ready && (!tpl ||
-			tpl < ad->global_latency_window * ad->bq_refill_below_ratio / 100))
+			tpl < div_u64(ad->global_latency_window * ad->bq_refill_below_ratio, 100) ))
 		fill_batch_queues(ad, tpl);
 
 again:
