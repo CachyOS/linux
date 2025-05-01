@@ -5202,10 +5202,21 @@ static int amdgpu_device_pm_notifier(struct notifier_block *nb, unsigned long mo
 				     void *data)
 {
 	struct amdgpu_device *adev = container_of(nb, struct amdgpu_device, pm_nb);
+	int r = 0;
 
 	switch (mode) {
-	case PM_HIBERNATION_PREPARE:
+	case PM_HIBERNATION_POST_FREEZE:
 		adev->in_s4 = true;
+		fallthrough;
+	case PM_SUSPEND_POST_FREEZE:
+		r = amdgpu_device_evict_resources(adev);
+		/*
+		 * This is considered non-fatal at this time because
+		 * amdgpu_device_prepare() will also fatally evict resources.
+		 * See https://gitlab.freedesktop.org/drm/amd/-/issues/3781
+		 */
+		if (r)
+			drm_warn(adev_to_drm(adev), "Failed to evict resources, freeze active processes if problems occur: %d\n", r);
 		break;
 	case PM_POST_HIBERNATION:
 		adev->in_s4 = false;
