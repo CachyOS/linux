@@ -433,12 +433,14 @@ static inline int is_hibernate_resume_dev(dev_t dev) { return 0; }
 #endif
 
 /* Hibernation and suspend events */
-#define PM_HIBERNATION_PREPARE	0x0001 /* Going to hibernate */
-#define PM_POST_HIBERNATION	0x0002 /* Hibernation finished */
-#define PM_SUSPEND_PREPARE	0x0003 /* Going to suspend the system */
-#define PM_POST_SUSPEND		0x0004 /* Suspend finished */
-#define PM_RESTORE_PREPARE	0x0005 /* Going to restore a saved image */
-#define PM_POST_RESTORE		0x0006 /* Restore failed */
+#define PM_HIBERNATION_PREPARE		0x0001 /* Going to hibernate */
+#define PM_HIBERNATION_POST_FREEZE	0x0002 /* Prepared for hibernation and tasks have been frozen */
+#define PM_POST_HIBERNATION		0x0003 /* Hibernation finished */
+#define PM_SUSPEND_PREPARE		0x0004 /* Going to suspend the system */
+#define PM_SUSPEND_POST_FREEZE		0x0005 /* Prepared and tasks have been frozen */
+#define PM_POST_SUSPEND			0x0006 /* Suspend finished */
+#define PM_RESTORE_PREPARE		0x0007 /* Going to restore a saved image */
+#define PM_POST_RESTORE			0x0008 /* Restore failed */
 
 extern struct mutex system_transition_mutex;
 

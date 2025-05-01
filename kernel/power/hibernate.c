@@ -830,11 +830,15 @@ int hibernate(void)
 	if (error)
 		goto Exit;
 
+	error = pm_notifier_call_chain_robust(PM_HIBERNATION_POST_FREEZE, PM_POST_HIBERNATION);
+	if (error)
+		goto Thaw;
+
 	lock_device_hotplug();
 	/* Allocate memory management structures */
 	error = create_basic_memory_bitmaps();
 	if (error)
-		goto Thaw;
+		goto Unlock_hotplug;
 
 	error = hibernation_snapshot(hibernation_mode == HIBERNATION_PLATFORM);
 	if (error || freezer_test_done)
@@ -880,8 +884,9 @@ int hibernate(void)
 
  Free_bitmaps:
 	free_basic_memory_bitmaps();
- Thaw:
+ Unlock_hotplug:
 	unlock_device_hotplug();
+ Thaw:
 	if (snapshot_test) {
 		pm_pr_dbg("Checking hibernation image\n");
 		error = swsusp_check(false);

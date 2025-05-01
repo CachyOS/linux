@@ -386,14 +386,20 @@ static int suspend_prepare(suspend_state_t state)
 	trace_suspend_resume(TPS("freeze_processes"), 0, true);
 	error = suspend_freeze_processes();
 	trace_suspend_resume(TPS("freeze_processes"), 0, false);
-	if (!error)
-		return 0;
+	if (error)
+		goto Unfreeze;
+	error = pm_notifier_call_chain_robust(PM_SUSPEND_POST_FREEZE, PM_POST_SUSPEND);
+	if (error)
+		goto Unfreeze;
+	return 0;
 
+Unfreeze:
 	dpm_save_failed_step(SUSPEND_FREEZE);
 	filesystems_thaw();
 	pm_notifier_call_chain(PM_POST_SUSPEND);
  Restore:
 	pm_restore_console();
+	dpm_save_failed_step(SUSPEND_FREEZE);
 	return error;
 }
 

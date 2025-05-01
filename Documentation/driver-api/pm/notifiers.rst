@@ -32,6 +32,18 @@ will be called upon the following events by the PM core:
 	additional work is done between the notifiers and the invocation of PM
 	callbacks for the "freeze" transition.
 
+``PM_HIBERNATION_POST_FREEZE``
+	The system is going to hibernate and tasks have just been frozen.
+
+``PM_SUSPEND_PREPARE``
+	The system is going to suspend, tasks will be frozen immediately.  This
+	is different from ``PM_HIBERNATION_PREPARE`` above, because in this case
+	additional work is done between the notifiers and the invocation of PM
+	callbacks for the "freeze" transition.
+
+``PM_SUSPEND_POST_FREEZE``
+	The system is going to suspend and tasks have just been frozen.
+
 ``PM_POST_HIBERNATION``
 	The system memory state has been restored from a hibernation image or an
 	error occurred during hibernation.  Device restore callbacks have been
@@ -54,9 +66,10 @@ will be called upon the following events by the PM core:
 	resume callbacks have been executed and tasks have been thawed.
 
 It is generally assumed that whatever the notifiers do for
-``PM_HIBERNATION_PREPARE``, should be undone for ``PM_POST_HIBERNATION``.
-Analogously, operations carried out for ``PM_SUSPEND_PREPARE`` should be
-reversed for ``PM_POST_SUSPEND``.
+``PM_HIBERNATION_PREPARE`` and ``PM_HIBERNATION_POST_FREEZE``, should be undone
+for ``PM_POST_HIBERNATION``.
+Analogously, operations carried out for ``PM_SUSPEND_PREPARE`` and ``PM_SUSPEND_POST_FREEZE``
+should be reversed for ``PM_POST_SUSPEND``.
 
 Moreover, if one of the notifiers fails for the ``PM_HIBERNATION_PREPARE`` or
 ``PM_SUSPEND_PREPARE`` event, the notifiers that have already succeeded for that
