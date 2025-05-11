@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Linux driver for WMI platform features on MSI notebooks.
+ * Linux driver for WMI platform features on MSI notebooks and handhelds.
  *
- * Copyright (C) 2024 Armin Wolf <W_Armin@gmx.de>
+ * Copyright (C) 2024-2025 Armin Wolf <W_Armin@gmx.de>
+ * Copyright (C) 2025 Antheas Kapenekakis <lkml@antheas.dev>
  */
 
 #define pr_format(fmt) KBUILD_MODNAME ": " fmt
