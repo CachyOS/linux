@@ -576,6 +576,7 @@ config MSI_WMI_PLATFORM
 	depends on DMI
 	depends on HWMON
 	select ACPI_PLATFORM_PROFILE
+	select FW_ATTR_CLASS
 	help
 	  Say Y here if you want to have support for WMI-based platform features
 	  like fan sensor access on MSI machines.
