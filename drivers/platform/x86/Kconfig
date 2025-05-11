@@ -740,6 +740,7 @@ config MSI_WMI_PLATFORM
 	tristate "MSI WMI Platform features"
 	depends on ACPI_WMI
 	depends on HWMON
+	select ACPI_PLATFORM_PROFILE
 	help
 	  Say Y here if you want to have support for WMI-based platform features
 	  like fan sensor access on MSI machines.
