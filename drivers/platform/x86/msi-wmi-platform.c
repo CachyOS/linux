@@ -140,7 +140,7 @@ static int msi_wmi_platform_parse_buffer(union acpi_object *obj, u8 *output, siz
 	return 0;
 }
 
-static int msi_wmi_platform_query(struct msi_wmi_platform_data *data,
+static int msi_wmi_platform_query_unlocked(struct msi_wmi_platform_data *data,
 				  enum msi_wmi_platform_method method, u8 *buffer,
 				  size_t length)
 {
@@ -156,15 +156,9 @@ static int msi_wmi_platform_query(struct msi_wmi_platform_data *data,
 	if (!length)
 		return -EINVAL;
 
-	/*
-	 * The ACPI control method responsible for handling the WMI method calls
-	 * is not thread-safe. Because of this we have to do the locking ourself.
-	 */
-	scoped_guard(mutex, &data->wmi_lock) {
-		status = wmidev_evaluate_method(data->wdev, 0x0, method, &in, &out);
-		if (ACPI_FAILURE(status))
-			return -EIO;
-	}
+	status = wmidev_evaluate_method(data->wdev, 0x0, method, &in, &out);
+	if (ACPI_FAILURE(status))
+		return -EIO;
 
 	obj = out.pointer;
 	if (!obj)
@@ -174,6 +168,19 @@ static int msi_wmi_platform_query(struct msi_wmi_platform_data *data,
 	kfree(obj);
 
 	return ret;
+}
+
+static int msi_wmi_platform_query(struct msi_wmi_platform_data *data,
+				  enum msi_wmi_platform_method method, u8 *buffer,
+				  size_t length)
+{
+	/*
+	 * The ACPI control method responsible for handling the WMI method calls
+	 * is not thread-safe. Because of this we have to do the locking ourself.
+	 */
+	scoped_guard(mutex, &data->wmi_lock) {
+		return msi_wmi_platform_query_unlocked(data, method, buffer, length);
+	}
 }
 
 static umode_t msi_wmi_platform_is_visible(const void *drvdata, enum hwmon_sensor_types type,
