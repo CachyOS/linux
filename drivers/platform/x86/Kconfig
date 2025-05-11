@@ -738,6 +738,7 @@ config MSI_WMI
 
 config MSI_WMI_PLATFORM
 	tristate "MSI WMI Platform features"
+	depends on ACPI_BATTERY
 	depends on ACPI_WMI
 	depends on HWMON
 	select ACPI_PLATFORM_PROFILE
