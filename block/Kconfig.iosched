@@ -20,10 +20,15 @@ config MQ_IOSCHED_ADIOS
 	tristate "Adaptive Deadline I/O scheduler"
 	default m
 	help
-	  ADIOS is a multi-queue I/O scheduler for the Linux kernel, based on
-	  mq-deadline and Kyber, with learning-based adaptive latency control.
-	  It aims to provide low latency for synchronous requests while
-	  maintaining high throughput for asynchronous requests and bulk I/O.
+	  The Adaptive Deadline I/O Scheduler (ADIOS) is a multi-queue I/O
+	  scheduler with learning-based adaptive latency control.
+
+config MQ_IOSCHED_DEFAULT_ADIOS
+	bool "Enable ADIOS I/O scheduler as default MQ I/O scheduler"
+	depends on MQ_IOSCHED_ADIOS=y
+	default n
+	help
+	  Enable the ADIOS I/O scheduler as the default scheduler for MQ I/O.
 
 config IOSCHED_BFQ
 	tristate "BFQ I/O scheduler"

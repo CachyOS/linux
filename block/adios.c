@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * The Adaptive Deadline I/O Scheduler (ADIOS)
- * Based on mq-deadline and Kyber,
- * with learning-based adaptive latency control
- *
+ * Adaptive Deadline I/O Scheduler (ADIOS)
  * Copyright (C) 2025 Masahito Suzuki
  */
 #include <linux/bio.h>
@@ -24,7 +21,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.5"
+#define ADIOS_VERSION "1.5.7"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -762,7 +759,7 @@ static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 		current_lat += rd->pred_lat;
 
 		// Check batch size and total predicted latency
-		if (count && (!ad->latency_model[optype].base || 
+		if (count && (!ad->latency_model[optype].base ||
 			ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
 			current_lat > ad->global_latency_window)) {
 			break;
