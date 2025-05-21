@@ -558,7 +558,7 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 
 #ifdef CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 	return elevator_find_get("adios");
-#else // !CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
+#endif // CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 
 	if (q->nr_hw_queues != 1 &&
 	    !blk_mq_is_shared_tags(q->tag_set->flags))
@@ -573,7 +573,6 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 #else
 	return elevator_find_get("mq-deadline");
 #endif
-#endif // CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 }
 
 /*

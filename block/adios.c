@@ -21,7 +21,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.7"
+#define ADIOS_VERSION "1.5.8"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -134,6 +134,8 @@ struct adios_data {
 
 	struct kmem_cache *rq_data_pool;
 	struct kmem_cache *dl_group_pool;
+
+	struct request_queue *queue;
 };
 
 // List of requests with the same deadline in the deadline-sorted tree
@@ -759,7 +761,7 @@ static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 		current_lat += rd->pred_lat;
 
 		// Check batch size and total predicted latency
-		if (count && (!ad->latency_model[optype].base ||
+		if (count && (!ad->latency_model[optype].base || 
 			ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
 			current_lat > ad->global_latency_window)) {
 			break;
@@ -993,6 +995,9 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 	/* We dispatch from request queue wide instead of hw queue */
 	blk_queue_flag_set(QUEUE_FLAG_SQ_SCHED, q);
 
+	ad->queue = q;
+	blk_stat_enable_accounting(q);
+
 	q->elevator = eq;
 	return 0;
 
@@ -1018,6 +1023,8 @@ static void adios_exit_sched(struct elevator_queue *e) {
 
 	if (ad->dl_group_pool)
 		kmem_cache_destroy(ad->dl_group_pool);
+
+	blk_stat_disable_accounting(ad->queue);
 
 	kfree(ad);
 }
@@ -1308,8 +1315,6 @@ static struct elevator_type mq_adios = {
 		.init_sched			= adios_init_sched,
 		.exit_sched			= adios_exit_sched,
 	},
-#ifdef CONFIG_BLK_DEBUG_FS
-#endif
 	.elevator_attrs = adios_sched_attrs,
 	.elevator_name = "adios",
 	.elevator_owner = THIS_MODULE,
