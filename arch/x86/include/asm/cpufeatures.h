@@ -485,6 +485,7 @@
 #define X86_FEATURE_AMD_HETEROGENEOUS_CORES (21*32 + 6) /* Heterogeneous Core Topology */
 #define X86_FEATURE_AMD_WORKLOAD_CLASS	(21*32 + 7) /* Workload Classification */
 #define X86_FEATURE_INDIRECT_THUNK_ITS	(21*32 + 8) /* Use thunk for indirect branches in lower half of cacheline */
+#define X86_FEATURE_PREFER_YMM		(21*32 + 9) /* Avoid ZMM registers due to downclocking */
 
 /*
  * BUG word(s)
