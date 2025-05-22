@@ -29,6 +29,8 @@ obj-$(CONFIG_HID_ALPS)		+= hid-alps.o
 obj-$(CONFIG_HID_ACRUX)		+= hid-axff.o
 obj-$(CONFIG_HID_APPLE)		+= hid-apple.o
 obj-$(CONFIG_HID_APPLEIR)	+= hid-appleir.o
+obj-$(CONFIG_HID_APPLETB_BL)	+= hid-appletb-bl.o
+obj-$(CONFIG_HID_APPLETB_KBD)	+= hid-appletb-kbd.o
 obj-$(CONFIG_HID_CREATIVE_SB0540)	+= hid-creative-sb0540.o
 obj-$(CONFIG_HID_ASUS)		+= hid-asus.o
 obj-$(CONFIG_HID_AUREAL)	+= hid-aureal.o
@@ -175,3 +177,7 @@ obj-$(CONFIG_ASUS_ALLY_HID)  += asus-ally-hid/
 obj-$(CONFIG_SURFACE_HID_CORE)  += surface-hid/
 
 obj-$(CONFIG_INTEL_THC_HID)     += intel-thc-hid/
+
+obj-$(CONFIG_SPI_HID_APPLE_CORE)	+= spi-hid/
+
+obj-$(CONFIG_HID_DOCKCHANNEL)	+= dockchannel-hid/

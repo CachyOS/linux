@@ -129,7 +129,7 @@ config HID_APPLE
 	tristate "Apple {i,Power,Mac}Books"
 	depends on LEDS_CLASS
 	depends on NEW_LEDS
-	default !EXPERT
+	default !EXPERT || SPI_HID_APPLE
 	help
 	Support for some Apple devices which less or more break
 	HID specification.
@@ -147,6 +147,31 @@ config HID_APPLEIR
 	  prior to the 2010 model.
 
 	Say Y here if you want support for Apple infrared remote control.
+
+config HID_APPLETB_BL
+	tristate "Apple Touch Bar Backlight"
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want support for the backlight of Touch Bars on x86
+	  MacBook Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-bl.
+
+config HID_APPLETB_KBD
+	tristate "Apple Touch Bar Keyboard Mode"
+	depends on USB_HID
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on INPUT
+	select INPUT_SPARSEKMAP
+	select HID_APPLETB_BL
+	help
+	  Say Y here if you want support for the keyboard mode (escape,
+	  function, media and brightness keys) of Touch Bars on x86 MacBook
+	  Pros.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-appletb-kbd.
 
 config HID_ASUS
 	tristate "Asus"
@@ -689,11 +714,13 @@ config LOGIWHEELS_FF
 
 config HID_MAGICMOUSE
 	tristate "Apple Magic Mouse/Trackpad multi-touch support"
+	default SPI_HID_APPLE
 	help
 	Support for the Apple Magic Mouse/Trackpad multi-touch.
 
 	Say Y here if you want support for the multi-touch features of the
-	Apple Wireless "Magic" Mouse and the Apple Wireless "Magic" Trackpad.
+	Apple Wireless "Magic" Mouse, the Apple Wireless "Magic" Trackpad and
+	force touch Trackpads in Macbooks starting from 2015.
 
 config HID_MALTRON
 	tristate "Maltron L90 keyboard"
@@ -743,6 +770,7 @@ config HID_MULTITOUCH
 	  Say Y here if you have one of the following devices:
 	  - 3M PCT touch screens
 	  - ActionStar dual touch panels
+	  - Touch Bars on x86 MacBook Pros
 	  - Atmel panels
 	  - Cando dual touch panels
 	  - Chunghwa panels
@@ -1408,5 +1436,9 @@ endif # HID
 # USB support may be used with HID disabled
 
 source "drivers/hid/usbhid/Kconfig"
+
+source "drivers/hid/spi-hid/Kconfig"
+
+source "drivers/hid/dockchannel-hid/Kconfig"
 
 endif # HID_SUPPORT
