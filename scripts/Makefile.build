@@ -50,23 +50,18 @@ endif
 
 # ===========================================================================
 
-builtin_suffix := $(if $(filter %.a.thinlto.native, $(MAKECMDGOALS)),.a.thinlto.native,.a)
-ifeq ($(thinlto_final_pass),1)
-builtin_suffix :=.a.thinlto.native
-endif
-
 # subdir-builtin and subdir-modorder may contain duplications. Use $(sort ...)
-subdir-builtin := $(sort $(filter %/built-in$(builtin_suffix), $(real-obj-y)))
+subdir-builtin := $(sort $(filter %/built-in.a, $(real-obj-y)))
 subdir-modorder := $(sort $(filter %/modules.order, $(obj-m)))
 
 targets-for-builtin := $(extra-y)
 
 ifneq ($(strip $(lib-y) $(lib-m) $(lib-)),)
-targets-for-builtin += $(obj)/lib$(builtin_suffix)
+targets-for-builtin += $(obj)/lib.a
 endif
 
 ifdef need-builtin
-targets-for-builtin += $(obj)/built-in$(builtin_suffix)
+targets-for-builtin += $(obj)/built-in.a
 endif
 
 targets-for-modules := $(foreach x, o mod, \
@@ -342,10 +337,6 @@ $(obj)/%.o: $(obj)/%.S FORCE
 targets += $(filter-out $(subdir-builtin), $(real-obj-y))
 targets += $(filter-out $(subdir-modorder), $(real-obj-m))
 targets += $(lib-y) $(always-y)
-ifeq ($(builtin_suffix),.a.thinlto.native)
-native_targets = $(patsubst,%.o,%.o.thinlto.native,$(targets))
-targets += $(native_targets)
-endif
 
 # Linker scripts preprocessor (.lds.S -> .lds)
 # ---------------------------------------------------------------------------
@@ -355,24 +346,6 @@ quiet_cmd_cpp_lds_S = LDS     $@
 
 $(obj)/%.lds: $(src)/%.lds.S FORCE
 	$(call if_changed_dep,cpp_lds_S)
-
-ifdef CONFIG_LTO_CLANG_THIN_DIST
-# Generate .o.thinlto.native (obj) from .o (bitcode) file
-# ---------------------------------------------------------------------------
-quiet_cmd_cc_o_bc = CC $(quiet_modtag) $@
-
-cmd_cc_o_bc      = $(if $(filter bitcode, $(shell file -b $<)),$(CC) \
-		   $(filter-out -Wp% $(LINUXINCLUDE) %.h.gch %.h -D% \
-		   -flto=thin, $(c_flags)) \
-		   -Wno-unused-command-line-argument \
-		   -x ir -fthinlto-index=$<.thinlto.bc -c -o $@ \
-		   $(if $(findstring ../,$<), \
-		   $$(realpath --relative-to=$(srcroot) $<), $<), \
-		   cp $< $@)
-
-$(obj)/%.o.thinlto.native: $(obj)/%.o FORCE
-	$(call if_changed,cc_o_bc)
-endif
 
 # ASN.1 grammar
 # ---------------------------------------------------------------------------
@@ -387,7 +360,7 @@ $(obj)/%.asn1.c $(obj)/%.asn1.h: $(src)/%.asn1 $(objtree)/scripts/asn1_compiler
 # ---------------------------------------------------------------------------
 
 # To build objects in subdirs, we need to descend into the directories
-$(subdir-builtin): $(obj)/%/built-in$(builtin_suffix): $(obj)/% ;
+$(subdir-builtin): $(obj)/%/built-in.a: $(obj)/% ;
 $(subdir-modorder): $(obj)/%/modules.order: $(obj)/% ;
 
 #
@@ -403,12 +376,6 @@ quiet_cmd_ar_builtin = AR      $@
 
 $(obj)/built-in.a: $(real-obj-y) FORCE
 	$(call if_changed,ar_builtin)
-
-ifdef CONFIG_LTO_CLANG_THIN_DIST
-# Rule to compile a set of .o.thinlto.native files into one .a.thinlto.native file.
-$(obj)/built-in.a.thinlto.native: $(patsubst %.o,%.o.thinlto.native,$(real-obj-y)) FORCE
-	$(call if_changed,ar_builtin)
-endif
 
 # This is a list of build artifacts from the current Makefile and its
 # sub-directories. The timestamp should be updated when any of the member files.
@@ -426,14 +393,6 @@ $(obj)/modules.order: $(obj-m) FORCE
 
 $(obj)/lib.a: $(lib-y) FORCE
 	$(call if_changed,ar)
-
-ifdef CONFIG_LTO_CLANG_THIN_DIST
-quiet_cmd_ar_native = AR      $@
-      cmd_ar_native = rm -f $@; $(AR) cDPrsT $@ $(patsubst %.o,%.o.thinlto.native,$(real-prereqs))
-
-$(obj)/lib.a.thinlto.native: $(patsubst %.o,%.o.thinlto.native,$(lib-y)) FORCE
-	$(call if_changed,ar_native)
-endif
 
 quiet_cmd_ld_multi_m = LD [M]  $@
       cmd_ld_multi_m = $(LD) $(ld_flags) -r -o $@ @$< $(cmd_objtool)
@@ -500,8 +459,7 @@ $(single-subdir-goals): $(single-subdirs)
 PHONY += $(subdir-ym)
 $(subdir-ym):
 	$(Q)$(MAKE) $(build)=$@ \
-	need-builtin=$(if $(filter $@/built-in$(builtin_suffix), $(subdir-builtin)),1) \
-	thinlto_final_pass=$(if $(filter .a.thinlto.native, $(builtin_suffix)),1) \
+	need-builtin=$(if $(filter $@/built-in.a, $(subdir-builtin)),1) \
 	need-modorder=$(if $(filter $@/modules.order, $(subdir-modorder)),1) \
 	$(filter $@/%, $(single-subdir-goals))
 

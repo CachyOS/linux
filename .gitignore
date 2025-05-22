@@ -12,7 +12,6 @@
 #
 .*
 *.a
-*.a.thinlto_native
 *.asn1.[ch]
 *.bin
 *.bz2
@@ -65,7 +64,6 @@ modules.order
 /vmlinux
 /vmlinux.32
 /vmlinux.map
-/vmlinux.thinlink
 /vmlinux.symvers
 /vmlinux.unstripped
 /vmlinux-gdb.py
