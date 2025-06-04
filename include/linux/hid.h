@@ -678,6 +678,7 @@ struct hid_device {
 	void (*hiddev_hid_event) (struct hid_device *, struct hid_field *field,
 				  struct hid_usage *, __s32);
 	void (*hiddev_report_event) (struct hid_device *, struct hid_report *);
+	int (*uevent)(const struct device *dev, struct kobj_uevent_env *env);
 
 	/* debugging support via debugfs */
 	unsigned short debug;
