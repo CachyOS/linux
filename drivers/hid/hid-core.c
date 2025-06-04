@@ -2850,6 +2850,12 @@ static int hid_uevent(const struct device *dev, struct kobj_uevent_env *env)
 				   hdev->firmware_version))
 			return -ENOMEM;
 	}
+	if (hdev->uevent) {
+		int ret = hdev->uevent(dev, env);
+
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }
