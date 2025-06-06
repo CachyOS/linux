@@ -476,7 +476,7 @@ static int cpio_mkfile_line(const char *line)
 		int len;
 		int nend;
 
-		dname = malloc(strlen(line));
+		dname = malloc(strlen(line) + 1);
 		if (!dname) {
 			fprintf (stderr, "out of memory (%d)\n", dname_len);
 			goto fail;
