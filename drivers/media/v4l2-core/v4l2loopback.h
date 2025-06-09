@@ -11,7 +11,7 @@
 #define _V4L2LOOPBACK_H
 
 #define V4L2LOOPBACK_VERSION_MAJOR 0
-#define V4L2LOOPBACK_VERSION_MINOR 14
+#define V4L2LOOPBACK_VERSION_MINOR 15
 #define V4L2LOOPBACK_VERSION_BUGFIX 0
 
 /* /dev/v4l2loopback interface */
@@ -32,8 +32,8 @@ struct v4l2_loopback_config {
          * or one (and only one) of them must be -1
          *
          */
-	int output_nr;
-	int unused; /*capture_nr;*/
+	__s32 output_nr;
+	__s32 unused; /*capture_nr;*/
 
 	/**
          * a nice name for your device
@@ -45,27 +45,27 @@ struct v4l2_loopback_config {
          * allowed frame size
          * if too low, default values are used
          */
-	unsigned int min_width;
-	unsigned int max_width;
-	unsigned int min_height;
-	unsigned int max_height;
+	__u32 min_width;
+	__u32 max_width;
+	__u32 min_height;
+	__u32 max_height;
 
 	/**
          * number of buffers to allocate for the queue
          * if set to <=0, default values are used
          */
-	int max_buffers;
+	__s32 max_buffers;
 
 	/**
          * how many consumers are allowed to open this device concurrently
          * if set to <=0, default values are used
          */
-	int max_openers;
+	__s32 max_openers;
 
 	/**
          * set the debugging level for this device
          */
-	int debug;
+	__s32 debug;
 
 	/**
          * whether to announce OUTPUT/CAPTURE capabilities exclusively
@@ -74,8 +74,16 @@ struct v4l2_loopback_config {
 	 * NOTE: this is going to be removed once separate output/capture
 	 *       devices are implemented
          */
-	int announce_all_caps;
+	__s32 announce_all_caps;
 };
+
+#define V4L2LOOPBACK_CTL_IOCTLMAGIC '~'
+
+/* a pointer to an (unsigned int) that - on success - will hold
+ * the version code of the v4l2loopback module
+ * as returned by KERNEL_VERSION(MAJOR, MINOR, BUGFIX)
+ */
+#define V4L2LOOPBACK_CTL_VERSION _IOR(V4L2LOOPBACK_CTL_IOCTLMAGIC, 0, __u32)
 
 /* a pointer to a (struct v4l2_loopback_config) that has all values you wish to impose on the
  * to-be-created device set.
@@ -84,15 +92,17 @@ struct v4l2_loopback_config {
  * returns the device_nr of the OUTPUT device (which can be used with V4L2LOOPBACK_CTL_QUERY,
  * to get more information on the device)
  */
-#define V4L2LOOPBACK_CTL_ADD 0x4C80
+#define V4L2LOOPBACK_CTL_ADD \
+	_IOW(V4L2LOOPBACK_CTL_IOCTLMAGIC, 1, struct v4l2_loopback_config)
+
+/* the device-number (either CAPTURE or OUTPUT) associated with the loopback-device */
+#define V4L2LOOPBACK_CTL_REMOVE _IOW(V4L2LOOPBACK_CTL_IOCTLMAGIC, 2, __u32)
 
 /* a pointer to a (struct v4l2_loopback_config) that has output_nr and/or capture_nr set
  * (the two values must either refer to video-devices associated with the same loopback device
  *  or exactly one of them must be <0
  */
-#define V4L2LOOPBACK_CTL_QUERY 0x4C82
-
-/* the device-number (either CAPTURE or OUTPUT) associated with the loopback-device */
-#define V4L2LOOPBACK_CTL_REMOVE 0x4C81
+#define V4L2LOOPBACK_CTL_QUERY \
+	_IOWR(V4L2LOOPBACK_CTL_IOCTLMAGIC, 3, struct v4l2_loopback_config)
 
 #endif /* _V4L2LOOPBACK_H */
