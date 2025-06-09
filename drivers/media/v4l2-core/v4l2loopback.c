@@ -45,7 +45,7 @@
 #define strscpy strlcpy
 #endif
 
-#if defined(timer_setup) && defined(from_timer)
+#if defined(timer_setup) && defined(timer_container_of)
 #define HAVE_TIMER_SETUP
 #endif
 
@@ -2669,7 +2669,7 @@ static void check_timers(struct v4l2_loopback_device *dev)
 #ifdef HAVE_TIMER_SETUP
 static void sustain_timer_clb(struct timer_list *t)
 {
-	struct v4l2_loopback_device *dev = from_timer(dev, t, sustain_timer);
+	struct v4l2_loopback_device *dev = timer_container_of(dev, t, sustain_timer);
 #else
 static void sustain_timer_clb(unsigned long nr)
 {
@@ -2694,7 +2694,7 @@ static void sustain_timer_clb(unsigned long nr)
 #ifdef HAVE_TIMER_SETUP
 static void timeout_timer_clb(struct timer_list *t)
 {
-	struct v4l2_loopback_device *dev = from_timer(dev, t, timeout_timer);
+	struct v4l2_loopback_device *dev = timer_container_of(dev, t, timeout_timer);
 #else
 static void timeout_timer_clb(unsigned long nr)
 {
