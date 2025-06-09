@@ -33,6 +33,10 @@
 #include <linux/miscdevice.h>
 #include "v4l2loopback.h"
 
+#define V4L2LOOPBACK_CTL_ADD_legacy 0x4C80
+#define V4L2LOOPBACK_CTL_REMOVE_legacy 0x4C81
+#define V4L2LOOPBACK_CTL_QUERY_legacy 0x4C82
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 0, 0)
 #error This module is not supported on kernels before 4.0.0.
 #endif
@@ -47,6 +51,10 @@
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
 #define VFL_TYPE_VIDEO VFL_TYPE_GRABBER
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+#define timer_delete_sync del_timer_sync
 #endif
 
 #define V4L2LOOPBACK_VERSION_CODE                                              \
@@ -2972,6 +2980,7 @@ static long v4l2loopback_control_ioctl(struct file *file, unsigned int cmd,
 	struct v4l2_loopback_config *confptr = &conf;
 	int device_nr, capture_nr, output_nr;
 	int ret;
+	const __u32 version = V4L2LOOPBACK_VERSION_CODE;
 
 	ret = mutex_lock_killable(&v4l2loopback_ctl_mutex);
 	if (ret)
@@ -2984,6 +2993,7 @@ static long v4l2loopback_control_ioctl(struct file *file, unsigned int cmd,
 		break;
 		/* add a v4l2loopback device (pair), based on the user-provided specs */
 	case V4L2LOOPBACK_CTL_ADD:
+	case V4L2LOOPBACK_CTL_ADD_legacy:
 		if (parm) {
 			if ((ret = copy_from_user(&conf, (void *)parm,
 						  sizeof(conf))) < 0)
@@ -2996,7 +3006,8 @@ static long v4l2loopback_control_ioctl(struct file *file, unsigned int cmd,
 		break;
 		/* remove a v4l2loopback device (both capture and output) */
 	case V4L2LOOPBACK_CTL_REMOVE:
-		ret = v4l2loopback_lookup((int)parm, &dev);
+	case V4L2LOOPBACK_CTL_REMOVE_legacy:
+		ret = v4l2loopback_lookup((__u32)parm, &dev);
 		if (ret >= 0 && dev) {
 			ret = -EBUSY;
 			if (dev->open_count.counter > 0)
@@ -3009,6 +3020,7 @@ static long v4l2loopback_control_ioctl(struct file *file, unsigned int cmd,
 		 * this is mostly about limits (which cannot be queried directly with  VIDIOC_G_FMT and friends
 		 */
 	case V4L2LOOPBACK_CTL_QUERY:
+	case V4L2LOOPBACK_CTL_QUERY_legacy:
 		if (!parm)
 			break;
 		if ((ret = copy_from_user(&conf, (void *)parm, sizeof(conf))) <
@@ -3056,6 +3068,15 @@ static long v4l2loopback_control_ioctl(struct file *file, unsigned int cmd,
 		conf.debug = debug;
 		MARK();
 		if (copy_to_user((void *)parm, &conf, sizeof(conf))) {
+			ret = -EFAULT;
+			break;
+		}
+		ret = 0;
+		break;
+	case V4L2LOOPBACK_CTL_VERSION:
+		if (!parm)
+			break;
+		if (copy_to_user((void *)parm, &version, sizeof(version))) {
 			ret = -EFAULT;
 			break;
 		}
