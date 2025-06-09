@@ -1441,4 +1441,6 @@ source "drivers/hid/usbhid/Kconfig"
 
 source "drivers/hid/zotac-zone-hid/Kconfig"
 
+source "drivers/hid/lenovo-legos-hid/Kconfig"
+
 endif # HID_SUPPORT

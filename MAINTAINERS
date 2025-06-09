@@ -13695,6 +13695,17 @@ L:	platform-driver-x86@vger.kernel.org
 S:	Maintained
 F:	drivers/platform/x86/lenovo-wmi-hotkey-utilities.c
 
+LENOVO LEGION GO S HID
+M:	Derek J. Clark <derekjohn.clark@gmail.com>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/hid/lenovo-legos-hid/Kconfig
+F:	drivers/hid/lenovo-legos-hid/Makefile
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-config.c
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-config.h
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-core.c
+F:	drivers/hid/lenovo-legos-hid/lenovo-legos-hid-core.h
+
 LETSKETCH HID TABLET DRIVER
 M:	Hans de Goede <hansg@kernel.org>
 L:	linux-input@vger.kernel.org

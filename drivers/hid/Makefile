@@ -179,3 +179,5 @@ obj-$(CONFIG_SURFACE_HID_CORE)  += surface-hid/
 obj-$(CONFIG_INTEL_THC_HID)     += intel-thc-hid/
 
 obj-$(CONFIG_HID_MSI_CLAW)      += hid-msi-claw.o
+
+obj-$(CONFIG_LENOVO_LEGOS_HID)  += lenovo-legos-hid/
