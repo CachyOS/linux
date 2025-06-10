@@ -4760,7 +4760,7 @@ static int get_type_to_scan(struct lruvec *lruvec, struct scan_control *sc, int 
 {
 	struct ctrl_pos sp, pv;
 
-	if (swappiness <= MIN_SWAPPINESS + 1)
+	if (swappiness == MIN_SWAPPINESS)
 		return LRU_GEN_FILE;
 
 	if (sc->clean_below_min)
@@ -4769,6 +4769,9 @@ static int get_type_to_scan(struct lruvec *lruvec, struct scan_control *sc, int 
 		return LRU_GEN_FILE;
 	if (sc->clean_below_low)
 		return LRU_GEN_ANON;
+
+	if (swappiness == MIN_SWAPPINESS + 1)
+		return LRU_GEN_FILE;
 
 	if (swappiness >= MAX_SWAPPINESS)
 		return LRU_GEN_ANON;
@@ -5030,6 +5033,10 @@ static int shrink_one(struct lruvec *lruvec, struct scan_control *sc)
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
 	prepare_workingset_protection(pgdat, sc);
+
+	if (sysctl_workingset_protection && sc->clean_below_min &&
+			!can_reclaim_anon_pages(memcg, pgdat->node_id, sc))
+		return 0;
 
 	/* lru_gen_age_node() called mem_cgroup_calculate_protection() */
 	if (mem_cgroup_below_min(NULL, memcg))
