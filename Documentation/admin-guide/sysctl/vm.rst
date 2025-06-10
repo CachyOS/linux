@@ -128,7 +128,7 @@ swap and can lead to early OOM under memory pressure.
 
 The unit of measurement is the percentage of the total memory of the node.
 
-The default value is 15.
+The default value is 1.
 
 
 clean_low_ratio
@@ -149,7 +149,7 @@ pages in memory.
 
 The unit of measurement is the percentage of the total memory of the node.
 
-The default value is 0.
+The default value is 15.
 
 
 clean_min_ratio
@@ -170,7 +170,7 @@ types of pages cannot be reclaimed.
 
 The unit of measurement is the percentage of the total memory of the node.
 
-The default value is 15.
+The default value is 4.
 
 
 compact_memory
