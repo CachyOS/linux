@@ -21,7 +21,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.9"
+#define ADIOS_VERSION "1.5.10"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -727,44 +727,48 @@ static void init_batch_queues(struct adios_data *ad) {
 
 // Fill the batch queues with requests from the deadline-sorted red-black tree
 static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
+	unsigned long flags;
 	u32 count = 0;
 	u32 optype_count[ADIOS_OPTYPES] = {0};
 	u8 page = (ad->bq_page + 1) % ADIOS_BQ_PAGES;
 
 	reset_batch_counts(ad, page);
 
-	scoped_guard(spinlock_irqsave, &ad->lock) {
-		while (true) {
-			struct request *rq = next_request(ad);
-			if (!rq)
-				break;
+	while (true) {
+		spin_lock_irqsave(&ad->lock, flags);
 
-			struct adios_rq_data *rd = get_rq_data(rq);
-			u8 optype = adios_optype(rq);
-			current_lat += rd->pred_lat;
-
-			// Check batch size and total predicted latency
-			if (count && (!ad->latency_model[optype].base || 
-				ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
-				current_lat > ad->global_latency_window)) {
-				break;
-			}
-
-			remove_request(ad, rq);
-
-			// Add request to the corresponding batch queue
-			list_add_tail(&rq->queuelist, &ad->batch_queue[page][optype]);
-			ad->batch_count[page][optype]++;
-			atomic64_add(rd->pred_lat, &ad->total_pred_lat);
-			optype_count[optype]++;
-			count++;
+		struct request *rq = next_request(ad);
+		if (!rq) {
+			spin_unlock_irqrestore(&ad->lock, flags);
+			break;
 		}
 
-		if (count)
-			ad->more_bq_ready = true;
+		struct adios_rq_data *rd = get_rq_data(rq);
+		u8 optype = adios_optype(rq);
+		current_lat += rd->pred_lat;
+
+		// Check batch size and total predicted latency
+		if (count && (!ad->latency_model[optype].base || 
+				ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
+				current_lat > ad->global_latency_window)) {
+			spin_unlock_irqrestore(&ad->lock, flags);
+			break;
+		}
+
+		remove_request(ad, rq);
+
+		spin_unlock_irqrestore(&ad->lock, flags);
+
+		// Add request to the corresponding batch queue
+		list_add_tail(&rq->queuelist, &ad->batch_queue[page][optype]);
+		ad->batch_count[page][optype]++;
+		atomic64_add(rd->pred_lat, &ad->total_pred_lat);
+		optype_count[optype]++;
+		count++;
 	}
 
 	if (count) {
+		ad->more_bq_ready = true;
 		for (u8 optype = 0; optype < ADIOS_OPTYPES; optype++) {
 			if (ad->batch_actual_max_size[optype] < optype_count[optype])
 				ad->batch_actual_max_size[optype] = optype_count[optype];
