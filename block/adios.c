@@ -21,7 +21,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "1.5.10"
+#define ADIOS_VERSION "1.5.8"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -317,6 +317,7 @@ static bool lm_update_large_buckets(
 
 // Update the latency model parameters and statistics
 static void latency_model_update(struct latency_model *model) {
+	unsigned long flags;
 	u64 now;
 	u32 small_count, large_count;
 	bool time_elapsed;
@@ -324,27 +325,29 @@ static void latency_model_update(struct latency_model *model) {
 
 	guard(spinlock_irqsave)(&model->lock);
 
-	scoped_guard(spinlock_irqsave, &model->buckets_lock) {
-		// Whether enough time has elapsed since the last update
-		now = jiffies;
-		time_elapsed = unlikely(!model->base) || model->last_update_jiffies +
-			msecs_to_jiffies(LM_INTERVAL_THRESHOLD) <= now;
+	spin_lock_irqsave(&model->buckets_lock, flags);
 
-		// Count the number of entries in buckets
-		small_count = lm_count_small_entries(model);
-		large_count = lm_count_large_entries(model);
+	// Whether enough time has elapsed since the last update
+	now = jiffies;
+	time_elapsed = unlikely(!model->base) || model->last_update_jiffies +
+		msecs_to_jiffies(LM_INTERVAL_THRESHOLD) <= now;
 
-		// Update small buckets
-		if (small_count && (time_elapsed ||
-				LM_SAMPLES_THRESHOLD <= small_count || !model->base))
-			small_processed = lm_update_small_buckets(
-				model, small_count, !model->base);
-		// Update large buckets
-		if (large_count && (time_elapsed ||
-				LM_SAMPLES_THRESHOLD <= large_count || !model->slope))
-			large_processed = lm_update_large_buckets(
-				model, large_count, !model->slope);
-	}
+	// Count the number of entries in buckets
+	small_count = lm_count_small_entries(model);
+	large_count = lm_count_large_entries(model);
+
+	// Update small buckets
+	if (small_count && (time_elapsed ||
+			LM_SAMPLES_THRESHOLD <= small_count || !model->base))
+		small_processed = lm_update_small_buckets(
+			model, small_count, !model->base);
+	// Update large buckets
+	if (large_count && (time_elapsed ||
+			LM_SAMPLES_THRESHOLD <= large_count || !model->slope))
+		large_processed = lm_update_large_buckets(
+			model, large_count, !model->slope);
+
+	spin_unlock_irqrestore(&model->buckets_lock, flags);
 
 	// Update the base parameter if small bucket was processed
 	if (small_processed && likely(model->small_count))
@@ -361,7 +364,8 @@ static void latency_model_update(struct latency_model *model) {
 }
 
 // Determine the bucket index for a given measured and predicted latency
-static u8 lm_input_bucket_index(u64 measured, u64 predicted) {
+static u8 lm_input_bucket_index(
+		struct latency_model *model, u64 measured, u64 predicted) {
 	u8 bucket_index;
 
 	if (measured < predicted * 2)
@@ -377,38 +381,44 @@ static u8 lm_input_bucket_index(u64 measured, u64 predicted) {
 // Input latency data into the latency model
 static void latency_model_input(struct latency_model *model,
 		u32 block_size, u64 latency, u64 pred_lat) {
+	unsigned long flags;
 	u8 bucket_index;
+
+	spin_lock_irqsave(&model->buckets_lock, flags);
 
 	if (block_size <= LM_BLOCK_SIZE_THRESHOLD) {
 		// Handle small requests
-		bucket_index = lm_input_bucket_index(latency, model->base ?: 1);
+		bucket_index = lm_input_bucket_index(model, latency, model->base ?: 1);
 
 		if (bucket_index >= LM_LAT_BUCKET_COUNT)
 			bucket_index = LM_LAT_BUCKET_COUNT - 1;
 
-		scoped_guard(spinlock_bh, &model->buckets_lock) {
-			model->small_bucket[bucket_index].count++;
-			model->small_bucket[bucket_index].sum_latency += latency;
-		}
+		model->small_bucket[bucket_index].count++;
+		model->small_bucket[bucket_index].sum_latency += latency;
 
-		if (unlikely(!model->base))
+		if (unlikely(!model->base)) {
+			spin_unlock_irqrestore(&model->buckets_lock, flags);
 			latency_model_update(model);
+			return;
+		}
 	} else {
 		// Handle large requests
-		bucket_index = lm_input_bucket_index(latency, pred_lat);
+		if (!model->base || !pred_lat) {
+			spin_unlock_irqrestore(&model->buckets_lock, flags);
+			return;
+		}
+
+		bucket_index = lm_input_bucket_index(model, latency, pred_lat);
 
 		if (bucket_index >= LM_LAT_BUCKET_COUNT)
 			bucket_index = LM_LAT_BUCKET_COUNT - 1;
 
-		scoped_guard(spinlock_bh, &model->buckets_lock) {
-			if (!model->base || !pred_lat)
-				return;
-
-			model->large_bucket[bucket_index].count++;
-			model->large_bucket[bucket_index].sum_latency += latency;
-			model->large_bucket[bucket_index].sum_block_size += block_size;
-		}
+		model->large_bucket[bucket_index].count++;
+		model->large_bucket[bucket_index].sum_latency += latency;
+		model->large_bucket[bucket_index].sum_block_size += block_size;
 	}
+
+	spin_unlock_irqrestore(&model->buckets_lock, flags);
 }
 
 // Predict the latency for a given block size using the latency model
@@ -587,12 +597,14 @@ static void adios_merged_requests(struct request_queue *q, struct request *req,
 // Try to merge a bio into an existing rq before associating it with an rq
 static bool adios_bio_merge(struct request_queue *q, struct bio *bio,
 		unsigned int nr_segs) {
+	unsigned long flags;
 	struct adios_data *ad = q->elevator->elevator_data;
 	struct request *free = NULL;
 	bool ret;
 
-	scoped_guard(spinlock_irqsave, &ad->lock)
-		ret = blk_mq_sched_try_merge(q, bio, nr_segs, &free);
+	spin_lock_irqsave(&ad->lock, flags);
+	ret = blk_mq_sched_try_merge(q, bio, nr_segs, &free);
+	spin_unlock_irqrestore(&ad->lock, flags);
 
 	if (free)
 		blk_mq_free_request(free);
@@ -603,6 +615,7 @@ static bool adios_bio_merge(struct request_queue *q, struct bio *bio,
 // Insert a request into the scheduler
 static void insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 				  blk_insert_t insert_flags, struct list_head *free) {
+	unsigned long flags;
 	bool dl_idx = adios_optype_not_read(rq);
 	struct request_queue *q = hctx->queue;
 	struct adios_data *ad = q->elevator->elevator_data;
@@ -610,8 +623,9 @@ static void insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 	lockdep_assert_held(&ad->lock);
 
 	if (insert_flags & BLK_MQ_INSERT_AT_HEAD) {
-		scoped_guard(spinlock_irqsave, &ad->pq_lock)
-			list_add_tail(&rq->queuelist, &ad->prio_queue);
+		spin_lock_irqsave(&ad->pq_lock, flags);
+		list_add(&rq->queuelist, &ad->prio_queue);
+		spin_unlock_irqrestore(&ad->pq_lock, flags);
 		return;
 	}
 
@@ -631,18 +645,20 @@ static void insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 static void adios_insert_requests(struct blk_mq_hw_ctx *hctx,
 				   struct list_head *list,
 				   blk_insert_t insert_flags) {
+	unsigned long flags;
 	struct request_queue *q = hctx->queue;
 	struct adios_data *ad = q->elevator->elevator_data;
 	LIST_HEAD(free);
 
-	scoped_guard(spinlock_irqsave, &ad->lock)
-		while (!list_empty(list)) {
-			struct request *rq;
+	spin_lock_irqsave(&ad->lock, flags);
+	while (!list_empty(list)) {
+		struct request *rq;
 
-			rq = list_first_entry(list, struct request, queuelist);
-			list_del_init(&rq->queuelist);
-			insert_request(hctx, rq, insert_flags, &free);
-		}
+		rq = list_first_entry(list, struct request, queuelist);
+		list_del_init(&rq->queuelist);
+		insert_request(hctx, rq, insert_flags, &free);
+	}
+	spin_unlock_irqrestore(&ad->lock, flags);
 
 	blk_mq_free_requests(&free);
 }
@@ -734,14 +750,11 @@ static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 
 	reset_batch_counts(ad, page);
 
+	spin_lock_irqsave(&ad->lock, flags);
 	while (true) {
-		spin_lock_irqsave(&ad->lock, flags);
-
 		struct request *rq = next_request(ad);
-		if (!rq) {
-			spin_unlock_irqrestore(&ad->lock, flags);
+		if (!rq)
 			break;
-		}
 
 		struct adios_rq_data *rd = get_rq_data(rq);
 		u8 optype = adios_optype(rq);
@@ -749,15 +762,12 @@ static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 
 		// Check batch size and total predicted latency
 		if (count && (!ad->latency_model[optype].base || 
-				ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
-				current_lat > ad->global_latency_window)) {
-			spin_unlock_irqrestore(&ad->lock, flags);
+			ad->batch_count[page][optype] >= ad->batch_limit[optype] ||
+			current_lat > ad->global_latency_window)) {
 			break;
 		}
 
 		remove_request(ad, rq);
-
-		spin_unlock_irqrestore(&ad->lock, flags);
 
 		// Add request to the corresponding batch queue
 		list_add_tail(&rq->queuelist, &ad->batch_queue[page][optype]);
@@ -766,6 +776,7 @@ static bool fill_batch_queues(struct adios_data *ad, u64 current_lat) {
 		optype_count[optype]++;
 		count++;
 	}
+	spin_unlock_irqrestore(&ad->lock, flags);
 
 	if (count) {
 		ad->more_bq_ready = true;
@@ -795,7 +806,7 @@ static struct request *dispatch_from_bq(struct adios_data *ad) {
 	tpl = atomic64_read(&ad->total_pred_lat);
 
 	if (!ad->more_bq_ready && (!tpl ||
-			tpl < div_u64(ad->global_latency_window * ad->bq_refill_below_ratio, 100)))
+			tpl < div_u64(ad->global_latency_window * ad->bq_refill_below_ratio, 100) ))
 		fill_batch_queues(ad, tpl);
 
 again:
@@ -1187,14 +1198,15 @@ static ssize_t adios_reset_lat_model_store(
 
 	for (u8 i = 0; i < ADIOS_OPTYPES; i++) {
 		struct latency_model *model = &ad->latency_model[i];
-		scoped_guard(spinlock_irqsave, &model->lock) {
-			model->base = 0ULL;
-			model->slope = 0ULL;
-			model->small_sum_delay = 0ULL;
-			model->small_count = 0ULL;
-			model->large_sum_delay = 0ULL;
-			model->large_sum_bsize = 0ULL;
-		}
+		unsigned long flags;
+		spin_lock_irqsave(&model->lock, flags);
+		model->base = 0ULL;
+		model->slope = 0ULL;
+		model->small_sum_delay = 0ULL;
+		model->small_count = 0ULL;
+		model->large_sum_delay = 0ULL;
+		model->large_sum_bsize = 0ULL;
+		spin_unlock_irqrestore(&model->lock, flags);
 	}
 
 	return count;
@@ -1217,8 +1229,10 @@ static ssize_t adios_shrink_##name##_store( \
 		return -EINVAL; \
 	for (u8 i = 0; i < ADIOS_OPTYPES; i++) { \
 		struct latency_model *model = &ad->latency_model[i]; \
-		scoped_guard(spinlock_irqsave, &model->lock) \
-			model->model_field = val; \
+		unsigned long flags; \
+		spin_lock_irqsave(&model->lock, flags); \
+		model->model_field = val; \
+		spin_unlock_irqrestore(&model->lock, flags); \
 	} \
 	return count; \
 } \
@@ -1228,8 +1242,10 @@ static ssize_t adios_shrink_##name##_show( \
 	u32 val = 0; \
 	for (u8 i = 0; i < ADIOS_OPTYPES; i++) { \
 		struct latency_model *model = &ad->latency_model[i]; \
-		scoped_guard(spinlock_irqsave, &model->lock) \
-			val = model->model_field; \
+		unsigned long flags; \
+		spin_lock_irqsave(&model->lock, flags); \
+		val = model->model_field; \
+		spin_unlock_irqrestore(&model->lock, flags); \
 	} \
 	return sprintf(page, "%u\n", val); \
 }
