@@ -151,6 +151,8 @@ struct drm_sched_entity {
 	 */
 	struct spsc_queue		job_queue;
 
+	enum drm_sched_priority         rq_priority;
+
 	/**
 	 * @fence_seq:
 	 *
@@ -514,6 +516,7 @@ struct drm_gpu_scheduler {
 	long				timeout;
 	const char			*name;
 	u32                             num_rqs;
+	u32                             num_user_rqs;
 	struct drm_sched_rq             **sched_rq;
 	wait_queue_head_t		job_scheduled;
 	atomic64_t			job_id_count;
