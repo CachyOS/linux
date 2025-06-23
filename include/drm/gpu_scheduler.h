@@ -71,6 +71,8 @@ enum drm_sched_priority {
 	DRM_SCHED_PRIORITY_COUNT
 };
 
+struct drm_sched_entity_stats;
+
 /**
  * struct drm_sched_entity - A wrapper around a job queue (typically
  * attached to the DRM file_priv).
@@ -108,6 +110,8 @@ struct drm_sched_entity {
 	 * not even a READ_ONCE.
 	 */
 	struct drm_sched_rq		*rq;
+
+	struct drm_sched_entity_stats	*stats;
 
 	/**
 	 * @sched_list:
@@ -351,6 +355,7 @@ struct drm_sched_job {
 
 	struct drm_sched_fence		*s_fence;
 	struct drm_sched_entity         *entity;
+	struct drm_sched_entity_stats	*entity_stats;
 
 	enum drm_sched_priority		s_priority;
 	u32				credits;
