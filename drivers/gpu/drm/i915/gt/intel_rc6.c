@@ -499,6 +499,7 @@ static bool rc6_supported(struct intel_rc6 *rc6)
 
 	if (dmi_match(DMI_PRODUCT_SKU, "IBP1XI08MK1") ||
 	    dmi_match(DMI_PRODUCT_SKU, "IBP14I08MK2") ||
+	    dmi_match(DMI_PRODUCT_SKU, "IBP1XI08MK2") ||
 	    dmi_match(DMI_PRODUCT_SKU, "IBP16I08MK2") ||
 	    dmi_match(DMI_PRODUCT_SKU, "OMNIA08IMK1") ||
 	    dmi_match(DMI_PRODUCT_SKU, "OMNIA08IMK2")) {
