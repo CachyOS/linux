@@ -22,7 +22,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "2.1.1"
+#define ADIOS_VERSION "2.1.3"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -411,8 +411,9 @@ static void latency_model_input(struct adios_data *ad,
 		struct latency_model *model, u32 block_size, u64 latency, u64 pred_lat) {
 	u8 bucket_index;
 	struct per_cpu_lm_buckets *buckets;
+	int cpu = get_cpu();
 
-	buckets = this_cpu_ptr(model->pcpu_buckets);
+	buckets = per_cpu_ptr(model->pcpu_buckets, cpu);
 
 	if (block_size <= LM_BLOCK_SIZE_THRESHOLD) {
 		// Handle small requests
@@ -424,14 +425,18 @@ static void latency_model_input(struct adios_data *ad,
 		buckets->small_bucket[bucket_index].count++;
 		buckets->small_bucket[bucket_index].sum_latency += latency;
 
+		put_cpu();
+
 		if (unlikely(!model->base)) {
 			latency_model_update(ad, model);
 			return;
 		}
 	} else {
 		// Handle large requests
-		if (!model->base || !pred_lat)
+		if (!model->base || !pred_lat) {
+			put_cpu();
 			return;
+		}
 
 		bucket_index = lm_input_bucket_index(latency, pred_lat);
 
@@ -441,6 +446,8 @@ static void latency_model_input(struct adios_data *ad,
 		buckets->large_bucket[bucket_index].count++;
 		buckets->large_bucket[bucket_index].sum_latency += latency;
 		buckets->large_bucket[bucket_index].sum_block_size += block_size;
+
+		put_cpu();
 	}
 }
 
