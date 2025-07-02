@@ -1782,7 +1782,16 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 	struct rq_flags rf;
 	struct rq *rq;
 
-	if (!dl_server(dl_se)) {
+	/*
+	 * It is possible that after dl_server_apply_params(), the
+	 * dl_se->dl_server == NULL, but the inactive timer is still queued
+	 * and could not get canceled.
+	 *
+	 * Double check by looking at ->server_pick_tasks to make sure
+	 * we're dealing with a non-server entity. Otherwise p may be bogus
+	 * and we'll crash.
+	 */
+	if (!dl_server(dl_se) && !dl_se->server_pick_task) {
 		p = dl_task_of(dl_se);
 		rq = task_rq_lock(p, &rf);
 	} else {
@@ -1793,7 +1802,7 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 	sched_clock_tick();
 	update_rq_clock(rq);
 
-	if (dl_server(dl_se))
+	if (dl_server(dl_se) || dl_se->server_pick_task)
 		goto no_task;
 
 	if (!dl_task(p) || READ_ONCE(p->__state) == TASK_DEAD) {
@@ -1821,7 +1830,7 @@ no_task:
 	dl_se->dl_non_contending = 0;
 unlock:
 
-	if (!dl_server(dl_se)) {
+	if (!dl_server(dl_se) && !dl_se->server_pick_task) {
 		task_rq_unlock(rq, p, &rf);
 		put_task_struct(p);
 	} else {
