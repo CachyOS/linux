@@ -16,13 +16,14 @@
 #include <linux/slab.h>
 #include <linux/timekeeping.h>
 #include <linux/percpu.h>
+#include <linux/string.h>
 
 #include "elevator.h"
 #include "blk.h"
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "2.1.3"
+#define ADIOS_VERSION "2.2.4"
 
 // Define operation types supported by ADIOS
 enum adios_op_type {
@@ -82,7 +83,7 @@ struct latency_bucket_large {
 };
 
 // New structure to hold per-cpu buckets, improving data locality and code clarity.
-struct per_cpu_lm_buckets {
+struct lm_buckets {
 	struct latency_bucket_small small_bucket[LM_LAT_BUCKET_COUNT];
 	struct latency_bucket_large large_bucket[LM_LAT_BUCKET_COUNT];
 };
@@ -99,7 +100,7 @@ struct latency_model {
 	u64 last_update_jiffies;
 
 	// Per-CPU buckets to avoid lock contention on the completion path
-	struct per_cpu_lm_buckets __percpu *pcpu_buckets;
+	struct lm_buckets __percpu *pcpu_buckets;
 
 	u32 lm_shrink_at_kreqs;
 	u32 lm_shrink_at_gbytes;
@@ -134,7 +135,7 @@ struct adios_data {
 	u32 batch_count[ADIOS_BQ_PAGES][ADIOS_OPTYPES];
 	spinlock_t bq_lock;
 
-	struct per_cpu_lm_buckets *aggr_buckets;
+	struct lm_buckets *aggr_buckets;
 
 	struct latency_model latency_model[ADIOS_OPTYPES];
 	struct timer_list update_timer;
@@ -317,6 +318,15 @@ static bool lm_update_large_buckets(struct latency_model *model,
 	return true;
 }
 
+static void reset_buckets(struct lm_buckets *buckets)
+{ memset(buckets, 0, sizeof(*buckets)); }
+
+static void lm_reset_pcpu_buckets(struct latency_model *model) {
+	int cpu;
+	for_each_possible_cpu(cpu)
+		reset_buckets(per_cpu_ptr(model->pcpu_buckets, cpu));
+}
+
 // Update the latency model parameters and statistics
 static void latency_model_update(
 		struct adios_data *ad, struct latency_model *model) {
@@ -324,14 +334,14 @@ static void latency_model_update(
 	u32 small_count, large_count;
 	bool time_elapsed;
 	bool small_processed = false, large_processed = false;
-	struct per_cpu_lm_buckets *aggr = ad->aggr_buckets;
+	struct lm_buckets *aggr = ad->aggr_buckets;
 	struct latency_bucket_small *asb;
 	struct latency_bucket_large *alb;
-	struct per_cpu_lm_buckets *pcpu_b;
+	struct lm_buckets *pcpu_b;
 	unsigned long flags;
 	int cpu;
 
-	memset(aggr, 0, sizeof(*aggr));
+	reset_buckets(ad->aggr_buckets);
 
 	write_seqlock_irqsave(&model->lock, flags);
 
@@ -353,7 +363,7 @@ static void latency_model_update(
 			}
 		}
 		// Reset per-cpu buckets after aggregating
-		memset(pcpu_b, 0, sizeof(*pcpu_b));
+		reset_buckets(pcpu_b);
 	}
 
 	// Whether enough time has elapsed since the last update
@@ -410,7 +420,7 @@ static u8 lm_input_bucket_index(u64 measured, u64 predicted) {
 static void latency_model_input(struct adios_data *ad,
 		struct latency_model *model, u32 block_size, u64 latency, u64 pred_lat) {
 	u8 bucket_index;
-	struct per_cpu_lm_buckets *buckets;
+	struct lm_buckets *buckets;
 	int cpu = get_cpu();
 
 	buckets = per_cpu_ptr(model->pcpu_buckets, cpu);
@@ -979,11 +989,11 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		goto destroy_dl_group_pool;
 	}
 
-	for (cpu = 0; cpu < ADIOS_OPTYPES; cpu++) {
-		struct latency_model *model = &ad->latency_model[cpu];
+	for (u8 optype = 0; optype < ADIOS_OPTYPES; optype++) {
+		struct latency_model *model = &ad->latency_model[optype];
 		seqlock_init(&model->lock);
 
-		model->pcpu_buckets = alloc_percpu(struct per_cpu_lm_buckets);
+		model->pcpu_buckets = alloc_percpu(struct lm_buckets);
 		if (!model->pcpu_buckets)
 			goto free_buckets;
 
@@ -992,8 +1002,8 @@ static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
 		model->lm_shrink_at_gbytes = default_lm_shrink_at_gbytes;
 		model->lm_shrink_resist    = default_lm_shrink_resist;
 
-		ad->latency_target[cpu] = default_latency_target[cpu];
-		ad->batch_limit[cpu] = default_batch_limit[cpu];
+		ad->latency_target[optype] = default_latency_target[optype];
+		ad->batch_limit[optype] = default_batch_limit[optype];
 	}
 	timer_setup(&ad->update_timer, update_timer_callback, 0);
 	
@@ -1057,56 +1067,89 @@ static void adios_exit_sched(struct elevator_queue *e) {
 	kfree(ad);
 }
 
-// Define sysfs attributes for read operation latency model
-#define SYSFS_OPTYPE_DECL(name, optype)					\
-static ssize_t adios_lat_model_##name##_show(				\
-		struct elevator_queue *e, char *page) {				\
-	struct adios_data *ad = e->elevator_data;				\
-	struct latency_model *model = &ad->latency_model[optype];		\
-	ssize_t len = 0;						\
-	u64 base, slope;						\
-	unsigned int seq;						\
+static void load_latency_model(struct latency_model *model, u64 base, u64 slope)
+{
+	write_seqlock_bh(&model->lock);
+	model->last_update_jiffies = jiffies;
+
+	// Initialize base and its statistics as a single sample.
+	model->base = base;
+	model->small_sum_delay = base;
+	model->small_count = 1;
+
+	// Initialize slope and its statistics as a single sample.
+	model->slope = slope;
+	model->large_sum_delay = slope;
+	model->large_sum_bsize = 1024; /* Corresponds to 1 KiB */
+
+	lm_reset_pcpu_buckets(model);
+
+	write_sequnlock_bh(&model->lock);
+}
+
+// Define sysfs attributes for operation types
+#define SYSFS_OPTYPE_DECL(name, optype) \
+static ssize_t adios_lat_model_##name##_show( \
+		struct elevator_queue *e, char *page) { \
+	struct adios_data *ad = e->elevator_data; \
+	struct latency_model *model = &ad->latency_model[optype]; \
+	ssize_t len = 0; \
+	u64 base, slope; \
+	unsigned int seq; \
 	do { \
 		seq = read_seqbegin(&model->lock); \
 		base = model->base; \
 		slope = model->slope; \
 	} while (read_seqretry(&model->lock, seq)); \
-	len += sprintf(page,       "base : %llu ns\n", base);	\
-	len += sprintf(page + len, "slope: %llu ns/KiB\n", slope);\
-	return len;							\
-}									\
-static ssize_t adios_lat_target_##name##_store(				\
-		struct elevator_queue *e, const char *page, size_t count) {	\
-	struct adios_data *ad = e->elevator_data;				\
-	unsigned long nsec;						\
-	int ret;							\
-	ret = kstrtoul(page, 10, &nsec);					\
-	if (ret)							\
-		return ret;						\
-	ad->latency_model[optype].base = 0ULL;				\
-	ad->latency_target[optype] = nsec;				\
-	return count;							\
-}									\
-static ssize_t adios_lat_target_##name##_show(				\
-		struct elevator_queue *e, char *page) {				\
-	struct adios_data *ad = e->elevator_data;				\
-	return sprintf(page, "%llu\n", ad->latency_target[optype]);	\
-}									\
-static ssize_t adios_batch_limit_##name##_store(			\
-		struct elevator_queue *e, const char *page, size_t count) {	\
-	unsigned long max_batch;					\
-	int ret;							\
-	ret = kstrtoul(page, 10, &max_batch);				\
-	if (ret || max_batch == 0)					\
-		return -EINVAL;						\
-	struct adios_data *ad = e->elevator_data;				\
-	ad->batch_limit[optype] = max_batch;				\
-	return count;							\
-}									\
-static ssize_t adios_batch_limit_##name##_show(				\
-		struct elevator_queue *e, char *page) {				\
-	struct adios_data *ad = e->elevator_data;				\
-	return sprintf(page, "%u\n", ad->batch_limit[optype]);		\
+	len += sprintf(page,       "base : %llu ns\n", base); \
+	len += sprintf(page + len, "slope: %llu ns/KiB\n", slope); \
+	return len; \
+} \
+static ssize_t adios_lat_model_##name##_store( \
+		struct elevator_queue *e, const char *page, size_t count) { \
+	struct adios_data *ad = e->elevator_data; \
+	struct latency_model *model = &ad->latency_model[optype]; \
+	u64 base, slope; \
+	int ret; \
+	ret = sscanf(page, "%llu %llu", &base, &slope); \
+	if (ret != 2) \
+		return -EINVAL; \
+	load_latency_model(model, base, slope); \
+	reset_buckets(ad->aggr_buckets); \
+	return count; \
+} \
+static ssize_t adios_lat_target_##name##_store( \
+		struct elevator_queue *e, const char *page, size_t count) { \
+	struct adios_data *ad = e->elevator_data; \
+	unsigned long nsec; \
+	int ret; \
+	ret = kstrtoul(page, 10, &nsec); \
+	if (ret) \
+		return ret; \
+	ad->latency_model[optype].base = 0ULL; \
+	ad->latency_target[optype] = nsec; \
+	return count; \
+} \
+static ssize_t adios_lat_target_##name##_show( \
+		struct elevator_queue *e, char *page) { \
+	struct adios_data *ad = e->elevator_data; \
+	return sprintf(page, "%llu\n", ad->latency_target[optype]); \
+} \
+static ssize_t adios_batch_limit_##name##_store( \
+		struct elevator_queue *e, const char *page, size_t count) { \
+	unsigned long max_batch; \
+	int ret; \
+	ret = kstrtoul(page, 10, &max_batch); \
+	if (ret || max_batch == 0) \
+		return -EINVAL; \
+	struct adios_data *ad = e->elevator_data; \
+	ad->batch_limit[optype] = max_batch; \
+	return count; \
+} \
+static ssize_t adios_batch_limit_##name##_show( \
+		struct elevator_queue *e, char *page) { \
+	struct adios_data *ad = e->elevator_data; \
+	return sprintf(page, "%u\n", ad->batch_limit[optype]); \
 }
 
 SYSFS_OPTYPE_DECL(read, ADIOS_READ);
@@ -1219,28 +1262,58 @@ static ssize_t adios_reset_bq_stats_store(
 	return count;
 }
 
-// Reset the latency model parameters
+// Reset the latency model parameters or load them from user input
 static ssize_t adios_reset_lat_model_store(
-		struct elevator_queue *e, const char *page, size_t count) {
+		struct elevator_queue *e, const char *page, size_t count)
+{
 	struct adios_data *ad = e->elevator_data;
-	unsigned long val;
+	struct latency_model *model;
 	int ret;
 
-	ret = kstrtoul(page, 10, &val);
-	if (ret || val != 1)
-		return -EINVAL;
+	/*
+	 * Differentiate between two modes based on input format:
+	 * 1. "1": Fully reset the model (backward compatibility).
+	 * 2. "R_base R_slope W_base W_slope D_base D_slope": Load values.
+	 */
+	if (!strchr(page, ' ')) {
+		// Mode 1: Full reset.
+		unsigned long val;
 
-	for (u8 i = 0; i < ADIOS_OPTYPES; i++) {
-		struct latency_model *model = &ad->latency_model[i];
-		write_seqlock_bh(&model->lock);
-		model->base = 0ULL;
-		model->slope = 0ULL;
-		model->small_sum_delay = 0ULL;
-		model->small_count = 0ULL;
-		model->large_sum_delay = 0ULL;
-		model->large_sum_bsize = 0ULL;
-		write_sequnlock_bh(&model->lock);
+		ret = kstrtoul(page, 10, &val);
+		if (ret || val != 1)
+			return -EINVAL;
+
+		for (u8 i = 0; i < ADIOS_OPTYPES; i++) {
+			model = &ad->latency_model[i];
+			write_seqlock_bh(&model->lock);
+			model->last_update_jiffies = jiffies;
+			model->base = 0ULL;
+			model->slope = 0ULL;
+			model->small_sum_delay = 0ULL;
+			model->small_count = 0ULL;
+			model->large_sum_delay = 0ULL;
+			model->large_sum_bsize = 0ULL;
+			lm_reset_pcpu_buckets(model);
+			write_sequnlock_bh(&model->lock);
+		}
+	} else {
+		// Mode 2: Load initial values for all latency models.
+		u64 params[3][2]; /* 0:base, 1:slope for R, W, D */
+
+		ret = sscanf(page, "%llu %llu %llu %llu %llu %llu",
+			&params[ADIOS_READ   ][0], &params[ADIOS_READ   ][1],
+			&params[ADIOS_WRITE  ][0], &params[ADIOS_WRITE  ][1],
+			&params[ADIOS_DISCARD][0], &params[ADIOS_DISCARD][1]);
+
+		if (ret != 6)
+			return -EINVAL;
+
+		for (u8 i = ADIOS_READ; i <= ADIOS_DISCARD; i++) {
+			model = &ad->latency_model[i];
+			load_latency_model(model, params[i][0], params[i][1]);
+		}
 	}
+	reset_buckets(ad->aggr_buckets);
 
 	return count;
 }
@@ -1305,9 +1378,9 @@ static struct elv_fs_entry adios_sched_attrs[] = {
 	AD_ATTR_RW(batch_limit_write),
 	AD_ATTR_RW(batch_limit_discard),
 
-	AD_ATTR_RO(lat_model_read),
-	AD_ATTR_RO(lat_model_write),
-	AD_ATTR_RO(lat_model_discard),
+	AD_ATTR_RW(lat_model_read),
+	AD_ATTR_RW(lat_model_write),
+	AD_ATTR_RW(lat_model_discard),
 
 	AD_ATTR_RW(lat_target_read),
 	AD_ATTR_RW(lat_target_write),
