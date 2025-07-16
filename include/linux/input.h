@@ -420,7 +420,7 @@ int input_handler_for_each_handle(struct input_handler *, void *data,
 int input_register_handle(struct input_handle *);
 void input_unregister_handle(struct input_handle *);
 
-int input_grab_device(struct input_handle *);
+int input_grab_device(struct input_handle *, bool release_keys);
 void input_release_device(struct input_handle *);
 
 int input_open_device(struct input_handle *);

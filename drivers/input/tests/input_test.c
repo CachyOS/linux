@@ -145,18 +145,18 @@ static void input_test_grab(struct kunit *test)
 	handle.dev = input_get_device(input_dev);
 	handle.name = dev_name(&input_dev->dev);
 	handle.handler = &handler;
-	res = input_grab_device(&handle);
+	res = input_grab_device(&handle, false);
 	KUNIT_ASSERT_TRUE(test, res == 0);
 
 	test_handle.dev = input_get_device(input_dev);
 	test_handle.name = dev_name(&input_dev->dev);
 	test_handle.handler = &handler;
-	res = input_grab_device(&test_handle);
+	res = input_grab_device(&test_handle, false);
 	KUNIT_ASSERT_EQ(test, res, -EBUSY);
 
 	input_release_device(&handle);
 	input_put_device(input_dev);
-	res = input_grab_device(&test_handle);
+	res = input_grab_device(&test_handle, false);
 	KUNIT_ASSERT_TRUE(test, res == 0);
 	input_put_device(input_dev);
 }

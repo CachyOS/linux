@@ -329,14 +329,14 @@ static void evdev_free(struct device *dev)
  * Grabs an event device (along with underlying input device).
  * This function is called with evdev->mutex taken.
  */
-static int evdev_grab(struct evdev *evdev, struct evdev_client *client)
+static int evdev_grab(struct evdev *evdev, struct evdev_client *client, bool clean)
 {
 	int error;
 
 	if (evdev->grab)
 		return -EBUSY;
 
-	error = input_grab_device(&evdev->handle);
+	error = input_grab_device(&evdev->handle, clean);
 	if (error)
 		return error;
 
@@ -1082,8 +1082,10 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 		return 0;
 
 	case EVIOCGRAB:
-		if (p)
-			return evdev_grab(evdev, client);
+		if (p == (void *)2)
+			return evdev_grab(evdev, client, true);
+		else if (p)
+			return evdev_grab(evdev, client, false);
 		else
 			return evdev_ungrab(evdev, client);
 
