@@ -191,10 +191,6 @@ static inline void set_ally_mcu_hack(enum asus_ally_mcu_hack status)
 static inline void set_ally_mcu_powersave(bool enabled)
 {
 }
-static inline int asus_wmi_set_devstate(u32 dev_id, u32 ctrl_param, u32 *retval)
-{
-	return -ENODEV;
-}
 static inline int asus_wmi_get_devstate_dsts(u32 dev_id, u32 *retval)
 {
 	return -ENODEV;
