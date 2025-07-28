@@ -731,10 +731,16 @@ void elevator_set_default(struct request_queue *q)
 #ifdef CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 	ctx.name = "adios";
 	goto found;
-#else // !CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
-	if (q->nr_hw_queues != 1 && !blk_mq_is_shared_tags(q->tag_set->flags))
-		return;
 #endif // CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
+
+	if (q->nr_hw_queues == 1 || blk_mq_is_shared_tags(q->tag_set->flags))
+#if defined(CONFIG_CACHY) && defined(CONFIG_IOSCHED_BFQ)
+		ctx.name = "bfq";
+#else
+		;
+	else
+		return;
+#endif /* CONFIG_CACHY && CONFIG_IOSCHED_BFQ */
 
 	/*
 	 * For single queue devices, default to using mq-deadline. If we
