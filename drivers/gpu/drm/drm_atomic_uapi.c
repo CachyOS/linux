@@ -1068,7 +1068,6 @@ int drm_atomic_set_property(struct drm_atomic_state *state,
 		struct drm_plane *plane = obj_to_plane(obj);
 		struct drm_plane_state *plane_state;
 		struct drm_mode_config *config = &plane->dev->mode_config;
-		const struct drm_plane_helper_funcs *plane_funcs = plane->helper_private;
 
 		plane_state = drm_atomic_get_plane_state(state, plane);
 		if (IS_ERR(plane_state)) {
@@ -1084,21 +1083,8 @@ int drm_atomic_set_property(struct drm_atomic_state *state,
 				ret = drm_atomic_plane_get_property(plane, plane_state,
 								    prop, &old_val);
 				ret = drm_atomic_check_prop_changes(ret, old_val, prop_value, prop);
-			}
-
-			/* ask the driver if this non-primary plane is supported */
-			if (plane->type != DRM_PLANE_TYPE_PRIMARY) {
-				ret = -EINVAL;
-
-				if (plane_funcs && plane_funcs->atomic_async_check)
-					ret = plane_funcs->atomic_async_check(plane, state, true);
-
-				if (ret) {
-					drm_dbg_atomic(prop->dev,
-						       "[PLANE:%d:%s] does not support async flips\n",
-						       obj->id, plane->name);
-					break;
-				}
+				if (ret)
+				    break;
 			}
 		}
 
@@ -1394,6 +1380,10 @@ int drm_mode_atomic_ioctl(struct drm_device *dev,
 	int ret = 0;
 	unsigned int i, j, num_fences;
 	bool async_flip = false;
+	struct drm_plane *plane;
+	struct drm_plane_state *old_plane_state = NULL;
+	struct drm_plane_state *new_plane_state = NULL;
+	u64 fb_id = 0;
 
 	/* disallow for drivers not supporting atomic: */
 	if (!drm_core_check_feature(dev, DRIVER_ATOMIC))
@@ -1519,6 +1509,35 @@ retry:
 			}
 
 			copied_props++;
+		}
+
+		if (async_flip && obj->type == DRM_MODE_OBJECT_PLANE &&
+		    obj_to_plane(obj)->type != DRM_PLANE_TYPE_PRIMARY) {
+			/* need to ask the driver if this plane is supported */
+			plane = obj_to_plane(obj);
+			old_plane_state = drm_atomic_get_old_plane_state(state, plane);
+			new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+			ret = drm_atomic_plane_get_property(plane, new_plane_state,
+							    dev->mode_config.prop_fb_id,
+							    &fb_id);
+			if (ret)
+				break;
+			/*
+			 * Only do the check if the plane was or is enabled.
+			 * Note that the new state doesn't have "visible" set yet,
+			 * so this uses fb_id instead.
+			 */
+			if (old_plane_state->visible || fb_id)
+				ret = -EINVAL;
+			if (ret && plane->helper_private &&
+			    plane->helper_private->atomic_async_check) {
+				ret = plane->helper_private->atomic_async_check(plane, state, true);
+			}
+			if (ret) {
+				drm_dbg_atomic(dev, "[PLANE:%d:%s] does not support async flips\n",
+						obj->id, plane->name);
+				break;
+			}
 		}
 
 		drm_mode_object_put(obj);
