@@ -2347,6 +2347,15 @@ static const struct dmi_system_id acpi_ec_no_wakeup[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "83Q3"),
 		}
 	},
+	/*
+	 * MSI Claw A8. Similar issue to Legion Go S (and same screen)
+	 */
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T8K"),
+		}
+	},
 	{
 		// TUXEDO InfinityBook Pro AMD Gen9
 		.matches = {
