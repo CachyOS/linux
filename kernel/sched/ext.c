@@ -2606,6 +2606,57 @@ static void set_cpus_allowed_scx(struct task_struct *p,
 				 p, (struct cpumask *)p->cpus_ptr);
 }
 
+static void dl_server_on(struct rq *rq, bool switch_all)
+{
+	struct rq_flags rf;
+	int err;
+
+	rq_lock_irqsave(rq, &rf);
+	update_rq_clock(rq);
+
+	if (switch_all) {
+		/*
+		 * If all fair tasks are moved to the scx scheduler, we
+		 * don't need the fair DL servers anymore, so remove it.
+		 *
+		 * When the current scx scheduler is unloaded, the fair DL
+		 * server will be re-initialized.
+		 */
+		if (dl_server_active(&rq->fair_server))
+			dl_server_stop(&rq->fair_server);
+		dl_server_remove_params(&rq->fair_server);
+	}
+
+	err = dl_server_init_params(&rq->ext_server);
+	WARN_ON_ONCE(err);
+
+	rq_unlock_irqrestore(rq, &rf);
+}
+
+static void dl_server_off(struct rq *rq, bool switch_all)
+{
+	struct rq_flags rf;
+	int err;
+
+	rq_lock_irqsave(rq, &rf);
+	update_rq_clock(rq);
+
+	if (dl_server_active(&rq->ext_server))
+		dl_server_stop(&rq->ext_server);
+	dl_server_remove_params(&rq->ext_server);
+
+	if (switch_all) {
+		/*
+		 * Re-initialize the fair DL server if it was previously disabled
+		 * because all fair tasks had been moved to the ext class.
+		 */
+		err = dl_server_init_params(&rq->fair_server);
+		WARN_ON_ONCE(err);
+	}
+
+	rq_unlock_irqrestore(rq, &rf);
+}
+
 static void handle_hotplug(struct rq *rq, bool online)
 {
 	struct scx_sched *sch = scx_root;
@@ -2621,8 +2672,19 @@ static void handle_hotplug(struct rq *rq, bool online)
 	if (unlikely(!sch))
 		return;
 
-	if (scx_enabled())
+	if (scx_enabled()) {
+		bool is_switching_all = READ_ONCE(scx_switching_all);
+
 		scx_idle_update_selcpu_topology(&sch->ops);
+
+		/*
+		 * Update ext and fair DL servers on hotplug events.
+		 */
+		if (online)
+			dl_server_on(rq, is_switching_all);
+		else
+			dl_server_off(rq, is_switching_all);
+	}
 
 	if (online && SCX_HAS_OP(sch, cpu_online))
 		SCX_CALL_OP(sch, SCX_KF_UNLOCKED, cpu_online, NULL, cpu);
@@ -3970,6 +4032,7 @@ static void scx_disable_workfn(struct kthread_work *work)
 	struct scx_exit_info *ei = sch->exit_info;
 	struct scx_task_iter sti;
 	struct task_struct *p;
+	bool is_switching_all = READ_ONCE(scx_switching_all);
 	int kind, cpu;
 
 	kind = atomic_read(&sch->exit_kind);
@@ -4025,6 +4088,22 @@ static void scx_disable_workfn(struct kthread_work *work)
 
 	scx_init_task_enabled = false;
 
+	for_each_online_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+
+		/*
+		 * Invalidate all the rq clocks to prevent getting outdated
+		 * rq clocks from a previous scx scheduler.
+		 */
+		scx_rq_clock_invalidate(rq);
+
+		/*
+		 * We are unloading the sched_ext scheduler, we do not need its
+		 * DL server bandwidth anymore, remove it for all CPUs.
+		 */
+		dl_server_off(rq, is_switching_all);
+	}
+
 	scx_task_iter_start(&sti);
 	while ((p = scx_task_iter_next_locked(&sti))) {
 		const struct sched_class *old_class = p->sched_class;
@@ -4046,15 +4125,6 @@ static void scx_disable_workfn(struct kthread_work *work)
 	}
 	scx_task_iter_stop(&sti);
 	percpu_up_write(&scx_fork_rwsem);
-
-	/*
-	 * Invalidate all the rq clocks to prevent getting outdated
-	 * rq clocks from a previous scx scheduler.
-	 */
-	for_each_possible_cpu(cpu) {
-		struct rq *rq = cpu_rq(cpu);
-		scx_rq_clock_invalidate(rq);
-	}
 
 	/* no task is on scx, turn off all the switches and flush in-progress calls */
 	static_branch_disable(&__scx_enabled);
@@ -4842,6 +4912,13 @@ static int scx_enable(struct sched_ext_ops *ops, struct bpf_link *link)
 		put_task_struct(p);
 	}
 	scx_task_iter_stop(&sti);
+
+	/*
+	 * Enable the ext DL server on all online CPUs.
+	 */
+	for_each_online_cpu(cpu)
+		dl_server_on(cpu_rq(cpu), !(ops->flags & SCX_OPS_SWITCH_PARTIAL));
+
 	percpu_up_write(&scx_fork_rwsem);
 
 	scx_bypassed_for_enable = false;
