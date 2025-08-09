@@ -1667,7 +1667,12 @@ int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 perio
 	cpus = dl_bw_cpus(cpu);
 	cap = dl_bw_capacity(cpu);
 
-	if (__dl_overflow(dl_b, cap, old_bw, new_bw))
+	/*
+	 * Hotplugged CPUs coming online do an enqueue but are not a part of any
+	 * root domain containing cpu_active() CPUs. So in this case, don't mess
+	 * with accounting and we can retry later.
+	 */
+	if (!cpus || __dl_overflow(dl_b, cap, old_bw, new_bw))
 		return -EBUSY;
 
 	if (init) {
