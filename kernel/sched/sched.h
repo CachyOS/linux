@@ -410,7 +410,8 @@ extern void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec);
 extern void dl_server_start(struct sched_dl_entity *dl_se);
 extern void dl_server_stop(struct sched_dl_entity *dl_se);
 extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
-		    dl_server_pick_f pick_task);
+		    dl_server_pick_f pick_task,
+		    dl_server_balance_f balance);
 extern void sched_init_dl_servers(void);
 
 extern void dl_server_update_idle_time(struct rq *rq,
@@ -424,6 +425,11 @@ extern int dl_server_apply_params(struct sched_dl_entity *dl_se,
 static inline bool dl_server_active(struct sched_dl_entity *dl_se)
 {
 	return dl_se->dl_server_active;
+}
+
+static inline int on_dl_rq(struct sched_dl_entity *dl_se)
+{
+	return !RB_EMPTY_NODE(&dl_se->rb_node);
 }
 
 #ifdef CONFIG_CGROUP_SCHED
