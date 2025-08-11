@@ -34,8 +34,8 @@
 /* VPE CSA resides in the 4th page of CSA */
 #define AMDGPU_CSA_VPE_OFFSET 	(4096 * 3)
 
-/* 1 second timeout */
-#define VPE_IDLE_TIMEOUT	msecs_to_jiffies(1000)
+/* 2 second timeout */
+#define VPE_IDLE_TIMEOUT	msecs_to_jiffies(2000)
 
 #define VPE_MAX_DPM_LEVEL			4
 #define FIXED1_8_BITS_PER_FRACTIONAL_PART	8
