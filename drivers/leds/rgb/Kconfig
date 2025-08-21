@@ -88,4 +88,13 @@ config LEDS_MT6370_RGB
 	  This driver can also be built as a module. If so, the module
 	  will be called "leds-mt6370-rgb".
 
+config LEDS_VALVE
+	tristate "LED Support for Valve Freemont"
+	help
+	  Say Y here to enable support for Valve Freemont LED strip device.
+	  It is a strip LED controller with 17 RGB LEDs.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called "leds-valve".
+
 endif # LEDS_CLASS_MULTICOLOR
