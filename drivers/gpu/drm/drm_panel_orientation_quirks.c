@@ -612,6 +612,12 @@ static const struct dmi_system_id orientation_data[] = {
 		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Zeenix Lite"),
 		},
 		.driver_data = (void *)&lcd1080x1920_leftside_up,
+	}, {    /* Tectoy Zeenix Pro (AYN Loki Max Rebadge) */
+		.matches = {
+		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Tectoy"),
+		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Zeenix Pro"),
+		},
+		.driver_data = (void *)&lcd1080x1920_leftside_up,
 	}, {	/* Valve Steam Deck (Jupiter) */
 		.matches = {
 		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Valve"),
