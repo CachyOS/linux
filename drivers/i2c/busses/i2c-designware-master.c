@@ -715,6 +715,11 @@ irqreturn_t i2c_dw_isr_master(struct dw_i2c_dev *dev)
 
 static int i2c_dw_wait_transfer(struct dw_i2c_dev *dev)
 {
+	/*
+	 * It saves more energy on Intel to omit the usleep_range(). This is not
+	 * the case on AMD.
+	 */
+	const bool no_sleep = boot_cpu_data.x86_vendor == X86_VENDOR_INTEL;
 	unsigned long timeout = dev->adapter.timeout;
 	unsigned int stat;
 	int ret;
@@ -731,7 +736,7 @@ static int i2c_dw_wait_transfer(struct dw_i2c_dev *dev)
 			stat = i2c_dw_read_clear_intrbits(dev);
 			if (stat)
 				i2c_dw_process_transfer(dev, stat);
-			else
+			else if (!no_sleep)
 				/* Try save some power */
 				usleep_range(3, 25);
 		} while (time_before(jiffies, timeout));
