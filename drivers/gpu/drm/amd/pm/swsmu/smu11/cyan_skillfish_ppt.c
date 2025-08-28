@@ -45,8 +45,8 @@
 #undef pr_debug
 
 /* unit: MHz */
-#define CYAN_SKILLFISH_SCLK_MIN			1000
-#define CYAN_SKILLFISH_SCLK_MAX			2000
+#define CYAN_SKILLFISH_SCLK_MIN			350
+#define CYAN_SKILLFISH_SCLK_MAX			2230
 
 /* unit: mV */
 #define CYAN_SKILLFISH_VDDC_MIN			700
