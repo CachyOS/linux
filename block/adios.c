@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.0.1"
+#define ADIOS_VERSION "3.1.0"
 
 /* Request Types:
  *
@@ -37,15 +37,18 @@
  * - Implementation: Placed in a dedicated, high-priority FIFO queue
  *   (`prio_queue[0]`) for immediate dispatch.
  *
- * Tier 1 (High Priority): Data Persistence & Ordering Guarantees
+ * Tier 1 (High Priority): I/O Barrier Guarantees
  * ---------------------------------------------------------------
- * - Target: Requests with integrity-sensitive flags like REQ_FUA or
- *   REQ_PREFLUSH, typically originating from O_DIRECT I/O.
- * - Purpose: To ensure strict ordering and data persistence guarantees,
- *   preventing data corruption in applications like databases.
- * - Implementation: Handled in a separate, secondary FIFO queue
- *   (`prio_queue[1]`) to ensure they are processed in submission order and
- *   before any lower-priority requests.
+ * - Target: Requests with the REQ_PREFLUSH flag.
+ * - Purpose: To enforce a strict I/O barrier. When a PREFLUSH request is
+ *   received, the scheduler stops processing new requests from its main
+ *   queues until all preceding requests have been completed. This guarantees
+ *   the order of operations required by filesystems for data integrity.
+ * - Implementation: A state flag (ADIOS_STATE_BARRIER) halts
+ *   insertion into the main deadline tree. The barrier request and all
+ *   subsequent requests are held in a temporary `barrier_queue`. Once the
+ *   main queues are drained, the barrier request and the subsequent requests
+ *   are released from the pending queue back into the scheduler.
  *
  * Tier 2 (Medium Priority): Application Responsiveness
  * ----------------------------------------------------
@@ -71,9 +74,9 @@
  * Dispatch Logic:
  * The scheduler always dispatches requests in strict priority order:
  * 1. prio_queue[0] (Tier 0)
- * 2. prio_queue[1] (Tier 1)
- * 3. The deadline-sorted batch queue (which naturally prioritizes Tier 2
+ * 2. The deadline-sorted batch queue (which naturally prioritizes Tier 2
  *    over Tier 3 due to their calculated deadlines).
+ * 3. Barrier-pending requests are handled only after the main queues are empty.
  */
 
 // Global variable to control the latency
@@ -86,17 +89,13 @@ static u64 default_lat_model_latency_limit = 500000000ULL;
 // Batch ordering strategy
 static u64 default_batch_order = 0;
 // Flags to control compliance with block layer constraints
-static u64 default_compliance_flags = 0x7;
+static u64 default_compliance_flags = 0x1;
 
 /* Compliance Flags:
- * 0x1: REQ_FUA requests will be handled as Tier-1, strictly prioritized
- * 0x2: REQ_PREFLUSH requests will be handled as Tier-1, strictly prioritized
  * 0x4: Async requests will not be reordered based on the predicted latency
  */
 enum adios_compliance_flags {
-	ADIOS_CF_PRIO_FUA = 1U << 0,
-	ADIOS_CF_PRIO_PF  = 1U << 1,
-	ADIOS_CF_FIXORDER = 1U << 2,
+	ADIOS_CF_FIXORDER  = 1U << 0,
 };
 
 // Dynamic thresholds for shrinkage
@@ -154,10 +153,12 @@ enum adios_state_flags {
 	ADIOS_STATE_DL_1      = 1U << 3,
 	ADIOS_STATE_BQ_PAGE_0 = 1U << 4,
 	ADIOS_STATE_BQ_PAGE_1 = 1U << 5,
+	ADIOS_STATE_BARRIER   = 1U << 6,
 };
 #define ADIOS_STATE_PQ 0
 #define ADIOS_STATE_DL 2
 #define ADIOS_STATE_BQ 4
+#define ADIOS_STATE_BP 6
 
 // Temporal granularity of the deadline tree node (dl_group)
 #define ADIOS_QUANTUM_SHIFT 20
@@ -245,6 +246,8 @@ struct adios_data {
 	u32 batch_count[ADIOS_BQ_PAGES][ADIOS_OPTYPES];
 	u8  bq_batch_order[ADIOS_BQ_PAGES];
 	spinlock_t bq_lock;
+	spinlock_t barrier_lock;
+	struct list_head barrier_queue;
 
 	struct lm_buckets *aggr_buckets;
 
@@ -670,8 +673,14 @@ void set_adios_state(struct adios_data *ad, u32 shift, u32 idx, bool flag) {
 		atomic_andnot(1U << (idx + shift), &ad->state);
 }
 
-static inline u32 get_adios_state(struct adios_data *ad, u32 shift)
-{ return (atomic_read(&ad->state) >> shift) & 0x3; }
+static inline u32 get_adios_state(struct adios_data *ad)
+{ return atomic_read(&ad->state); }
+
+static inline u32 eval_this_adios_state(u32 state, u32 shift)
+{ return (state >> shift) & 0x3; }
+
+static inline u32 eval_adios_state(struct adios_data *ad, u32 shift)
+{ return eval_this_adios_state(get_adios_state(ad), shift); }
 
 // Add a request to the deadline-sorted red-black tree
 static void add_to_dl_tree(
@@ -829,6 +838,9 @@ static bool adios_bio_merge(struct request_queue *q, struct bio *bio,
 	struct request *free = NULL;
 	bool ret;
 
+	if (eval_adios_state(ad, ADIOS_STATE_BP))
+		return false;
+
 	if (!spin_trylock_irqsave(&ad->lock, flags))
 		return false;
 
@@ -841,47 +853,12 @@ static bool adios_bio_merge(struct request_queue *q, struct bio *bio,
 	return ret;
 }
 
-// Insert a request into the scheduler (after Read & Write models stabilized)
-static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
-		struct request *rq, blk_insert_t insert_flags, struct list_head *free) {
-	struct request_queue *q = hctx->queue;
-	struct adios_data *ad = q->elevator->elevator_data;
-	struct adios_rq_data *rd = get_rq_data(rq);
-	bool dl_idx;
-	u8 optype = adios_optype(rq);
-	u8 insert_pq_flags = 0;
-
-	rd->block_size = blk_rq_bytes(rq);
-	rd->pred_lat =
-		latency_model_predict(&ad->latency_model[optype], rd->block_size);
-
-	/* Tier-0: BLK_MQ_INSERT_AT_HEAD Requests
-	 * - Needs to be processed ASAP at all costs in any case */
-	if (insert_flags & BLK_MQ_INSERT_AT_HEAD)
-	{ insert_pq_flags |= 0x2; }
-	/* Tier-1: Integrity-sensitive Requests
-	 * - Needs to be FIFO across all optypes */
-	if ((compliant(ad, ADIOS_CF_PRIO_FUA) && (rq->cmd_flags & REQ_FUA)) ||
-		(compliant(ad, ADIOS_CF_PRIO_PF ) && (rq->cmd_flags & REQ_PREFLUSH)))
-	{ insert_pq_flags |= 0x1; }
-
-	if (insert_pq_flags) {
-		u8 pq_idx = !(insert_pq_flags >> 1);
-		if (rd->pred_lat)
-			atomic64_add(rd->pred_lat, &ad->total_pred_lat);
-		scoped_guard(spinlock_irqsave, &ad->pq_lock) {
-			bool was_empty = list_empty(&ad->prio_queue[pq_idx]);
-			list_add_tail(&rq->queuelist, &ad->prio_queue[pq_idx]);
-			if (was_empty)
-				set_adios_state(ad, ADIOS_STATE_PQ, pq_idx, true);
-		}
-		return;
-	}
-
+static bool merge_or_insert_to_dl_tree(struct adios_data *ad,
+		struct request *rq, struct request_queue *q, struct list_head *free) {
 	if (blk_mq_sched_try_insert_merge(q, rq, free))
-		return;
+		return true;
 
-	dl_idx = adios_optype_not_read(rq);
+	bool dl_idx = adios_optype_not_read(rq);
 	add_to_dl_tree(ad, dl_idx, rq);
 
 	if (rq_mergeable(rq)) {
@@ -889,6 +866,63 @@ static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
 		if (!q->last_merge)
 			q->last_merge = rq;
 	}
+
+	return false;
+}
+
+static void insert_to_prio_queue(struct adios_data *ad,
+		struct request *rq, bool pq_idx) {
+	struct adios_rq_data *rd = get_rq_data(rq);
+
+	if (rd->pred_lat)
+		atomic64_add(rd->pred_lat, &ad->total_pred_lat);
+
+	scoped_guard(spinlock_irqsave, &ad->pq_lock) {
+		bool was_empty = list_empty(&ad->prio_queue[pq_idx]);
+		list_add_tail(&rq->queuelist, &ad->prio_queue[pq_idx]);
+		if (was_empty)
+			set_adios_state(ad, ADIOS_STATE_PQ, pq_idx, true);
+	}
+}
+
+// Insert a request into the scheduler (after Read & Write models stabilized)
+static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
+		struct request *rq, blk_insert_t insert_flags, struct list_head *free) {
+	struct request_queue *q = hctx->queue;
+	struct adios_data *ad = q->elevator->elevator_data;
+	struct adios_rq_data *rd = get_rq_data(rq);
+	u8 optype = adios_optype(rq);
+	bool rq_is_preflush;
+
+	rd->block_size = blk_rq_bytes(rq);
+	rd->pred_lat =
+		latency_model_predict(&ad->latency_model[optype], rd->block_size);
+
+	/* Tier-0: BLK_MQ_INSERT_AT_HEAD Requests */
+	if (insert_flags & BLK_MQ_INSERT_AT_HEAD) {
+		insert_to_prio_queue(ad, rq, 0);
+		return;
+	}
+
+	/*
+	 * Strict Barrier Handling for REQ_PREFLUSH:
+	 * If a PREFLUSH request arrives, or if the scheduler is already in a
+	 * barrier-pending state, all subsequent requests are diverted to a
+	 * separate barrier_queue. This ensures that no new requests are processed
+	 * until all work preceding the barrier is complete.
+	 */
+	rq_is_preflush = rq->cmd_flags & REQ_PREFLUSH;
+	if (eval_adios_state(ad, ADIOS_STATE_BP) || rq_is_preflush) {
+		scoped_guard(spinlock_irqsave, &ad->barrier_lock) {
+			if (rq_is_preflush)
+				set_adios_state(ad, ADIOS_STATE_BP, 0, true);
+			list_add_tail(&rq->queuelist, &ad->barrier_queue);
+		}
+		return;
+	}
+
+	if (merge_or_insert_to_dl_tree(ad, rq, q, free))
+		return;
 }
 
 // Insert a request into the scheduler (before Read & Write models stabilizes)
@@ -904,15 +938,7 @@ static void insert_request_pre_stability(struct blk_mq_hw_ctx *hctx,
 	rd->pred_lat =
 		latency_model_predict(&ad->latency_model[optype], rd->block_size);
 
-	if (rd->pred_lat)
-		atomic64_add(rd->pred_lat, &ad->total_pred_lat);
-
-	scoped_guard(spinlock_irqsave, &ad->pq_lock) {
-		bool was_empty = list_empty(&ad->prio_queue[pq_idx]);
-		list_add_tail(&rq->queuelist, &ad->prio_queue[pq_idx]);
-		if (was_empty)
-			set_adios_state(ad, ADIOS_STATE_PQ, pq_idx, true);
-	}
+	insert_to_prio_queue(ad, rq, pq_idx);
 
 	rcu_read_lock();
 	if (rcu_dereference(ad->latency_model[ADIOS_READ].params)->base > 0 &&
@@ -1038,7 +1064,7 @@ static bool fill_batch_queues(struct adios_data *ad, u64 tpl) {
 	for (int i = 0; i < ADIOS_MAX_DELETES_PER_LOCK; i++) {
 		bool has_base = false;
 
-		dl_queued = get_adios_state(ad, ADIOS_STATE_DL);
+		dl_queued = eval_adios_state(ad, ADIOS_STATE_DL);
 		// Check if there are any requests queued in the deadline tree
 		if (!dl_queued) {
 			stop = true;
@@ -1172,10 +1198,9 @@ static struct request *pop_next_bq_request_elevator(struct adios_data *ad) {
 	return rq;
 }
 
-// Returns the state of the other batch queue page
-static bool more_bq_ready(struct adios_data *ad, bool page) {
-	u32 state = get_adios_state(ad, ADIOS_STATE_BQ);
-	return state & (1U << !page);
+// Returns the state of the batch queue page
+static inline bool bq_page_has_rq(u32 bq_state, bool page) {
+	return bq_state & (1U << page);
 }
 
 // Dispatch a request from the batch queues
@@ -1184,13 +1209,24 @@ static struct request *dispatch_from_bq(struct adios_data *ad) {
 
 	guard(spinlock_irqsave)(&ad->bq_lock);
 
+	u32 state = get_adios_state(ad);
+	u32 bq_state = eval_this_adios_state(state, ADIOS_STATE_BQ);
+	u32 bq_curr_page_has_rq = bq_page_has_rq(bq_state, ad->bq_page);
 	u64 tpl = atomic64_read(&ad->total_pred_lat);
 
-	if (!more_bq_ready(ad, ad->bq_page) && (!tpl || tpl < div_u64(
-			ad->global_latency_window * ad->bq_refill_below_ratio, 100)))
+	// Refill the batch queues if the back page is empty, dl_tree has work, and
+	// current page is empty or the total ongoing latency is below the threshold
+	if (!bq_page_has_rq(bq_state, !ad->bq_page) &&
+			(!bq_curr_page_has_rq || (!tpl || tpl < div_u64(
+			ad->global_latency_window * ad->bq_refill_below_ratio, 100))) &&
+			eval_this_adios_state(state, ADIOS_STATE_DL))
 		fill_batch_queues(ad, tpl);
 
-again:
+	// If current batch queue page is empty, and the other page has work, flip
+	if (!bq_curr_page_has_rq &&
+			bq_page_has_rq(eval_adios_state(ad, ADIOS_STATE_BQ), !ad->bq_page))
+		flip_bq_page(ad);
+
 	// Use the per-page state to decide the dispatch logic, ensuring correctness
 	rq = (ad->bq_batch_order[ad->bq_page] == ADIOS_BO_ELEVATOR) ?
 		pop_next_bq_request_elevator(ad):
@@ -1204,12 +1240,6 @@ again:
 		return rq;
 	}
 
-	// If there's more batch queue page available, flip to it and retry
-	if (more_bq_ready(ad, ad->bq_page)) {
-		flip_bq_page(ad);
-		goto again;
-	}
-
 	return NULL;
 }
 
@@ -1218,7 +1248,7 @@ static struct request *dispatch_from_pq(struct adios_data *ad) {
 	struct request *rq = NULL;
 
 	guard(spinlock_irqsave)(&ad->pq_lock);
-	u32 pq_state = get_adios_state(ad, ADIOS_STATE_PQ);
+	u32 pq_state = eval_adios_state(ad, ADIOS_STATE_PQ);
 	u8  pq_idx = pq_state >> 1;
 	struct list_head *q = &ad->prio_queue[pq_idx];
 
@@ -1233,15 +1263,83 @@ static struct request *dispatch_from_pq(struct adios_data *ad) {
 	return rq;
 }
 
+static bool release_barrier_requests(struct adios_data *ad) {
+	if (!eval_adios_state(ad, ADIOS_STATE_BP))
+		return false;
+
+	u32 moved_count = 0;
+	LIST_HEAD(local_list);
+
+	scoped_guard(spinlock_irqsave, &ad->barrier_lock) {
+		if (!list_empty(&ad->barrier_queue)) {
+			struct request *trq, *next;
+			bool first_barrier_moved = false;
+
+			list_for_each_entry_safe(trq, next, &ad->barrier_queue, queuelist) {
+				if (!first_barrier_moved) {
+					list_del_init(&trq->queuelist);
+					insert_to_prio_queue(ad, trq, 1);
+					moved_count++;
+					first_barrier_moved = true;
+					continue;
+				}
+
+				if (trq->cmd_flags & REQ_PREFLUSH)
+					break;
+
+				list_move_tail(&trq->queuelist, &local_list);
+				moved_count++;
+			}
+
+			if (list_empty(&ad->barrier_queue))
+				set_adios_state(ad, ADIOS_STATE_BP, 0, false);
+		}
+	}
+
+	if (!moved_count)
+		return false;
+
+	if (!list_empty(&local_list)) {
+		struct request *trq, *next;
+		LIST_HEAD(free_list);
+
+		scoped_guard(spinlock_irqsave, &ad->lock)
+		list_for_each_entry_safe(trq, next, &local_list, queuelist) {
+			list_del_init(&trq->queuelist);
+			if (merge_or_insert_to_dl_tree(ad, trq, ad->queue, &free_list))
+				continue;
+		}
+
+		if (!list_empty(&free_list))
+			blk_mq_free_requests(&free_list);
+	}
+
+	return true;
+}
+
 // Dispatch a request to the hardware queue
 static struct request *adios_dispatch_request(struct blk_mq_hw_ctx *hctx) {
 	struct adios_data *ad = hctx->queue->elevator->elevator_data;
 	struct request *rq;
 
+retry:
 	rq = dispatch_from_pq(ad);
-	if (rq) goto found;
+	if (rq)
+		goto found;
+
 	rq = dispatch_from_bq(ad);
-	if (!rq) return NULL;
+	if (rq)
+		goto found;
+
+	/*
+	 * If all active queues are empty, check if we need to process a barrier.
+	 * This is the trigger to release requests that were held in barrier_queue
+	 * due to a REQ_PREFLUSH barrier.
+	 */
+	if (release_barrier_requests(ad))
+		goto retry;
+
+	return NULL;
 found:
 	if (ad->is_rotational)
 		ad->head_pos = blk_rq_pos(rq) + blk_rq_sectors(rq);
@@ -1425,6 +1523,8 @@ static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) 
 	spin_lock_init(&ad->lock);
 	spin_lock_init(&ad->pq_lock);
 	spin_lock_init(&ad->bq_lock);
+	spin_lock_init(&ad->barrier_lock);
+	INIT_LIST_HEAD(&ad->barrier_queue);
 
 	timer_setup(&ad->update_timer, update_timer_callback, 0);
 
@@ -1462,6 +1562,7 @@ static void adios_exit_sched(struct elevator_queue *e) {
 
 	timer_shutdown_sync(&ad->update_timer);
 
+	WARN_ON_ONCE(!list_empty(&ad->barrier_queue));
 	for (int i = 0; i < 2; i++)
 		WARN_ON_ONCE(!list_empty(&ad->prio_queue[i]));
 
