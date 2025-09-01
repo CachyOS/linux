@@ -23,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/capability.h>
+#include <linux/timer.h>
 #include <linux/eventpoll.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-common.h>
@@ -45,7 +46,7 @@
 #define strscpy strlcpy
 #endif
 
-#if defined(timer_setup) && defined(timer_container_of)
+#if defined(timer_setup)
 #define HAVE_TIMER_SETUP
 #endif
 
@@ -2669,7 +2670,8 @@ static void check_timers(struct v4l2_loopback_device *dev)
 #ifdef HAVE_TIMER_SETUP
 static void sustain_timer_clb(struct timer_list *t)
 {
-	struct v4l2_loopback_device *dev = timer_container_of(dev, t, sustain_timer);
+	struct v4l2_loopback_device *dev =
+		container_of(t, struct v4l2_loopback_device, sustain_timer);
 #else
 static void sustain_timer_clb(unsigned long nr)
 {
@@ -2694,7 +2696,8 @@ static void sustain_timer_clb(unsigned long nr)
 #ifdef HAVE_TIMER_SETUP
 static void timeout_timer_clb(struct timer_list *t)
 {
-	struct v4l2_loopback_device *dev = timer_container_of(dev, t, timeout_timer);
+	struct v4l2_loopback_device *dev =
+		container_of(t, struct v4l2_loopback_device, timeout_timer);
 #else
 static void timeout_timer_clb(unsigned long nr)
 {
