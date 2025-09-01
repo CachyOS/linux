@@ -1425,23 +1425,18 @@ static int adios_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx) {
 }
 
 // Initialize the scheduler-specific data when initializing the request queue
-static int adios_init_sched(struct request_queue *q, struct elevator_type *e) {
+static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) {
 	struct adios_data *ad;
-	struct elevator_queue *eq;
 	int ret = -ENOMEM;
 	u8 optype = 0;
-
-	eq = elevator_alloc(q, e);
-	if (!eq) {
-		pr_err("adios: Failed to allocate the elevator\n");
-		return ret;
-	}
 
 	ad = kzalloc_node(sizeof(*ad), GFP_KERNEL, q->node);
 	if (!ad) {
 		pr_err("adios: Failed to create adios_data\n");
 		goto put_eq;
 	}
+
+	eq->elevator_data = ad;
 
 	// Create a memory pool for adios_rq_data
 	ad->rq_data_pool = kmem_cache_create("rq_data_pool",
