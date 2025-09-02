@@ -298,7 +298,8 @@ no-dot-config-targets := $(clean-targets) \
 			 outputmakefile rustavailable rustfmt rustfmtcheck
 no-sync-config-targets := $(no-dot-config-targets) %install modules_sign kernelrelease \
 			  image_name
-single-targets := %.a %.i %.ko %.lds %.ll %.lst %.mod %.o %.rsi %.s %/
+single-targets := %.a %.i %.ko %.lds %.ll %.lst %.mod %.o %.rsi %.s %.o_thinlto_native \
+	          %.a_thinlto_native %.o.thinlto.bc %/
 
 config-build	:=
 mixed-build	:=
@@ -857,10 +858,18 @@ KBUILD_CFLAGS	+= -fno-delete-null-pointer-checks
 ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 KBUILD_CFLAGS += -O2
 KBUILD_RUSTFLAGS += -Copt-level=2
+else ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
+KBUILD_CFLAGS += -O3
+KBUILD_RUSTFLAGS += -Copt-level=3
 else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS += -Os
 KBUILD_RUSTFLAGS += -Copt-level=s
 endif
+
+# Perform swing modulo scheduling immediately before the first scheduling pass.
+# This pass looks at innermost loops and reorders their instructions by
+# overlapping different iterations.
+KBUILD_CFLAGS += $(call cc-option,-fmodulo-sched -fmodulo-sched-allow-regmoves -fivopts -fmodulo-sched)
 
 # Always set `debug-assertions` and `overflow-checks` because their default
 # depends on `opt-level` and `debug-assertions`, respectively.
@@ -991,10 +1000,10 @@ export CC_FLAGS_SCS
 endif
 
 ifdef CONFIG_LTO_CLANG
-ifdef CONFIG_LTO_CLANG_THIN
-CC_FLAGS_LTO	:= -flto=thin -fsplit-lto-unit
-else
+ifdef CONFIG_LTO_CLANG_FULL
 CC_FLAGS_LTO	:= -flto
+else # for CONFIG_LTO_CLANG_THIN or CONFIG_LTO_CLANG_THIN_DIST
+CC_FLAGS_LTO	:= -flto=thin -fsplit-lto-unit
 endif
 CC_FLAGS_LTO	+= -fvisibility=hidden
 
@@ -1213,8 +1222,34 @@ vmlinux.a: $(KBUILD_VMLINUX_OBJS) scripts/head-object-list.txt FORCE
 	$(call if_changed,ar_vmlinux.a)
 
 PHONY += vmlinux_o
+ifdef CONFIG_LTO_CLANG_THIN_DIST
+vmlinux.thinlink: vmlinux.a $(KBUILD_VMLINUX_LIBS) FORCE
+	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.vmlinux_thinlink
+targets += vmlinux.thinlink
+
+vmlinux.a_thinlto_native := $(patsubst %.a,%.a_thinlto_native,$(KBUILD_VMLINUX_OBJS))
+quiet_cmd_ar_vmlinux.a_thinlto_native = AR      $@
+      cmd_ar_vmlinux.a_thinlto_native = \
+	rm -f $@; \
+	$(AR) cDPrST $@ $(vmlinux.a_thinlto_native); \
+	$(AR) mPiT $$($(AR) t $@ | sed -n 1p) $@ $$($(AR) t $@ | grep -F -f $(srctree)/scripts/head-object-list.txt)
+
+define rule_gen_vmlinux.a_thinlto_native
+	+$(Q)$(MAKE) $(build)=. need-builtin=1 thinlto_final_pass=1 need-modorder=1 built-in.a_thinlto_native
+	$(call cmd_and_savecmd,ar_vmlinux.a_thinlto_native)
+endef
+
+vmlinux.a_thinlto_native: vmlinux.thinlink scripts/head-object-list.txt FORCE
+	$(call if_changed_rule,gen_vmlinux.a_thinlto_native)
+
+targets += vmlinux.a_thinlto_native
+
+vmlinux_o: vmlinux.a_thinlto_native
+	$(Q)$(MAKE) thinlto_final_pass=1 -f $(srctree)/scripts/Makefile.vmlinux_o
+else
 vmlinux_o: vmlinux.a $(KBUILD_VMLINUX_LIBS)
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.vmlinux_o
+endif
 
 vmlinux.o modules.builtin.modinfo modules.builtin: vmlinux_o
 	@:
@@ -1572,7 +1607,8 @@ CLEAN_FILES += vmlinux.symvers modules-only.symvers \
 	       modules.builtin.ranges vmlinux.o.map vmlinux.unstripped \
 	       compile_commands.json rust/test \
 	       rust-project.json .vmlinux.objs .vmlinux.export.c \
-               .builtin-dtbs-list .builtin-dtb.S
+	       .builtin-dtbs-list .builtin-dtb.S \
+	       .vmlinux_thinlto_bc_files vmlinux.thinlink
 
 # Directories & files removed with 'make mrproper'
 MRPROPER_FILES += include/config include/generated          \
@@ -2023,6 +2059,8 @@ clean: $(clean-dirs)
 		-o -name '*.symtypes' -o -name 'modules.order' \
 		-o -name '*.c.[012]*.*' \
 		-o -name '*.ll' \
+		-o -name '*.a_thinlto_native' -o -name '*.o_thinlto_native' \
+		-o -name '*.o.thinlto.bc' \
 		-o -name '*.gcno' \
 		\) -type f -print \
 		-o -name '.tmp_*' -print \

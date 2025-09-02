@@ -12,6 +12,7 @@
 #
 .*
 *.a
+*.a_thinlto_native
 *.asn1.[ch]
 *.bin
 *.bz2
@@ -39,6 +40,7 @@
 *.mod.c
 *.o
 *.o.*
+*.o_thinlto_native
 *.patch
 *.rmeta
 *.rpm
@@ -64,6 +66,7 @@ modules.order
 /vmlinux
 /vmlinux.32
 /vmlinux.map
+/vmlinux.thinlink
 /vmlinux.symvers
 /vmlinux.unstripped
 /vmlinux-gdb.py

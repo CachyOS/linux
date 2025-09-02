@@ -173,8 +173,25 @@ else
 	# Use -mskip-rax-setup if supported.
 	KBUILD_CFLAGS += $(call cc-option,-mskip-rax-setup)
 
+ifdef CONFIG_X86_NATIVE_CPU
+        KBUILD_CFLAGS += -march=native
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=native
+endif
+
+ifdef CONFIG_MZEN4
+        KBUILD_CFLAGS += -march=znver4
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=znver4
+endif
+
+ifdef CONFIG_GENERIC_CPU
+ifeq ($(CONFIG_X86_64_VERSION),1)
         KBUILD_CFLAGS += -march=x86-64 -mtune=generic
         KBUILD_RUSTFLAGS += -Ctarget-cpu=x86-64 -Ztune-cpu=generic
+else
+        KBUILD_CFLAGS +=-march=x86-64-v$(CONFIG_X86_64_VERSION)
+        KBUILD_RUSTFLAGS += -Ctarget-cpu=x86-64-v$(CONFIG_X86_64_VERSION)
+endif # CONFIG_X86_64_VERSION
+endif # CONFIG_GENERIC_CPU
 
         KBUILD_CFLAGS += -mno-red-zone
         KBUILD_CFLAGS += -mcmodel=kernel
