@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.0"
+#define ADIOS_VERSION "3.1.1"
 
 /* Request Types:
  *
@@ -89,7 +89,7 @@ static u64 default_lat_model_latency_limit = 500000000ULL;
 // Batch ordering strategy
 static u64 default_batch_order = 0;
 // Flags to control compliance with block layer constraints
-static u64 default_compliance_flags = 0x1;
+static u64 default_compliance_flags = 0x0;
 
 /* Compliance Flags:
  * 0x4: Async requests will not be reordered based on the predicted latency
@@ -1172,7 +1172,7 @@ static struct request *pop_next_bq_request_optype(struct adios_data *ad) {
 	if (!bq_state) return NULL;
 
 	struct request *rq;
-	u32 bq_idx = 31 - __builtin_clz(bq_state);
+	u32 bq_idx = __builtin_ctz(bq_state);
 
 	// Dispatch based on optype (FIFO within each) or single-queue elevator
 	rq = pop_bq_request(ad, bq_idx, false);
@@ -1184,7 +1184,7 @@ static struct request *pop_next_bq_request_elevator(struct adios_data *ad) {
 	if (!bq_state) return NULL;
 
 	struct request *rq;
-	u32 bq_idx = 31 - __builtin_clz(bq_state);
+	u32 bq_idx = __builtin_ctz(bq_state);
 	bool direction = (bq_idx == 1) & ad->elv_direction;
 
 	// Tier-2 (sync) is always high priority
