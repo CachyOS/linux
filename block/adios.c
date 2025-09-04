@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.2"
+#define ADIOS_VERSION "3.1.3"
 
 /* Request Types:
  *
@@ -1265,9 +1265,6 @@ static struct request *dispatch_from_pq(struct adios_data *ad) {
 }
 
 static bool release_barrier_requests(struct adios_data *ad) {
-	if (!eval_adios_state(ad, ADIOS_STATE_BP))
-		return false;
-
 	u32 moved_count = 0;
 	LIST_HEAD(local_list);
 
@@ -1337,7 +1334,9 @@ retry:
 	 * This is the trigger to release requests that were held in barrier_queue
 	 * due to a REQ_OP_FLUSH barrier.
 	 */
-	if (release_barrier_requests(ad))
+	if (eval_adios_state(ad, ADIOS_STATE_BP) &&
+			atomic64_read(&ad->total_pred_lat) == 0 &&
+			release_barrier_requests(ad))
 		goto retry;
 
 	return NULL;
