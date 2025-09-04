@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.3"
+#define ADIOS_VERSION "3.1.4"
 
 /* Request Types:
  *
@@ -211,6 +211,15 @@ struct latency_model {
 	u8  lm_shrink_resist;
 };
 
+union adios_in_flight_rqs {
+	atomic64_t	atomic;
+	u64			scalar;
+	struct {
+		u64 	count:          16;
+		u64 	total_pred_lat: 48;
+	};
+};
+
 // Adios scheduler data
 struct adios_data {
 	spinlock_t pq_lock;
@@ -255,6 +264,7 @@ struct adios_data {
 	struct latency_model latency_model[ADIOS_OPTYPES];
 	struct timer_list update_timer;
 
+	union adios_in_flight_rqs in_flight_rqs;
 	atomic64_t total_pred_lat;
 	u64 last_completed_time;
 
@@ -280,6 +290,7 @@ struct adios_rq_data {
 	u64 deadline;
 	u64 pred_lat;
 	u32 block_size;
+	bool managed;
 } __attribute__((aligned(64)));
 
 static const int adios_prio_to_wmult[40] = {
@@ -875,8 +886,12 @@ static void insert_to_prio_queue(struct adios_data *ad,
 		struct request *rq, bool pq_idx) {
 	struct adios_rq_data *rd = get_rq_data(rq);
 
-	if (rd->pred_lat)
-		atomic64_add(rd->pred_lat, &ad->total_pred_lat);
+	/* We're sure that rd->managed == true */
+	union adios_in_flight_rqs ifr = {
+		.count          = 1,
+		.total_pred_lat = rd->pred_lat,
+	};
+	atomic64_add(ifr.scalar, &ad->in_flight_rqs.atomic);
 
 	scoped_guard(spinlock_irqsave, &ad->pq_lock) {
 		bool was_empty = list_empty(&ad->prio_queue[pq_idx]);
@@ -895,6 +910,7 @@ static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
 	u8 optype = adios_optype(rq);
 	bool rq_is_flush;
 
+	rd->managed = true;
 	rd->block_size = blk_rq_bytes(rq);
 	rd->pred_lat =
 		latency_model_predict(&ad->latency_model[optype], rd->block_size);
@@ -935,6 +951,7 @@ static void insert_request_pre_stability(struct blk_mq_hw_ctx *hctx,
 	u8 pq_idx = !(insert_flags & BLK_MQ_INSERT_AT_HEAD);
 	bool models_stable = false;
 
+	rd->managed = true;
 	rd->block_size = blk_rq_bytes(rq);
 	rd->pred_lat =
 		latency_model_predict(&ad->latency_model[optype], rd->block_size);
@@ -1132,8 +1149,12 @@ static bool fill_batch_queues(struct adios_data *ad, u64 tpl) {
 			list_sort(NULL, &ad->batch_queue[page][1], cmp_rq_pos);
 
 	if (count) {
-		if (added_lat)
-			atomic64_add(added_lat, &ad->total_pred_lat);
+		/* We're sure that every request's rd->managed == true */
+		union adios_in_flight_rqs ifr = {
+			.count          = count,
+			.total_pred_lat = added_lat,
+		};
+		atomic64_add(ifr.scalar, &ad->in_flight_rqs.atomic);
 
 		set_adios_state(ad, ADIOS_STATE_BQ, page, true);
 
@@ -1213,7 +1234,9 @@ static struct request *dispatch_from_bq(struct adios_data *ad) {
 	u32 state = get_adios_state(ad);
 	u32 bq_state = eval_this_adios_state(state, ADIOS_STATE_BQ);
 	u32 bq_curr_page_has_rq = bq_page_has_rq(bq_state, ad->bq_page);
-	u64 tpl = atomic64_read(&ad->total_pred_lat);
+	union adios_in_flight_rqs ifr;
+	ifr.scalar = atomic64_read(&ad->in_flight_rqs.atomic);
+	u64 tpl = ifr.total_pred_lat;
 
 	// Refill the batch queues if the back page is empty, dl_tree has work, and
 	// current page is empty or the total ongoing latency is below the threshold
@@ -1334,10 +1357,12 @@ retry:
 	 * This is the trigger to release requests that were held in barrier_queue
 	 * due to a REQ_OP_FLUSH barrier.
 	 */
-	if (eval_adios_state(ad, ADIOS_STATE_BP) &&
-			atomic64_read(&ad->total_pred_lat) == 0 &&
-			release_barrier_requests(ad))
-		goto retry;
+	if (eval_adios_state(ad, ADIOS_STATE_BP)) {
+		union adios_in_flight_rqs ifr;
+		ifr.scalar = atomic64_read(&ad->in_flight_rqs.atomic);
+		if (!ifr.count && release_barrier_requests(ad))
+			goto retry;
+	}
 
 	return NULL;
 found:
@@ -1360,8 +1385,16 @@ static void update_timer_callback(struct timer_list *t) {
 static void adios_completed_request(struct request *rq, u64 now) {
 	struct adios_data *ad = rq->q->elevator->elevator_data;
 	struct adios_rq_data *rd = get_rq_data(rq);
+	union adios_in_flight_rqs ifr = { .scalar = 0 };
 
-	u64 tpl_after = atomic64_sub_return(rd->pred_lat, &ad->total_pred_lat);
+	if (rd->managed) {
+		union adios_in_flight_rqs ifr_to_sub = {
+			.count          = 1,
+			.total_pred_lat = rd->pred_lat,
+		};
+		ifr.scalar = atomic64_sub_return(
+			ifr_to_sub.scalar, &ad->in_flight_rqs.atomic);
+	}
 	u8 optype = adios_optype(rq);
 
 	if (optype == ADIOS_OTHER) {
@@ -1373,7 +1406,7 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	}
 
 	u64 lct = ad->last_completed_time ?: rq->io_start_time_ns;
-	ad->last_completed_time = (tpl_after) ? now : 0;
+	ad->last_completed_time = (ifr.count) ? now : 0;
 
 	if (!rq->io_start_time_ns || !rd->block_size || unlikely(now < lct))
 		return;
