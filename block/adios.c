@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.4"
+#define ADIOS_VERSION "3.1.5"
 
 /* Request Types:
  *
@@ -97,7 +97,8 @@ enum adios_compliance_flags {
 };
 
 // Flags to control compliance with block layer constraints
-static u64 default_compliance_flags = 0x0;
+static u64 default_compliance_flags =
+	ADIOS_CF_FIXORDER;
 
 // Dynamic thresholds for shrinkage
 static u32 default_lm_shrink_at_kreqs  =  5000;
