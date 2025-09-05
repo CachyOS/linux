@@ -79,10 +79,20 @@ struct dd_per_prio {
 	struct io_stats_per_prio stats;
 };
 
+enum {
+	DD_DISPATCHING	= 0,
+};
+
 struct deadline_data {
 	/*
 	 * run time data
 	 */
+	struct {
+		spinlock_t lock;
+		spinlock_t zone_lock;
+	} ____cacheline_aligned_in_smp;
+
+	unsigned long run_state;
 
 	struct dd_per_prio per_prio[DD_PRIO_COUNT];
 
@@ -100,8 +110,6 @@ struct deadline_data {
 	int front_merges;
 	u32 async_depth;
 	int prio_aging_expire;
-
-	spinlock_t lock;
 };
 
 /* Maps an I/O priority class to a deadline scheduler priority. */
@@ -466,6 +474,18 @@ static struct request *dd_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	struct request *rq;
 	enum dd_prio prio;
 
+	/*
+	 * If someone else is already dispatching, skip this one. This will
+	 * defer the next dispatch event to when something completes, and could
+	 * potentially lower the queue depth for contended cases.
+	 *
+	 * See the logic in blk_mq_do_dispatch_sched(), which loops and
+	 * retries if nothing is dispatched.
+	 */
+	if (test_bit(DD_DISPATCHING, &dd->run_state) ||
+	    test_and_set_bit_lock(DD_DISPATCHING, &dd->run_state))
+		return NULL;
+
 	spin_lock(&dd->lock);
 	rq = dd_dispatch_prio_aged_requests(dd, now);
 	if (rq)
@@ -482,6 +502,7 @@ static struct request *dd_dispatch_request(struct blk_mq_hw_ctx *hctx)
 	}
 
 unlock:
+	clear_bit_unlock(DD_DISPATCHING, &dd->run_state);
 	spin_unlock(&dd->lock);
 
 	return rq;
@@ -565,6 +586,9 @@ static int dd_init_sched(struct request_queue *q, struct elevator_queue *eq)
 
 	eq->elevator_data = dd;
 
+	spin_lock_init(&dd->lock);
+	spin_lock_init(&dd->zone_lock);
+
 	for (prio = 0; prio <= DD_PRIO_MAX; prio++) {
 		struct dd_per_prio *per_prio = &dd->per_prio[prio];
 
@@ -581,7 +605,6 @@ static int dd_init_sched(struct request_queue *q, struct elevator_queue *eq)
 	dd->last_dir = DD_WRITE;
 	dd->fifo_batch = fifo_batch;
 	dd->prio_aging_expire = prio_aging_expire;
-	spin_lock_init(&dd->lock);
 
 	/* We dispatch from request queue wide instead of hw queue */
 	blk_queue_flag_set(QUEUE_FLAG_SQ_SCHED, q);
@@ -633,7 +656,19 @@ static bool dd_bio_merge(struct request_queue *q, struct bio *bio,
 	struct request *free = NULL;
 	bool ret;
 
-	spin_lock(&dd->lock);
+	/*
+	 * bio merging is called for every bio queued, and it's very easy
+	 * to run into contention because of that. If we fail getting
+	 * the dd lock, just skip this merge attempt. For related IO, the
+	 * plug will be the successful merging point. If we get here, we
+	 * already failed doing the obvious merge. Chances of actually
+	 * getting a merge off this path is a lot slimmer, so skipping an
+	 * occassional lookup that will most likely not succeed anyway should
+	 * not be a problem.
+	 */
+	if (!spin_trylock(&dd->lock))
+		return false;
+
 	ret = blk_mq_sched_try_merge(q, bio, nr_segs, &free);
 	spin_unlock(&dd->lock);
 
@@ -646,10 +681,9 @@ static bool dd_bio_merge(struct request_queue *q, struct bio *bio,
 /*
  * add rq to rbtree and fifo
  */
-static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
+static void dd_insert_request(struct request_queue *q, struct request *rq,
 			      blk_insert_t flags, struct list_head *free)
 {
-	struct request_queue *q = hctx->queue;
 	struct deadline_data *dd = q->elevator->elevator_data;
 	const enum dd_data_dir data_dir = rq_data_dir(rq);
 	u16 ioprio = req_get_ioprio(rq);
@@ -707,7 +741,7 @@ static void dd_insert_requests(struct blk_mq_hw_ctx *hctx,
 
 		rq = list_first_entry(list, struct request, queuelist);
 		list_del_init(&rq->queuelist);
-		dd_insert_request(hctx, rq, flags, &free);
+		dd_insert_request(q, rq, flags, &free);
 	}
 	spin_unlock(&dd->lock);
 
