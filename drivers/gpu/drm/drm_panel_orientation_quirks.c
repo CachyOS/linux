@@ -503,6 +503,12 @@ static const struct dmi_system_id orientation_data[] = {
 		 DMI_MATCH(DMI_PRODUCT_VERSION, "Blade3-10A-001"),
 		},
 		.driver_data = (void *)&lcd1600x2560_rightside_up,
+	}, {	/* Mysten SuiPlay0X1 */
+		.matches = {
+		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Mysten Labs, Inc."),
+		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "SuiPlay0X1"),
+		},
+		.driver_data = (void *)&lcd1200x1920_rightside_up,
 	}, {	/* Nanote UMPC-01 */
 		.matches = {
 		 DMI_MATCH(DMI_SYS_VENDOR, "RWC CO.,LTD"),
