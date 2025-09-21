@@ -41,6 +41,7 @@ enum msi_scancodes {
 	MSI_KEY_MUTE,
 	/* MSI Wind keys */
 	WIND_KEY_TOUCHPAD	= 0x08,	/* Fn+F3 touchpad toggle */
+	WIND_KEY_MSI_CENTER	= 0x29,
 	WIND_KEY_BLUETOOTH	= 0x56,	/* Fn+F11 Bluetooth toggle */
 	WIND_KEY_CAMERA,		/* Fn+F6 webcam toggle */
 	WIND_KEY_WLAN		= 0x5f,	/* Fn+F11 Wi-Fi toggle */
@@ -68,6 +69,7 @@ static struct key_entry msi_wmi_keymap[] = {
 	/* These are MSI Wind keys that should be handled via WMI */
 	{ KE_KEY, WIND_KEY_TURBO,		{KEY_PROG1} },
 	{ KE_KEY, WIND_KEY_ECO,			{KEY_PROG2} },
+	{ KE_KEY, WIND_KEY_MSI_CENTER,		{KEY_F15}},
 
 	{ KE_END, 0 }
 };
@@ -173,14 +175,24 @@ static const struct backlight_ops msi_backlight_ops = {
 static void msi_wmi_notify(union acpi_object *obj, void *context)
 {
 	struct key_entry *key;
+	int eventcode;
 
-	if (obj && obj->type == ACPI_TYPE_INTEGER) {
-		int eventcode = obj->integer.value;
+	if (obj) {
+		if (obj->type == ACPI_TYPE_INTEGER)
+			eventcode = obj->integer.value;
+		else if (obj->type == ACPI_TYPE_BUFFER && obj->buffer.length)
+			eventcode = obj->buffer.pointer[0];
+		else {
+			pr_info("Unknown event received\n");
+			return;
+		}
+
 		pr_debug("Eventcode: 0x%x\n", eventcode);
 		key = sparse_keymap_entry_from_scancode(msi_wmi_input_dev,
 				eventcode);
 		if (!key) {
-			pr_info("Unknown key pressed - %x\n", eventcode);
+			pr_info("Unknown key pressed - %x (ACPI type: %d)\n",
+				eventcode, obj->type);
 			return;
 		}
 
