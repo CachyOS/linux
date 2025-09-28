@@ -2868,6 +2868,9 @@ static int amdgpu_device_ip_early_init(struct amdgpu_device *adev)
 	}
 
 	adev->pm.pp_feature = amdgpu_pp_feature_mask;
+
+	if (adev->flags & AMD_IS_APU)
+		adev->pm.pp_feature |= PP_OVERDRIVE_MASK;
 	if (amdgpu_sriov_vf(adev) || sched_policy == KFD_SCHED_POLICY_NO_HWS)
 		adev->pm.pp_feature &= ~PP_GFXOFF_MASK;
 	if (amdgpu_sriov_vf(adev) && adev->asic_type == CHIP_SIENNA_CICHLID)
