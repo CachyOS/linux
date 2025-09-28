@@ -637,7 +637,7 @@ static void amd_pmc_s2idle_check(void)
 
 	/* Avoid triggering OVP */
 	if (!get_metrics_table(pdev, &table) && table.s0i3_last_entry_status)
-		msleep(2500);
+		msleep(500);
 
 	/* Dump the IdleMask before we add to the STB */
 	amd_pmc_idlemask_read(pdev, pdev->dev, NULL);
