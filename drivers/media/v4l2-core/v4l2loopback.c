@@ -58,6 +58,11 @@
 #define timer_delete_sync del_timer_sync
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+#define v4l2_fh_add(fh, filp) v4l2_fh_add(fh)
+#define v4l2_fh_del(fh, filp) v4l2_fh_del(fh)
+#endif
+
 #define V4L2LOOPBACK_VERSION_CODE                                              \
 	KERNEL_VERSION(V4L2LOOPBACK_VERSION_MAJOR, V4L2LOOPBACK_VERSION_MINOR, \
 		       V4L2LOOPBACK_VERSION_BUGFIX)
@@ -2335,7 +2340,7 @@ static int v4l2_loopback_open(struct file *file)
 	v4l2_fh_init(&opener->fh, video_devdata(file));
 	file->private_data = &opener->fh;
 
-	v4l2_fh_add(&opener->fh);
+	v4l2_fh_add(&opener->fh, file);
 	dprintk("open() -> dev@%p with image@%p\n", dev,
 		dev ? dev->image : NULL);
 	return 0;
@@ -2384,7 +2389,7 @@ static int v4l2_loopback_close(struct file *file)
 		}
 	}
 
-	v4l2_fh_del(&opener->fh);
+	v4l2_fh_del(&opener->fh, file);
 	v4l2_fh_exit(&opener->fh);
 
 	kfree(opener);
@@ -2944,11 +2949,12 @@ static int v4l2_loopback_add(struct v4l2_loopback_config *conf, int *ret_nr)
 	return 0;
 
 out_free_device:
-	video_device_release(dev->vdev);
 out_free_handler:
 	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 out_unregister:
-	video_set_drvdata(dev->vdev, NULL);
+	if (dev->vdev)
+		video_set_drvdata(dev->vdev, NULL);
+	video_device_release(dev->vdev);
 	if (vdev_priv != NULL)
 		kfree(vdev_priv);
 	v4l2_device_unregister(&dev->v4l2_dev);
