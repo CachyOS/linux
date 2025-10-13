@@ -810,14 +810,11 @@ static void adios_limit_depth(blk_opf_t opf, struct blk_mq_alloc_data *data) {
 }
 
 // The number of requests in the queue was notified from the block layer
-static void adios_depth_updated(struct blk_mq_hw_ctx *hctx) {
-	struct request_queue *q = hctx->queue;
+static void adios_depth_updated(struct request_queue *q) {
 	struct adios_data *ad = q->elevator->elevator_data;
-	struct blk_mq_tags *tags = hctx->sched_tags;
 
 	ad->async_depth = q->nr_requests;
-
-	sbitmap_queue_min_shallow_depth(&tags->bitmap_tags, 1);
+	blk_mq_set_min_shallow_depth(q, ad->async_depth);
 }
 
 // Handle request merging after a merge operation
@@ -1456,11 +1453,6 @@ static bool adios_has_work(struct blk_mq_hw_ctx *hctx) {
 	return atomic_read(&ad->state) != 0;
 }
 
-// Initialize the scheduler-specific data for a hardware queue
-static int adios_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int hctx_idx) {
-	adios_depth_updated(hctx);
-	return 0;
-}
 
 // Initialize the scheduler-specific data when initializing the request queue
 static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) {
@@ -1573,6 +1565,7 @@ static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) 
 	blk_stat_enable_accounting(q);
 
 	q->elevator = eq;
+	adios_depth_updated(q);
 	return 0;
 
 free_buckets:
@@ -1982,7 +1975,6 @@ static struct elevator_type mq_adios = {
 		.completed_request	= adios_completed_request,
 		.finish_request		= adios_finish_request,
 		.has_work			= adios_has_work,
-		.init_hctx			= adios_init_hctx,
 		.init_sched			= adios_init_sched,
 		.exit_sched			= adios_exit_sched,
 	},
