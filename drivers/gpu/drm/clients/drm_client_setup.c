@@ -40,7 +40,7 @@ void drm_client_setup(struct drm_device *dev, const struct drm_format_info *form
 	}
 
 #ifdef CONFIG_DRM_FBDEV_EMULATION
-	if (!strcmp(drm_client_default, "fbdev")) {
+	if (strcmp(dev->driver->name, "virtio_gpu") && !strcmp(drm_client_default, "fbdev")) {
 		int ret;
 
 		ret = drm_fbdev_client_setup(dev, format);
