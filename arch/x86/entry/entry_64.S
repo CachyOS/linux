@@ -1525,10 +1525,6 @@ SYM_CODE_END(rewind_stack_and_make_dead)
  * Target Selection, rather than taking the slowpath via its_return_thunk.
  */
 .macro	__CLEAR_BHB_LOOP outer_loop_count:req, inner_loop_count:req
-	ANNOTATE_NOENDBR
-	push	%rbp
-	mov	%rsp, %rbp
-
 	movl	$\outer_loop_count, %ecx
 	ANNOTATE_INTRA_FUNCTION_CALL
 	call	1f
@@ -1560,10 +1556,7 @@ SYM_CODE_END(rewind_stack_and_make_dead)
 	jnz	1b
 .Lret2_\@:
 	RET
-5:	lfence
-
-	pop	%rbp
-	RET
+5:
 .endm
 
 /*
@@ -1573,7 +1566,15 @@ SYM_CODE_END(rewind_stack_and_make_dead)
  * setting BHI_DIS_S for the guests.
  */
 SYM_FUNC_START(clear_bhb_loop)
+	ANNOTATE_NOENDBR
+	push	%rbp
+	mov	%rsp, %rbp
+
 	__CLEAR_BHB_LOOP 5, 5
+
+	lfence
+	pop	%rbp
+	RET
 SYM_FUNC_END(clear_bhb_loop)
 EXPORT_SYMBOL_GPL(clear_bhb_loop)
 STACK_FRAME_NON_STANDARD(clear_bhb_loop)
@@ -1584,8 +1585,15 @@ STACK_FRAME_NON_STANDARD(clear_bhb_loop)
  * protects the kernel, but to mitigate the guest influence on the host
  * userspace either IBPB or this sequence should be used. See VMSCAPE bug.
  */
-SYM_FUNC_START(clear_bhb_long_loop)
+SYM_FUNC_START(clear_bhb_long_loop_no_barrier)
+	ANNOTATE_NOENDBR
+	push	%rbp
+	mov	%rsp, %rbp
+
 	__CLEAR_BHB_LOOP 12, 7
-SYM_FUNC_END(clear_bhb_long_loop)
-EXPORT_SYMBOL_GPL(clear_bhb_long_loop)
-STACK_FRAME_NON_STANDARD(clear_bhb_long_loop)
+
+	pop	%rbp
+	RET
+SYM_FUNC_END(clear_bhb_long_loop_no_barrier)
+EXPORT_SYMBOL_GPL(clear_bhb_long_loop_no_barrier)
+STACK_FRAME_NON_STANDARD(clear_bhb_long_loop_no_barrier)

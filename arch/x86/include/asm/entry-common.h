@@ -98,7 +98,7 @@ static inline void arch_exit_to_user_mode_prepare(struct pt_regs *regs,
 		if (cpu_feature_enabled(X86_FEATURE_IBPB_EXIT_TO_USER))
 			indirect_branch_prediction_barrier();
 		else if (cpu_feature_enabled(X86_FEATURE_CLEAR_BHB_EXIT_TO_USER))
-			clear_bhb_long_loop();
+			clear_bhb_long_loop_no_barrier();
 
 		this_cpu_write(x86_pred_flush_pending, false);
 	}
