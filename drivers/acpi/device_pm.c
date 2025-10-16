@@ -526,6 +526,12 @@ void acpi_pm_wakeup_event(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(acpi_pm_wakeup_event);
 
+void acpi_pm_wakeup_event_hard(struct device *dev, bool hard)
+{
+	pm_wakeup_dev_event(dev, 0, acpi_s2idle_wakeup() || hard);
+}
+EXPORT_SYMBOL_GPL(acpi_pm_wakeup_event_hard);
+
 static void acpi_pm_notify_handler(acpi_handle handle, u32 val, void *not_used)
 {
 	struct acpi_device *adev;

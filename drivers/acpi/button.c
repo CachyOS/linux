@@ -21,6 +21,7 @@
 #include <linux/dmi.h>
 #include <linux/platform_device.h>
 #include <acpi/button.h>
+#include <linux/suspend.h>
 
 #define ACPI_BUTTON_CLASS		"button"
 #define ACPI_BUTTON_FILE_STATE		"state"
@@ -451,6 +452,7 @@ static void acpi_button_notify(acpi_handle handle, u32 event, void *data)
 	struct acpi_device *device = button->adev;
 	struct input_dev *input;
 	int keycode;
+	bool hard = false;
 
 	switch (event) {
 	case ACPI_BUTTON_NOTIFY_STATUS:
@@ -463,13 +465,15 @@ static void acpi_button_notify(acpi_handle handle, u32 event, void *data)
 		return;
 	}
 
-	acpi_pm_wakeup_event(button->dev);
+	input = button->input;
+	keycode = test_bit(KEY_SLEEP, input->keybit) ? KEY_SLEEP : KEY_POWER;
+
+	if (event == ACPI_BUTTON_NOTIFY_STATUS)
+		hard = pm_sleep_transition_in_progress();
+	acpi_pm_wakeup_event_hard(button->dev, hard);
 
 	if (button->suspended || event == ACPI_BUTTON_NOTIFY_WAKE)
 		return;
-
-	input = button->input;
-	keycode = test_bit(KEY_SLEEP, input->keybit) ? KEY_SLEEP : KEY_POWER;
 
 	input_report_key(input, keycode, 1);
 	input_sync(input);
