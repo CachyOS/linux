@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.6"
+#define ADIOS_VERSION "3.1.7"
 
 /* Request Types:
  *
@@ -814,7 +814,7 @@ static void adios_depth_updated(struct request_queue *q) {
 	struct adios_data *ad = q->elevator->elevator_data;
 
 	ad->async_depth = q->nr_requests;
-	blk_mq_set_min_shallow_depth(q, ad->async_depth);
+	blk_mq_set_min_shallow_depth(q, 1);
 }
 
 // Handle request merging after a merge operation
@@ -1452,7 +1452,6 @@ static bool adios_has_work(struct blk_mq_hw_ctx *hctx) {
 
 	return atomic_read(&ad->state) != 0;
 }
-
 
 // Initialize the scheduler-specific data when initializing the request queue
 static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) {
