@@ -2710,7 +2710,7 @@ static int amdgpu_pmops_thaw(struct device *dev)
 	if (console_suspend_enabled &&
 	    !pm_hibernate_is_recovering() &&
 	    !pm_hibernation_mode_is_suspend())
-		return 0;
+		return -EBUSY;
 
 	return amdgpu_device_resume(drm_dev, true);
 }
