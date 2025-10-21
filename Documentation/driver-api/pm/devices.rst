@@ -578,6 +578,14 @@ should already have been stored during the ``freeze``, ``freeze_late`` or
 the entire system, so it is not necessary for the callback to put the device in
 a low-power state.
 
+Skipping thaw phase
+-------------------
+In some rare situations, it may be desirable to skip the thaw phases
+(``thaw_noirq``, ``thaw_early``, ``thaw``) of a device entirely.  This can be
+achieved by a device driver returning an error code from any of it's thaw
+callbacks but also setting dev->power.is_frozen to true.  This indicates to the
+PM core that the device is still in the frozen state.  The PM core will consider
+this when resuming the device in later phases such as `restore` or `poweroff`.
 
 Leaving Hibernation
 -------------------

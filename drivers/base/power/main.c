@@ -1176,6 +1176,13 @@ static void device_resume(struct device *dev, pm_message_t state, bool async)
 
  End:
 	error = dpm_run_callback(callback, dev, state, info);
+#ifdef CONFIG_HIBERNATE_CALLBACKS
+	/* device manages frozen state */
+	if (error && dev->power.is_frozen) {
+		dev->power.is_suspended = true;
+		error = 0;
+	}
+#endif
 
 	device_unlock(dev);
 	dpm_watchdog_clear(&wd);
