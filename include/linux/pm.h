@@ -693,6 +693,9 @@ struct dev_pm_info {
 #else
 	bool			should_wakeup:1;
 #endif
+#ifdef CONFIG_HIBERNATE_CALLBACKS
+	bool			is_frozen:1;	/* Owned by the driver */
+#endif
 #ifdef CONFIG_PM
 	struct hrtimer		suspend_timer;
 	u64			timer_expires;
