@@ -4596,6 +4596,11 @@ int amdgpu_device_suspend(struct drm_device *dev, bool notify_clients)
 	if (amdgpu_sriov_vf(adev))
 		amdgpu_virt_release_full_gpu(adev, false);
 
+#ifdef CONFIG_HIBERNATE_CALLBACKS
+	if (adev->in_s4)
+		dev->dev->power.is_frozen = 1;
+#endif
+
 	return 0;
 
 unwind_evict:
@@ -4782,6 +4787,11 @@ exit:
 
 	if (amdgpu_acpi_smart_shift_update(adev, AMDGPU_SS_DEV_D0))
 		dev_warn(adev->dev, "smart shift update failed\n");
+
+#ifdef CONFIG_HIBERNATE_CALLBACKS
+	if (adev->in_s4)
+		dev->dev->power.is_frozen = 0;
+#endif
 
 	return 0;
 }
