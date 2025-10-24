@@ -2052,7 +2052,9 @@ static int asus_wmi_led_init(struct asus_wmi *asus)
 
 	scoped_guard(spinlock_irqsave, &asus_ref.lock) {
 		asus_ref.asus = asus;
-		if (asus->kbd_led_avail || !list_empty(&asus_ref.listeners))
+		if (asus->kbd_led_avail ||
+		    asus->driver->quirks->init_backlight_early ||
+		    !list_empty(&asus_ref.listeners))
 			queue_work(asus->led_workqueue, &asus->kbd_led_work);
 	}
 

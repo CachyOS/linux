@@ -148,6 +148,7 @@ static struct quirk_entry quirk_asus_ignore_fan = {
 
 static struct quirk_entry quirk_asus_zenbook_duo_kbd = {
 	.key_wlan_event = ASUS_WMI_KEY_IGNORE,
+	.init_backlight_early = true,
 };
 
 static struct quirk_entry quirk_asus_z13 = {
