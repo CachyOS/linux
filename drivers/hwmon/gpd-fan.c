@@ -157,6 +157,14 @@ static const struct dmi_system_id dmi_table[] = {
 		.driver_data = &gpd_win4_drvdata,
 	},
 	{
+		// GPD Win 5 with AMD AI MAX 395
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "GPD"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "G1618-05"),
+		},
+		.driver_data = &gpd_duo_drvdata,
+	},
+	{
 		// GPD Win 4 with Ryzen 7840U
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "GPD"),
