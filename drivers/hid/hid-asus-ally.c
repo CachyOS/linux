@@ -1460,7 +1460,7 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 	else if (data[0] == 0x5A) {
 		if (ally_x->qam_btns_steam_mode) {
 			spin_lock_irqsave(&ally_x->lock, flags);
-			if (data[1] == 0x38 && !ally_x->update_qam_btn) {
+			if ((data[1] == 0x38 || data[1] == 0x93) && !ally_x->update_qam_btn) {
 				ally_x->update_qam_btn = true;
 				if (ally_x->output_worker_initialized)
 					schedule_work(&ally_x->output_worker);
@@ -1470,7 +1470,7 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 			input_report_key(ally_x->input, BTN_MODE, data[1] == 0xA6);
 		} else {
 			input_report_key(ally_x->input, KEY_F16, data[1] == 0xA6);
-			input_report_key(ally_x->input, KEY_PROG1, data[1] == 0x38);
+			input_report_key(ally_x->input, KEY_PROG1, data[1] == 0x38 || data[1] == 0x93);
 		}
 		/* QAM long press */
 		input_report_key(ally_x->input, KEY_F17, data[1] == 0xA7);
