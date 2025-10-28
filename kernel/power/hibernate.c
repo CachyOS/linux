@@ -674,7 +674,13 @@ int hibernation_platform_enter(void)
  */
 static void power_down(void)
 {
-	int error;
+	int error = -EAGAIN;
+
+	if (pm_wakeup_pending()) {
+		pm_wakeup_clear(0);
+		pr_info("Wakeup event detected after image write, aborting power down.\n");
+		goto exit;
+	}
 
 #ifdef CONFIG_SUSPEND
 	if (hibernation_mode == HIBERNATION_SUSPEND) {

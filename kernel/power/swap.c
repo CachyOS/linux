@@ -542,9 +542,17 @@ static int save_image(struct swap_map_handle *handle,
 		ret = swap_write_page(handle, data_of(*snapshot), &hb);
 		if (ret)
 			break;
-		if (!(nr_pages % m))
+		if (!(nr_pages % m)) {
 			pr_info("Image saving progress: %3d%%\n",
 				nr_pages / m * 10);
+			/* Check for wakeup events periodically during image write */
+			if (pm_wakeup_pending()) {
+				pm_wakeup_clear(0);
+				pr_info("Wakeup pending, aborting image write\n");
+				ret = -EAGAIN;
+				break;
+			}
+		}
 		nr_pages++;
 	}
 	err2 = hib_wait_io(&hb);
@@ -810,9 +818,17 @@ static int save_compressed_image(struct swap_map_handle *handle,
 				memcpy(data[thr].unc + off,
 				       data_of(*snapshot), PAGE_SIZE);
 
-				if (!(nr_pages % m))
+				if (!(nr_pages % m)) {
 					pr_info("Image saving progress: %3d%%\n",
 						nr_pages / m * 10);
+					/* Check for wakeup events periodically during image write */
+					if (pm_wakeup_pending()) {
+						pm_wakeup_clear(0);
+						pr_info("Wakeup pending, aborting compressed image write\n");
+						ret = -EAGAIN;
+						goto out_finish;
+					}
+				}
 				nr_pages++;
 			}
 			if (!off)
