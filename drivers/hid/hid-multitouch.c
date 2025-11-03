@@ -1715,6 +1715,28 @@ static void mt_yogabook9_fixup(struct hid_device *hdev, __u8 *rdesc,
 	}
 }
 
+static void mt_report_replace(struct device *dev, __u8 *rdesc, size_t rsize,
+			     const u8 *confirm, const u8 *replace,
+			     size_t pattern_len, const size_t *offsets,
+			     unsigned int num_offsets)
+{
+	size_t offset;
+	int i;
+
+	for (i = 0; i < num_offsets; i++) {
+		offset = offsets[i];
+		if (offset + pattern_len >= rsize) {
+			dev_err(dev, "Failed to fixup hid report: invalid length\n");
+			break;
+		}
+		if (memcmp(rdesc + offset, confirm, pattern_len)) {
+			dev_err(dev, "Failed to fixup hid report: failed to validate: %d\n", i);
+			break;
+		}
+		memcpy(rdesc + offset, replace, pattern_len);
+	}
+}
+
 static const __u8 *mt_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 			     unsigned int *size)
 {
@@ -1747,6 +1769,23 @@ got: %x\n",
 	if (hdev->vendor == USB_VENDOR_ID_LENOVO &&
 	    hdev->product == USB_DEVICE_ID_LENOVO_YOGABOOK9I)
 		mt_yogabook9_fixup(hdev, rdesc, size);
+
+	if (hdev->vendor == I2C_VENDOR_ID_FOCALTECH &&
+	    hdev->product == I2C_DEVICE_ID_FOCALTECH_FTS3528) {
+		static u8 x_replace[] = {0x46, 0x0b, 0x0a}; /* 2571 *10^-2 cm */
+		static u8 x_with[] = {0x46, 0x40, 0x06}; /* 1600 * 10^-2 cm */
+		static size_t x_offsets[] = {0x37, 0x92, 0xed, 0x148};
+		static u8 y_replace[] = {0x46, 0xaa, 0x05}; /* 1450 *10^-2 cm */
+		static u8 y_with[] = {0x46, 0xe8, 0x03}; /* 1000 * 10^-2 cm */
+		static size_t y_offsets[] = {0x42, 0x9d, 0xf8, 0x153};
+
+		mt_report_replace(&hdev->dev, rdesc, *size, x_replace, x_with,
+				  ARRAY_SIZE(x_replace), x_offsets,
+				  ARRAY_SIZE(x_offsets));
+		mt_report_replace(&hdev->dev, rdesc, *size, y_replace, y_with,
+				  ARRAY_SIZE(y_replace), y_offsets,
+				  ARRAY_SIZE(y_offsets));
+	}
 
 	return rdesc;
 }
