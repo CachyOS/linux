@@ -1955,7 +1955,6 @@ static bool dcn401_resource_construct(
 	dc->caps.color.mpc.ogam_rom_caps.pq = 0;
 	dc->caps.color.mpc.ogam_rom_caps.hlg = 0;
 	dc->caps.color.mpc.ocsc = 1;
-	dc->caps.color.mpc.preblend = true;
 	dc->config.use_spl = true;
 	dc->config.prefer_easf = true;
 
