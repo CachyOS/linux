@@ -166,8 +166,12 @@ struct displayid_display_params_block {
 	u8 gamma_eotf;
 } __packed;
 
+#define DISPLAYID_VESA_DP_TYPE		GENMASK(2, 0)
 #define DISPLAYID_VESA_MSO_OVERLAP	GENMASK(3, 0)
 #define DISPLAYID_VESA_MSO_MODE		GENMASK(6, 5)
+
+#define DISPLAYID_VESA_DP_TYPE_EDP	0
+#define DISPLAYID_VESA_DP_TYPE_DP	1
 
 struct displayid_vesa_vendor_specific_block {
 	struct displayid_block base;
