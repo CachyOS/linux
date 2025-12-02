@@ -172,6 +172,8 @@ struct displayid_display_params_block {
 #define DISPLAYID_VESA_DP_TYPE		GENMASK(2, 0)
 #define DISPLAYID_VESA_MSO_OVERLAP	GENMASK(3, 0)
 #define DISPLAYID_VESA_MSO_MODE		GENMASK(6, 5)
+#define DISPLAYID_VESA_DSC_BPP_INT	GENMASK(5, 0)
+#define DISPLAYID_VESA_DSC_BPP_FRACT	GENMASK(3, 0)
 
 #define DISPLAYID_VESA_DP_TYPE_EDP	0
 #define DISPLAYID_VESA_DP_TYPE_DP	1
@@ -181,6 +183,8 @@ struct displayid_vesa_vendor_specific_block {
 	u8 oui[3];
 	u8 data_structure_type;
 	u8 mso;
+	u8 dsc_bpp_int;
+	u8 dsc_bpp_fract;
 } __packed;
 
 /*
