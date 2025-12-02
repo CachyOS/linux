@@ -18,7 +18,10 @@
 #include <linux/acpi.h>
 #include <linux/device.h>
 #include <linux/dmi.h>
+#include <linux/kobject.h>
+#include <linux/mutex.h>
 #include <linux/suspend.h>
+#include <linux/sysfs.h>
 
 #include "../sleep.h"
 
@@ -65,6 +68,18 @@ static int lps0_dsm_func_mask;
 static guid_t lps0_dsm_guid_microsoft;
 static int lps0_dsm_func_mask_microsoft;
 static int lps0_dsm_state;
+
+enum screen_off_val {
+	SCREEN_OFF_NO_CHANGE = -1,
+	SCREEN_SET_ON,
+	SCREEN_SET_OFF,
+};
+
+static DEFINE_MUTEX(lps0_dsm_screen_off_lock);
+static bool lps0_dsm_screen_state_off;
+static enum screen_off_val lps0_screen_off_suspended;
+static enum screen_off_val lps0_screen_off_sysfs_enb;
+static struct notifier_block pm_notifier;
 
 /* Device constraint entry structure */
 struct lpi_device_info {
@@ -535,6 +550,75 @@ static int acpi_s2idle_begin_lps0(void)
 	return acpi_s2idle_begin();
 }
 
+static bool lps0_has_screen_off_dsm(void)
+{
+	int id = acpi_s2idle_vendor_amd() ?
+		 ACPI_LPS0_SCREEN_ON_AMD : ACPI_LPS0_SCREEN_OFF;
+
+	if (lps0_dsm_func_mask_microsoft > 0 &&
+	    (lps0_dsm_func_mask & BIT(ACPI_LPS0_SCREEN_OFF)))
+		return true;
+
+	if (lps0_dsm_func_mask > 0 && (lps0_dsm_func_mask & BIT(id)))
+		return true;
+
+	return false;
+}
+
+static void lps0_dsm_screen_off(void)
+{
+	if (lps0_dsm_screen_state_off)
+		return;
+
+	if (lps0_dsm_func_mask > 0)
+		acpi_sleep_run_lps0_dsm(acpi_s2idle_vendor_amd() ?
+					ACPI_LPS0_SCREEN_OFF_AMD :
+					ACPI_LPS0_SCREEN_OFF,
+					lps0_dsm_func_mask, lps0_dsm_guid);
+
+	if (lps0_dsm_func_mask_microsoft > 0)
+		acpi_sleep_run_lps0_dsm(ACPI_LPS0_SCREEN_OFF,
+					lps0_dsm_func_mask_microsoft,
+					lps0_dsm_guid_microsoft);
+
+	lps0_dsm_screen_state_off = true;
+}
+
+static void lps0_dsm_screen_on(void)
+{
+	if (!lps0_dsm_screen_state_off)
+		return;
+
+	if (lps0_dsm_func_mask_microsoft > 0)
+		acpi_sleep_run_lps0_dsm(ACPI_LPS0_SCREEN_ON,
+					lps0_dsm_func_mask_microsoft,
+					lps0_dsm_guid_microsoft);
+
+	if (lps0_dsm_func_mask > 0)
+		acpi_sleep_run_lps0_dsm(acpi_s2idle_vendor_amd() ?
+					ACPI_LPS0_SCREEN_ON_AMD :
+					ACPI_LPS0_SCREEN_ON,
+					lps0_dsm_func_mask, lps0_dsm_guid);
+
+	lps0_dsm_screen_state_off = false;
+}
+
+static void lps0_dsm_screen_off_set(enum screen_off_val sysfs_off,
+				    enum screen_off_val suspended)
+{
+	guard(mutex)(&lps0_dsm_screen_off_lock);
+
+	if (sysfs_off != SCREEN_OFF_NO_CHANGE)
+		lps0_screen_off_sysfs_enb = sysfs_off;
+	if (suspended != SCREEN_OFF_NO_CHANGE)
+		lps0_screen_off_suspended = suspended;
+
+	if (lps0_screen_off_suspended || lps0_screen_off_sysfs_enb)
+		lps0_dsm_screen_off();
+	else
+		lps0_dsm_screen_on();
+}
+
 static int acpi_s2idle_prepare_late_lps0(void)
 {
 	struct acpi_s2idle_dev_ops *handler;
@@ -546,15 +630,7 @@ static int acpi_s2idle_prepare_late_lps0(void)
 		lpi_check_constraints();
 
 	/* Screen off */
-	if (lps0_dsm_func_mask > 0)
-		acpi_sleep_run_lps0_dsm(acpi_s2idle_vendor_amd() ?
-					ACPI_LPS0_SCREEN_OFF_AMD :
-					ACPI_LPS0_SCREEN_OFF,
-					lps0_dsm_func_mask, lps0_dsm_guid);
-
-	if (lps0_dsm_func_mask_microsoft > 0)
-		acpi_sleep_run_lps0_dsm(ACPI_LPS0_SCREEN_OFF,
-				lps0_dsm_func_mask_microsoft, lps0_dsm_guid_microsoft);
+	lps0_dsm_screen_off_set(SCREEN_OFF_NO_CHANGE, SCREEN_SET_OFF);
 
 	/* LPS0 entry */
 	if (lps0_dsm_func_mask > 0 && acpi_s2idle_vendor_amd())
@@ -624,14 +700,7 @@ static void acpi_s2idle_restore_early_lps0(void)
 	}
 
 	/* Screen on */
-	if (lps0_dsm_func_mask_microsoft > 0)
-		acpi_sleep_run_lps0_dsm(ACPI_LPS0_SCREEN_ON,
-				lps0_dsm_func_mask_microsoft, lps0_dsm_guid_microsoft);
-	if (lps0_dsm_func_mask > 0)
-		acpi_sleep_run_lps0_dsm(acpi_s2idle_vendor_amd() ?
-					ACPI_LPS0_SCREEN_ON_AMD :
-					ACPI_LPS0_SCREEN_ON,
-					lps0_dsm_func_mask, lps0_dsm_guid);
+	lps0_dsm_screen_off_set(SCREEN_OFF_NO_CHANGE, SCREEN_SET_ON);
 }
 
 static const struct platform_s2idle_ops acpi_s2idle_ops_lps0 = {
@@ -678,5 +747,82 @@ void acpi_unregister_lps0_dev(struct acpi_s2idle_dev_ops *arg)
 	unlock_system_sleep(sleep_flags);
 }
 EXPORT_SYMBOL_GPL(acpi_unregister_lps0_dev);
+
+static ssize_t lps0_screen_off_store(struct kobject *kobj,
+				     struct kobj_attribute *attr,
+				     const char *buf, size_t count)
+{
+	enum screen_off_val sysfs_val;
+	bool off;
+	int ret;
+
+	ret = kstrtobool(buf, &off);
+	if (ret)
+		return ret;
+
+	if (off)
+		sysfs_val = SCREEN_SET_OFF;
+	else
+		sysfs_val = SCREEN_SET_ON;
+
+	lps0_dsm_screen_off_set(sysfs_val, SCREEN_OFF_NO_CHANGE);
+
+	return count;
+}
+
+static ssize_t lps0_screen_off_show(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    char *buf)
+{
+	return sysfs_emit(buf, "%d\n", lps0_screen_off_sysfs_enb);
+}
+
+static struct kobj_attribute lps0_screen_off_attr =
+	__ATTR(lps0_screen_off, 0644,
+	       lps0_screen_off_show, lps0_screen_off_store);
+
+static struct attribute *lps0_screen_off_attrs[] = {
+	&lps0_screen_off_attr.attr,
+	NULL,
+};
+
+static struct attribute_group lps0_screen_off_attr_group = {
+	.attrs = lps0_screen_off_attrs,
+};
+
+static int lps0_pm_notifier_callback(struct notifier_block *nb,
+				     unsigned long action, void *data)
+{
+	switch (action) {
+	case PM_POST_HIBERNATION:
+		lps0_dsm_screen_off_set(SCREEN_SET_ON, SCREEN_SET_ON);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static int lps0_dsm_screen_off_init(void)
+{
+	int ret;
+
+	if (!lps0_has_screen_off_dsm())
+		return 0;
+
+	ret = sysfs_create_group(power_kobj, &lps0_screen_off_attr_group);
+	if (ret)
+		return ret;
+
+	pm_notifier.notifier_call = lps0_pm_notifier_callback;
+
+	ret = register_pm_notifier(&pm_notifier);
+	if (ret) {
+		sysfs_remove_group(power_kobj, &lps0_screen_off_attr_group);
+		return ret;
+	}
+
+	return 0;
+}
+late_initcall(lps0_dsm_screen_off_init);
 
 #endif /* CONFIG_SUSPEND */
