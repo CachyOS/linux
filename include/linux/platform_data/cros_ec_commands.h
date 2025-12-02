@@ -4686,7 +4686,10 @@ struct ec_response_cec_read {
  * @val: in case cmd is CEC_CMD_ENABLE, this field can be 0 to disable CEC
  *	or 1 to enable CEC functionality, in case cmd is
  *	CEC_CMD_LOGICAL_ADDRESS, this field encodes the requested logical
- *	address between 0 and 15 or 0xff to unregister
+ *	address between 0 and 15 or 0xff to unregister, in case cmd is
+ *	CEC_CMD_WAKE_ENABLE this field can be 0 to disable all CEC wakeups
+ *	or 1 to enable them while leaving all other CEC functionality
+ *	unchanged.
  */
 struct ec_params_cec_set {
 	uint8_t cmd : 4; /* enum cec_command */
@@ -4729,12 +4732,52 @@ struct ec_response_cec_port_count {
 	uint8_t port_count;
 } __ec_align1;
 
+/* Set the CEC physical address */
+#define EC_CMD_CEC_SET_PA 0x00C2
+
+/**
+ * struct ec_params_cec_set_pa - CEC parameters to set physical address
+ * @cmd: parameter type, can be CEC_CMD_PHYSICAL_ADDRESS
+ * @port: CEC port to set the parameter on
+ * @val: 2 bytes for physical address, ex. 0x1234 -> 1.2.3.4
+ */
+struct ec_params_cec_set_pa {
+	uint8_t cmd : 4; /* enum cec_command */
+	uint8_t port : 4;
+	uint16_t val; /* physical address, 0x1234 -> 1.2.3.4 */
+} __ec_align1;
+
+/* Read the CEC physical address */
+#define EC_CMD_CEC_GET_PA 0x00C3
+
+/**
+ * struct ec_params_cec_get - CEC parameters to get physical address
+ * @cmd: parameter CEC_CMD_PHYSICAL_ADDRESS
+ * @port: CEC port to get the parameter on
+ */
+struct ec_params_cec_get_pa {
+	uint8_t cmd : 4; /* enum cec_command */
+	uint8_t port : 4;
+} __ec_align1;
+
+/**
+ * struct ec_response_cec_get - CEC get physical address response
+ * @val: 2 byte physical address, ex. 0x1234 -> 1.2.3.4
+ */
+struct ec_response_cec_get_pa {
+	uint16_t val; /* physical address, 0x1234 -> 1.2.3.4 */
+} __ec_align1;
+
 /* CEC parameters command */
 enum cec_command {
 	/* CEC reading, writing and events enable */
 	CEC_CMD_ENABLE,
 	/* CEC logical address  */
 	CEC_CMD_LOGICAL_ADDRESS,
+	/* CEC physical address  */
+	CEC_CMD_PHYSICAL_ADDRESS,
+	/* CEC wake enable  */
+	CEC_CMD_WAKE_ENABLE,
 };
 
 /* Events from CEC to AP */
