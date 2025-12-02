@@ -6794,8 +6794,8 @@ out:
 }
 
 static struct drm_display_mode *drm_mode_displayid_detailed(struct drm_device *dev,
-							    const struct displayid_detailed_timings_1 *timings,
-							    bool type_7)
+							    const struct displayid_block *block,
+							    const struct displayid_detailed_timings_1 *timings)
 {
 	struct drm_display_mode *mode;
 	unsigned int pixel_clock = (timings->pixel_clock[0] |
@@ -6811,10 +6811,15 @@ static struct drm_display_mode *drm_mode_displayid_detailed(struct drm_device *d
 	unsigned int vsync_width = le16_to_cpu(timings->vsw) + 1;
 	bool hsync_positive = le16_to_cpu(timings->hsync) & (1 << 15);
 	bool vsync_positive = le16_to_cpu(timings->vsync) & (1 << 15);
+	bool type_7 = block->tag == DATA_BLOCK_2_TYPE_7_DETAILED_TIMING;
 
 	mode = drm_mode_create(dev);
 	if (!mode)
 		return NULL;
+
+	if (type_7 && FIELD_GET(DISPLAYID_BLOCK_REV, block->rev) >= 1)
+		mode->dsc_passthrough_timings_support =
+			block->rev & DISPLAYID_BLOCK_PASSTHROUGH_TIMINGS_SUPPORT;
 
 	/* resolution is kHz for type VII, and 10 kHz for type I */
 	mode->clock = type_7 ? pixel_clock : pixel_clock * 10;
@@ -6848,7 +6853,6 @@ static int add_displayid_detailed_1_modes(struct drm_connector *connector,
 	int num_timings;
 	struct drm_display_mode *newmode;
 	int num_modes = 0;
-	bool type_7 = block->tag == DATA_BLOCK_2_TYPE_7_DETAILED_TIMING;
 	/* blocks must be multiple of 20 bytes length */
 	if (block->num_bytes % 20)
 		return 0;
@@ -6857,7 +6861,7 @@ static int add_displayid_detailed_1_modes(struct drm_connector *connector,
 	for (i = 0; i < num_timings; i++) {
 		struct displayid_detailed_timings_1 *timings = &det->timings[i];
 
-		newmode = drm_mode_displayid_detailed(connector->dev, timings, type_7);
+		newmode = drm_mode_displayid_detailed(connector->dev, block, timings);
 		if (!newmode)
 			continue;
 
