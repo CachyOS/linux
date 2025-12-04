@@ -76,3 +76,36 @@ Description:
 		hardware line changed and the kernel sent an EC resume command.
 
 		Output will be in the format: "%u\n".
+
+What:		/sys/kernel/debug/<cros-ec-device>/cec_phys_addr
+Date:		December 2025
+KernelVersion:	6.16
+Description:
+		Some ECs allow for customized CEC wakeup configurations that
+		watch for specific physical addresses. The cec_phys_addr file
+		allows for reading the physical addresses set for each CEC port
+		as well as setting them individually.
+
+		Supply "%d %d\n" where the first decimal is the zero-indexed
+		port number and the second decimal is the desired physical
+		address. For example "0 4096" will set port 0's physical address
+		to "1.0.0.0".
+
+		Output will be in the format: "%d %d\n" with a line for each
+		port.
+
+What:		/sys/kernel/debug/<cros-ec-device>/cec_wake_enable
+Date:		December 2025
+KernelVersion:	6.16
+Description:
+		Some ECs allow us to disable all wakeup operations that would
+		be triggered by CEC messages while leaving the CEC port active
+		for regular use. This file allows for reading back the wake
+		enabled flag for all ports as well as setting them individually.
+
+		Supply "%d %d\n" where the first decimal is the zero-indexed
+		port number and the second decimal is 1 to enable wakeups or 0
+		to disable them.
+
+		Output will be in the format: "%d %d\n" with a line for each
+		port.
