@@ -354,6 +354,173 @@ static ssize_t ap_mode_entry_show(struct device *dev,
 	return sysfs_emit(buf, "%s\n", ap_driven_altmode ? "yes" : "no");
 }
 
+static ssize_t cec_wake_enable_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
+	ssize_t count = 0;
+	struct ec_response_cec_port_count resp_cec_ports;
+	int ret;
+	int i;
+
+	ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_PORT_COUNT, NULL, 0,
+			  &resp_cec_ports, sizeof(resp_cec_ports));
+	if (ret < 0)
+		return -EIO;
+
+	for (i = 0; i < resp_cec_ports.port_count; i++) {
+		struct ec_response_cec_get resp;
+		struct ec_params_cec_get req = {
+			.cmd = CEC_CMD_WAKE_ENABLE,
+			.port = i,
+		};
+
+		ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_GET,
+			  &req, sizeof(req), &resp, sizeof(resp));
+		if (ret >= 0) {
+			count += sysfs_emit_at(buf, count, "%d %d\n", i, resp.val);
+		}
+	}
+
+	return count ? : -EIO;
+}
+
+static ssize_t cec_wake_enable_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
+	struct ec_params_cec_set params = {
+		.cmd = CEC_CMD_WAKE_ENABLE,
+	};
+	char *mut, *port_token, *val_token;
+	u8 port, val;
+	int ret;
+
+	mut = kstrdup(buf, GFP_KERNEL);
+	if (!mut)
+		return -ENOMEM;
+
+	val_token = mut;
+	port_token = strsep(&val_token, " ");
+	if (!port_token || !*port_token) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	ret = kstrtou8(port_token, 0, &port);
+	if (ret)
+		goto exit;
+	if (port >= EC_CEC_MAX_PORTS) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	params.port = port;
+
+	ret = kstrtou8(val_token, 0, &val);
+	if (ret)
+		goto exit;
+	if (val > 1) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	params.val = val;
+
+	ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_SET, &params, sizeof(params),
+			  NULL, 0);
+	if (ret < 0) {
+		ret = -EIO;
+		goto exit;
+	}
+
+exit:
+	kfree(mut);
+	return ret != 0 ? ret : count;
+}
+
+static ssize_t cec_phys_addr_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
+	ssize_t count = 0;
+	struct ec_response_cec_port_count resp_cec_ports;
+	int ret;
+	int i;
+
+	ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_PORT_COUNT, NULL, 0,
+			  &resp_cec_ports, sizeof(resp_cec_ports));
+	if (ret < 0)
+		return -EIO;
+
+	for (i = 0; i < resp_cec_ports.port_count; i++) {
+		struct ec_response_cec_get_pa resp;
+		struct ec_params_cec_get_pa req = {
+			.cmd = CEC_CMD_PHYSICAL_ADDRESS,
+			.port = i,
+		};
+
+		ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_GET_PA,
+			  &req, sizeof(req), &resp, sizeof(resp));
+		if (ret >= 0) {
+			count += sysfs_emit_at(buf, count, "%d %d\n", i, resp.val);
+		}
+	}
+
+	return count ? : -EIO;
+}
+
+static ssize_t cec_phys_addr_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct cros_ec_dev *ec = to_cros_ec_dev(dev);
+	struct ec_params_cec_set_pa params = {
+		.cmd = CEC_CMD_PHYSICAL_ADDRESS,
+	};
+	char *mut, *port_token, *val_token;
+	u8 port;
+	u16 val;
+	int ret;
+
+	mut = kstrdup(buf, GFP_KERNEL);
+	if (!mut)
+		return -ENOMEM;
+
+	val_token = mut;
+	port_token = strsep(&val_token, " ");
+	if (!port_token || !*port_token) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	ret = kstrtou8(port_token, 0, &port);
+	if (ret)
+		goto exit;
+	if (port >= EC_CEC_MAX_PORTS) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	params.port = port;
+
+	ret = kstrtou16(val_token, 0, &val);
+	if (ret)
+		goto exit;
+	if (val > 0xFFFF) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	params.val = val;
+
+	ret = cros_ec_cmd(ec->ec_dev, 0, EC_CMD_CEC_SET_PA, &params, sizeof(params),
+			  NULL, 0);
+	if (ret < 0) {
+		ret = -EIO;
+		goto exit;
+	}
+
+exit:
+	kfree(mut);
+	return ret != 0 ? ret : count;
+}
+
 /* Module initialization */
 
 static DEVICE_ATTR_RW(reboot);
@@ -362,6 +529,8 @@ static DEVICE_ATTR_RO(flashinfo);
 static DEVICE_ATTR_RW(kb_wake_angle);
 static DEVICE_ATTR_RO(usbpdmuxinfo);
 static DEVICE_ATTR_RO(ap_mode_entry);
+static DEVICE_ATTR_RW(cec_wake_enable);
+static DEVICE_ATTR_RW(cec_phys_addr);
 
 static struct attribute *__ec_attrs[] = {
 	&dev_attr_kb_wake_angle.attr,
@@ -370,6 +539,8 @@ static struct attribute *__ec_attrs[] = {
 	&dev_attr_flashinfo.attr,
 	&dev_attr_usbpdmuxinfo.attr,
 	&dev_attr_ap_mode_entry.attr,
+	&dev_attr_cec_wake_enable.attr,
+	&dev_attr_cec_phys_addr.attr,
 	NULL,
 };
 
