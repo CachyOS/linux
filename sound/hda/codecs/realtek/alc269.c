@@ -3287,6 +3287,11 @@ static void cs35l41_fixup_spi_four(struct hda_codec *codec, const struct hda_fix
 	comp_generic_fixup(codec, action, "spi", "CSC3551", "-%s:00-cs35l41-hda.%d", 4);
 }
 
+static void max98390_fixup_i2c_four(struct hda_codec *codec, const struct hda_fixup *fix, int action)
+{
+	comp_generic_fixup(codec, action, "i2c", "MAX98390", "-%s:00-max98390-hda.%d", 4);
+}
+
 static void alc287_fixup_legion_16achg6_speakers(struct hda_codec *cdc, const struct hda_fixup *fix,
 						 int action)
 {
@@ -4079,6 +4084,7 @@ enum {
 	ALC298_FIXUP_SAMSUNG_AMP,
 	ALC298_FIXUP_SAMSUNG_AMP_V2_2_AMPS,
 	ALC298_FIXUP_SAMSUNG_AMP_V2_4_AMPS,
+	ALC298_FIXUP_SAMSUNG_MAX98390_4_AMPS,
 	ALC298_FIXUP_LG_GRAM_STYLE_14,
 	ALC298_FIXUP_SAMSUNG_HEADPHONE_VERY_QUIET,
 	ALC256_FIXUP_SAMSUNG_HEADPHONE_VERY_QUIET,
@@ -5838,6 +5844,10 @@ static const struct hda_fixup alc269_fixups[] = {
 	[ALC298_FIXUP_LG_GRAM_STYLE_14] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = alc298_fixup_lg_gram_style_14
+	},
+	[ALC298_FIXUP_SAMSUNG_MAX98390_4_AMPS] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = max98390_fixup_i2c_four
 	},
 	[ALC298_FIXUP_SAMSUNG_HEADPHONE_VERY_QUIET] = {
 		.type = HDA_FIXUP_VERBS,
@@ -7666,6 +7676,8 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x144d, 0xc876, "Samsung 730QED (NP730QED-KA2US)", ALC256_FIXUP_SAMSUNG_HEADPHONE_VERY_QUIET),
 	SND_PCI_QUIRK(0x144d, 0xca03, "Samsung Galaxy Book2 Pro 360 (NP930QED)", ALC298_FIXUP_SAMSUNG_AMP),
 	SND_PCI_QUIRK(0x144d, 0xca06, "Samsung Galaxy Book3 360 (NP730QFG)", ALC298_FIXUP_SAMSUNG_HEADPHONE_VERY_QUIET),
+	SND_PCI_QUIRK(0x144d, 0xca07, "Samsung Galaxy Book4 Pro (MAX98390)", ALC298_FIXUP_SAMSUNG_MAX98390_4_AMPS),
+	SND_PCI_QUIRK(0x144d, 0xc892, "Samsung Galaxy Book4 360 (MAX98390)", ALC298_FIXUP_SAMSUNG_MAX98390_4_AMPS),
 	SND_PCI_QUIRK(0x144d, 0xc868, "Samsung Galaxy Book2 Pro (NP930XED)", ALC298_FIXUP_SAMSUNG_AMP),
 	SND_PCI_QUIRK(0x144d, 0xc870, "Samsung Galaxy Book2 Pro (NP950XED)", ALC298_FIXUP_SAMSUNG_AMP_V2_2_AMPS),
 	SND_PCI_QUIRK(0x144d, 0xc872, "Samsung Galaxy Book2 Pro (NP950XEE)", ALC298_FIXUP_SAMSUNG_AMP_V2_2_AMPS),
