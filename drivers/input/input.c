@@ -26,6 +26,7 @@
 #include <linux/kstrtox.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
+#include <linux/suspend.h>
 #include "input-compat.h"
 #include "input-core-private.h"
 #include "input-poller.h"
@@ -361,6 +362,17 @@ void input_handle_event(struct input_dev *dev,
 	int disposition;
 
 	lockdep_assert_held(&dev->event_lock);
+
+	/*
+	 * During hibernation/suspend, consume KEY_POWER events in the kernel
+	 * to cancel the sleep transition. Don't forward to userspace to prevent
+	 * userspace (e.g., systemd-logind) from triggering another suspend or
+	 * poweroff action after the system wakes up.
+	 */
+	 if (code == KEY_POWER && pm_sleep_transition_in_progress()) {
+		pm_wakeup_dev_event(&dev->dev, 0, true);
+		return;
+	}
 
 	disposition = input_get_disposition(dev, type, code, &value);
 	if (disposition != INPUT_IGNORE_EVENT) {
