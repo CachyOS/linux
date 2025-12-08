@@ -291,6 +291,7 @@ static const struct dmi_system_id msi_quirks[] = {
 		},
 		.driver_data = &quirk_amd,
 	},
+	{ }
 };
 
 static int msi_wmi_platform_parse_buffer(union acpi_object *obj, u8 *output, size_t length)
