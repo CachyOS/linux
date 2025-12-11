@@ -12,6 +12,8 @@
 #include "ops.h"
 #include "sof-priv.h"
 #include "sof-audio.h"
+#include "sound/soc-component.h"
+#include "sound/soc.h"
 
 static int override_on_demand_boot = -1;
 module_param_named(on_demand_boot, override_on_demand_boot, int, 0444);
@@ -74,6 +76,28 @@ static void sof_cache_debugfs(struct snd_sof_dev *sdev)
 	}
 }
 #endif
+
+static void sof_mute_components(struct snd_sof_dev *sdev, bool mute)
+{
+	struct snd_soc_card *card = sdev->component->card;
+	struct snd_soc_component *component;
+
+	if (!card)
+		return;
+
+	for_each_card_components(card, component) {
+		struct snd_kcontrol *kctrl;
+		struct snd_ctl_elem_value val;
+
+		kctrl = snd_soc_component_get_kcontrol(component, "Resume Mute Switch");
+		if (!kctrl)
+			continue;
+
+		val.value.integer.value[0] = mute;
+
+		kctrl->put(kctrl, &val);
+	}
+}
 
 int snd_sof_boot_dsp_firmware(struct snd_sof_dev *sdev)
 {
@@ -144,6 +168,7 @@ int snd_sof_boot_dsp_firmware(struct snd_sof_dev *sdev)
 				__func__, ret);
 	}
 
+	sof_mute_components(sdev, false);
 setup_fail:
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_ENABLE_DEBUGFS_CACHE)
 	if (ret < 0) {
@@ -263,6 +288,8 @@ static int sof_suspend(struct device *dev, bool runtime_suspend)
 				ret);
 			return ret;
 		}
+
+		sof_mute_components(sdev, true);
 	}
 
 	pm_state.event = target_state;
