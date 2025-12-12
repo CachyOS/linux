@@ -388,9 +388,9 @@ extern void write_ibpb(void);
 
 #ifdef CONFIG_X86_64
 extern void clear_bhb_loop(void);
-extern void clear_bhb_long_loop_no_barrier(void);
+extern void clear_bhb_long_loop(void);
 #else
-static inline void clear_bhb_long_loop_no_barrier(void) {}
+static inline void clear_bhb_long_loop(void) {}
 #endif
 
 extern void (*x86_return_thunk)(void);
