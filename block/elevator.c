@@ -744,8 +744,13 @@ void elevator_set_default(struct request_queue *q)
 	ctx.name = "adios";
 #else // !CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 	bool is_sq = q->nr_hw_queues == 1 || blk_mq_is_shared_tags(q->tag_set->flags);
+#if defined(CONFIG_CACHY) && defined(CONFIG_IOSCHED_BFQ)
+	if (is_sq)
+		ctx.name = "bfq";
+#else
 	if (!is_sq)
 		return;
+#endif /* CONFIG_CACHY && CONFIG_IOSCHED_BFQ */
 #endif // CONFIG_MQ_IOSCHED_DEFAULT_ADIOS
 
 	/*
