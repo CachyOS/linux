@@ -25,7 +25,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.7"
+#define ADIOS_VERSION "3.1.8"
 
 /* Request Types:
  *
@@ -1355,15 +1355,11 @@ retry:
 	 * due to a REQ_OP_FLUSH barrier.
 	 */
 	if (eval_adios_state(ad, ADIOS_STATE_BP)) {
-		union adios_in_flight_rqs ifr;
-		ifr.scalar = atomic64_read(&ad->in_flight_rqs.atomic);
-		if (!ifr.count) {
-			bool barrier_released = false;
-			scoped_guard(spinlock_irqsave, &ad->lock)
-				barrier_released = release_barrier_requests(ad);
-			if (barrier_released)
-				goto retry;
-		}
+		bool barrier_released = false;
+		scoped_guard(spinlock_irqsave, &ad->lock)
+			barrier_released = release_barrier_requests(ad);
+		if (barrier_released)
+			goto retry;
 	}
 
 	return NULL;
