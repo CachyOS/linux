@@ -834,9 +834,6 @@ static struct hid_driver msi_claw_driver = {
 	.raw_event		= msi_claw_raw_event,
 	.probe			= msi_claw_probe,
 	.remove			= msi_claw_remove,
-#ifdef CONFIG_PM
-	.resume			= msi_claw_resume,
-#endif
 };
 module_hid_driver(msi_claw_driver);
 
