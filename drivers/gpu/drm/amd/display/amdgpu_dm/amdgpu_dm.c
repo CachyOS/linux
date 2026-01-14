@@ -13353,15 +13353,28 @@ static void aconn_range_from_vsdb(struct amdgpu_dm_connector *aconn,
 }
 
 /**
- * Get VRR range from HDMI VRR info in EDID.
+ * Get VRR range from HDMI VRR info in EDID. If VRRmax == 0,
+ * try getting upper bound from AMD vsdb.
  *
  * @conn: drm_connector with HDMI VRR info
+ * @vsdb: AMD vsdb from CAE
  */
 static void aconn_range_from_hdmi(struct amdgpu_dm_connector *aconn,
-				  const struct drm_hdmi_vrr_cap *hdmi)
+				  const struct drm_hdmi_vrr_cap *hdmi,
+				  const struct amdgpu_hdmi_vsdb_info *vsdb)
 {
+	u16 vrr_max = hdmi->vrr_max;
+
+	/* Try getting upper vrr bound from AMD vsdb */
+	if (vrr_max == 0)
+		vrr_max = vsdb->max_refresh_rate_hz;
+
+	/* Use max possible BRR value as a last resort */
+	if (vrr_max == 0)
+		vrr_max = VTEM_BRR_MAX;
+
 	aconn->min_vfreq = hdmi->vrr_min;
-	aconn->max_vfreq = hdmi->vrr_max;
+	aconn->max_vfreq = vrr_max;
 }
 
 /*
@@ -13531,8 +13544,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	/* DP -> HDMI PCON */
 	} else if (pcon_allowed) {
 		/* Prefer HDMI VRR */
-		if (hdmi_vrr.supported && hdmi_vrr.vrr_max > 0)
-			aconn_range_from_hdmi(amdgpu_dm_connector, &hdmi_vrr);
+		if (hdmi_vrr.supported)
+			aconn_range_from_hdmi(amdgpu_dm_connector, &hdmi_vrr, &vsdb_info);
 		else if (vsdb_info.freesync_supported) {
 			amdgpu_dm_connector->vsdb_info = vsdb_info;
 			aconn_range_from_vsdb(amdgpu_dm_connector, &vsdb_info);
