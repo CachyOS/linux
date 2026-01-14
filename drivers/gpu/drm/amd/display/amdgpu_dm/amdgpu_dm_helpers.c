@@ -1483,6 +1483,7 @@ static bool dm_helpers_is_vrr_pcon_allowlist(const uint32_t branch_dev_id)
 	case DP_BRANCH_DEVICE_ID_90CC24:
 	case DP_BRANCH_DEVICE_ID_001CF8:
 	case DP_BRANCH_DEVICE_ID_001FF2:
+	case DP_BRANCH_DEVICE_ID_2B02F0:
 		return true;
 	}
 
