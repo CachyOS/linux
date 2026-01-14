@@ -1489,7 +1489,7 @@ static bool dm_helpers_is_vrr_pcon_allowlist(const uint32_t branch_dev_id)
 	return false;
 }
 
-bool dm_helpers_is_vrr_pcon_compatible(const struct dc_link *link)
+bool dm_helpers_is_vrr_pcon_compatible(const struct dc_link *link, const struct drm_device *dev)
 {
 	if (link->dpcd_caps.dongle_type != DISPLAY_DONGLE_DP_HDMI_CONVERTER)
 		return false;
@@ -1502,6 +1502,12 @@ bool dm_helpers_is_vrr_pcon_compatible(const struct dc_link *link)
 
 	if (dm_helpers_is_vrr_pcon_allowlist(link->dpcd_caps.branch_dev_id))
 		return true;
+
+	if (link->dc->debug.override_pcon_vrr_id_check) {
+		drm_info(dev, "Overriding VRR PCON check for ID: 0x%06x\n",
+			 link->dpcd_caps.branch_dev_id);
+		return true;
+	}
 
 	return false;
 }
