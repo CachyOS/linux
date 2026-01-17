@@ -26,6 +26,9 @@
 #define   GLI_9750_WT_EN_ON	    0x1
 #define   GLI_9750_WT_EN_OFF	    0x0
 
+#define SDHCI_GLI_9750_GM_BURST_SIZE		  0x510
+#define   SDHCI_GLI_9750_GM_BURST_SIZE_MASK	    GENMASK(17, 16)
+
 #define SDHCI_GLI_9750_CFG2          0x848
 #define   SDHCI_GLI_9750_CFG2_L1DLY    GENMASK(28, 24)
 #define   GLI_9750_CFG2_L1DLY_VALUE    0x1F
@@ -637,6 +640,11 @@ static void gl9750_hw_setting(struct sdhci_host *host)
 	pdev = slot->chip->pdev;
 
 	gl9750_wt_on(host);
+
+	/* clear GM_BURST bits to avoid corruption with DMA writes */
+	value = sdhci_readl(host, SDHCI_GLI_9750_GM_BURST_SIZE);
+	value &= ~SDHCI_GLI_9750_GM_BURST_SIZE_MASK;
+	sdhci_writel(host, value, SDHCI_GLI_9750_GM_BURST_SIZE);
 
 	value = sdhci_readl(host, SDHCI_GLI_9750_CFG2);
 	value &= ~SDHCI_GLI_9750_CFG2_L1DLY;
