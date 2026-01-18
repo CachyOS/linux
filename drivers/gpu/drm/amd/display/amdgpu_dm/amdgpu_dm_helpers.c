@@ -1475,42 +1475,35 @@ void dm_helpers_dp_mst_update_branch_bandwidth(
 	// TODO
 }
 
-static bool dm_is_freesync_pcon_whitelist(const uint32_t branch_dev_id)
+static bool dm_helpers_is_vrr_pcon_allowlist(const uint32_t branch_dev_id)
 {
-	bool ret_val = false;
-
 	switch (branch_dev_id) {
 	case DP_BRANCH_DEVICE_ID_0060AD:
 	case DP_BRANCH_DEVICE_ID_00E04C:
 	case DP_BRANCH_DEVICE_ID_90CC24:
 	case DP_BRANCH_DEVICE_ID_001CF8:
 	case DP_BRANCH_DEVICE_ID_001FF2:
-		ret_val = true;
-		break;
-	default:
-		break;
+		return true;
 	}
 
-	return ret_val;
+	return false;
 }
 
-enum adaptive_sync_type dm_get_adaptive_sync_support_type(struct dc_link *link)
+bool dm_helpers_is_vrr_pcon_compatible(const struct dc_link *link)
 {
-	struct dpcd_caps *dpcd_caps = &link->dpcd_caps;
-	enum adaptive_sync_type as_type = ADAPTIVE_SYNC_TYPE_NONE;
+	if (link->dpcd_caps.dongle_type != DISPLAY_DONGLE_DP_HDMI_CONVERTER)
+		return false;
 
-	switch (dpcd_caps->dongle_type) {
-	case DISPLAY_DONGLE_DP_HDMI_CONVERTER:
-		if (dpcd_caps->adaptive_sync_caps.dp_adap_sync_caps.bits.ADAPTIVE_SYNC_SDP_SUPPORT == true &&
-			dpcd_caps->allow_invalid_MSA_timing_param == true &&
-			dm_is_freesync_pcon_whitelist(dpcd_caps->branch_dev_id))
-			as_type = FREESYNC_TYPE_PCON_IN_WHITELIST;
-		break;
-	default:
-		break;
-	}
+	if (!link->dpcd_caps.allow_invalid_MSA_timing_param)
+		return false;
 
-	return as_type;
+	if (!link->dpcd_caps.adaptive_sync_caps.dp_adap_sync_caps.bits.ADAPTIVE_SYNC_SDP_SUPPORT)
+		return false;
+
+	if (dm_helpers_is_vrr_pcon_allowlist(link->dpcd_caps.branch_dev_id))
+		return true;
+
+	return false;
 }
 
 bool dm_helpers_is_fullscreen(struct dc_context *ctx, struct dc_stream_state *stream)
@@ -1614,7 +1607,7 @@ void dm_helpers_read_mccs_caps(struct dc_context *ctx, struct dc_link *link,
 		if (dc_is_dp_signal(link->connector_signal)) {
 			if ((dpcd_caps->dpcd_rev.raw >= DPCD_REV_14) &&
 				(dpcd_caps->dongle_type == DISPLAY_DONGLE_DP_HDMI_CONVERTER) &&
-				dm_is_freesync_pcon_whitelist(dpcd_caps->branch_dev_id) &&
+				dm_helpers_is_vrr_pcon_allowlist(dpcd_caps->branch_dev_id) &&
 				(dpcd_caps->adaptive_sync_caps.dp_adap_sync_caps.bits.ADAPTIVE_SYNC_SDP_SUPPORT == true))
 				mccs_op = true;
 
