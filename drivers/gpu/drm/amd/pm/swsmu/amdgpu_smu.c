@@ -2999,11 +2999,13 @@ static int smu_set_power_limit(void *handle, uint32_t limit_type, uint32_t limit
 		if (!limit)
 			limit = smu->current_power_limit;
 
-		if (amdgpu_ignore_min_pcap && (limit > smu->max_power_limit)) {
-			dev_err(smu->adev->dev,
-					"New power limit (%d) is over the max allowed %d\n",
-					limit, smu->max_power_limit);
-			return -EINVAL;
+		if (amdgpu_ignore_min_pcap) {
+			if (limit > smu->max_power_limit) {
+				dev_err(smu->adev->dev,
+						"New power limit (%d) is over the max allowed %d\n",
+						limit, smu->max_power_limit);
+				return -EINVAL;
+			}
 		} else if ((limit > smu->max_power_limit) || (limit < smu->min_power_limit)) {
 			dev_err(smu->adev->dev,
 				"New power limit (%d) is out of range [%d,%d]\n",
