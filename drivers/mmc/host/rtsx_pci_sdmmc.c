@@ -7,6 +7,7 @@
  *   Wei WANG <wei_wang@realsil.com.cn>
  */
 
+#include <linux/dmi.h>
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -22,6 +23,105 @@
 #include <linux/rtsx_pci.h>
 #include <linux/unaligned.h>
 #include <linux/pm_runtime.h>
+
+#define QUIRK_NO_AGGRESSIVE_PM	BIT(0)
+
+/* DMI quirk table for systems with known SD card reader issues. */
+static const struct dmi_system_id rtsx_pci_sdmmc_dmi_quirks[] = {
+	{
+		/* ASUS ROG Xbox Ally */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "RC73YA"),
+		},
+	},
+	{
+		/* ASUS ROG Xbox Ally X */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC."),
+			DMI_MATCH(DMI_BOARD_NAME, "RC73XA"),
+		},
+	},
+	{
+		/* Lenovo Legion Go */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83E1"),
+		},
+	},
+	{
+		/* Lenovo Legion Go 2 */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83N0"),
+		},
+	},
+	{
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83N1"),
+		},
+	},
+	{
+		/* Lenovo Legion Go S */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83L3"),
+		},
+	},
+	{
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83N6"),
+		},
+	},
+	{
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83Q2"),
+		},
+	},
+	{
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83Q3"),
+		},
+	},
+	{
+		/* MSI Claw */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T41"),
+		},
+	},
+	{
+		/* MSI Claw 7 AI+ A2VM */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T42"),
+		},
+	},
+	{
+		/* MSI Claw 8 AI+ A2VM */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T52"),
+		},
+	},
+	{},
+};
 
 struct realtek_pci_sdmmc {
 	struct platform_device	*pdev;
@@ -1414,6 +1514,12 @@ static void realtek_init_host(struct realtek_pci_sdmmc *host)
 {
 	struct mmc_host *mmc = host->mmc;
 	struct rtsx_pcr *pcr = host->pcr;
+	const struct dmi_system_id *dmi_id;
+	unsigned long quirks = 0;
+
+	dmi_id = dmi_first_match(rtsx_pci_sdmmc_dmi_quirks);
+	if (dmi_id)
+		quirks = (unsigned long)dmi_id->driver_data;
 
 	mmc->f_min = 250000;
 	mmc->f_max = 208000000;
@@ -1421,7 +1527,7 @@ static void realtek_init_host(struct realtek_pci_sdmmc *host)
 	mmc->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_SD_HIGHSPEED |
 		MMC_CAP_MMC_HIGHSPEED | MMC_CAP_BUS_WIDTH_TEST |
 		MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25;
-	if (pcr->rtd3_en)
+	if (pcr->rtd3_en && !(quirks & QUIRK_NO_AGGRESSIVE_PM))
 		mmc->caps = mmc->caps | MMC_CAP_AGGRESSIVE_PM;
 	mmc->caps2 = MMC_CAP2_NO_PRESCAN_POWERUP | MMC_CAP2_FULL_PWR_CYCLE |
 		MMC_CAP2_NO_SDIO;
