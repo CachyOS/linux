@@ -303,9 +303,6 @@ bool cm3_helper_translate_curve_to_hw_format(struct dc_context *ctx,
 	return true;
 }
 
-#define NUM_DEGAMMA_REGIONS    12
-
-
 bool cm3_helper_translate_curve_to_degamma_hw_format(
 				const struct dc_transfer_func *output_tf,
 				struct pwl_params *lut_params)
@@ -329,17 +326,33 @@ bool cm3_helper_translate_curve_to_degamma_hw_format(
 	memset(lut_params, 0, sizeof(struct pwl_params));
 	memset(seg_distr, 0, sizeof(seg_distr));
 
-	region_start = -NUM_DEGAMMA_REGIONS;
-	region_end   = 0;
+	if (output_tf->tf == TRANSFER_FUNCTION_PQ || TRANSFER_FUNCTION_SRGB) {
+		/* 9 segments
+		 * segments are from 2^-8 to 0
+		 */
+		const uint8_t SEG_COUNT = 9;
+		seg_distr[0] = 0; // Since we only have one point in last region
+		for (k = 1; k < SEG_COUNT; k++)
+			seg_distr[k] = k - 1; // Depends upon the regions' points 2^(n-1); seg_distr = n
 
+		region_start = -SEG_COUNT;
+		region_end = 0;
+	} else {
+		/* 12 segments
+		 * segments are from 2^-11 to 2^0
+		 * There are less than 256 points, for optimization
+		 */
+		const uint8_t SEG_COUNT = 12;
+
+		for (i = 0; i < SEG_COUNT; i++)
+			seg_distr[i] = 4;
+
+		region_start = -SEG_COUNT;
+		region_end = 0;
+	}
 
 	for (i = region_end - region_start; i < MAX_REGIONS_NUMBER ; i++)
 		seg_distr[i] = -1;
-	/* 12 segments
-	 * segments are from 2^-12 to 0
-	 */
-	for (i = 0; i < NUM_DEGAMMA_REGIONS ; i++)
-		seg_distr[i] = 4;
 
 	for (k = 0; k < MAX_REGIONS_NUMBER; k++) {
 		if (seg_distr[k] != -1)
@@ -400,6 +413,7 @@ bool cm3_helper_translate_curve_to_degamma_hw_format(
 					     dc_fixpt_from_int(region_start));
 	corner_points[0].green.x = corner_points[0].red.x;
 	corner_points[0].blue.x = corner_points[0].red.x;
+
 	corner_points[1].red.x = dc_fixpt_pow(dc_fixpt_from_int(2),
 					     dc_fixpt_from_int(region_end));
 	corner_points[1].green.x = corner_points[1].red.x;
@@ -473,6 +487,7 @@ bool cm3_helper_translate_curve_to_degamma_hw_format(
 		++rgb;
 		++i;
 	}
+
 	cm3_helper_convert_to_custom_float(rgb_resulted,
 						lut_params->corner_points,
 						hw_points, false);
