@@ -13419,12 +13419,11 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	/* Copy current range and do not touch display_info afterwards */
 	copy_range_to_amdgpu_connector(amdgpu_dm_connector, connector);
 
-	/* Some eDP panels only have the refresh rate range info in DisplayID */
-	if (is_aconn_range_invalid(amdgpu_dm_connector))
-		parse_edid_displayid_vrr(amdgpu_dm_connector, edid);
-
 	if (sink->sink_signal == SIGNAL_TYPE_DISPLAY_PORT ||
 	    sink->sink_signal == SIGNAL_TYPE_EDP) {
+		/* Some eDP panels only have the refresh rate range info in DisplayID */
+		if (is_aconn_range_invalid(amdgpu_dm_connector))
+			parse_edid_displayid_vrr(amdgpu_dm_connector, edid);
 
 		if (dpcd_caps.allow_invalid_MSA_timing_param)
 			freesync_capable = is_freesync_capable(amdgpu_dm_connector);
