@@ -13423,8 +13423,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	if (is_aconn_range_invalid(amdgpu_dm_connector))
 		parse_edid_displayid_vrr(amdgpu_dm_connector, edid);
 
-	if (edid && (sink->sink_signal == SIGNAL_TYPE_DISPLAY_PORT ||
-		     sink->sink_signal == SIGNAL_TYPE_EDP)) {
+	if (sink->sink_signal == SIGNAL_TYPE_DISPLAY_PORT ||
+	    sink->sink_signal == SIGNAL_TYPE_EDP) {
 
 		if (dpcd_caps.allow_invalid_MSA_timing_param)
 			freesync_capable = is_freesync_capable(amdgpu_dm_connector);
@@ -13437,7 +13437,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_EDP;
 		}
 
-	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A && drm_edid) {
+	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A) {
 		parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
 		amdgpu_dm_connector->vsdb_info = vsdb_info;
 		sink->edid_caps.freesync_vcp_code = vsdb_info.freesync_mccs_vcp_code;
@@ -13451,7 +13451,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	if (amdgpu_dm_connector->dc_link)
 		as_type = dm_get_adaptive_sync_support_type(amdgpu_dm_connector->dc_link);
 
-	if (as_type == FREESYNC_TYPE_PCON_IN_WHITELIST && drm_edid) {
+	if (as_type == FREESYNC_TYPE_PCON_IN_WHITELIST) {
 		parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
 		amdgpu_dm_connector->vsdb_info = vsdb_info;
 		sink->edid_caps.freesync_vcp_code = vsdb_info.freesync_mccs_vcp_code;
