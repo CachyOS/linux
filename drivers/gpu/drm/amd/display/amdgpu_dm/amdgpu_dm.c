@@ -13038,6 +13038,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 		goto update;
 
 	edid = drm_edid_raw(drm_edid); // FIXME: Get rid of drm_edid_raw()
+	parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
 
 	if (amdgpu_dm_connector->dc_link)
 		dpcd_caps = amdgpu_dm_connector->dc_link->dpcd_caps;
@@ -13059,28 +13060,22 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_EDP;
 		}
 
-	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A) {
-		parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
-		if (vsdb_info.freesync_supported) {
-			monitor_range_from_vsdb(&connector->display_info, &vsdb_info);
-			freesync_capable = copy_range_to_amdgpu_connector(connector);
-		}
+	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A && vsdb_info.freesync_supported) {
+		monitor_range_from_vsdb(&connector->display_info, &vsdb_info);
+		freesync_capable = copy_range_to_amdgpu_connector(connector);
 	}
 
 	if (amdgpu_dm_connector->dc_link)
 		as_type = dm_get_adaptive_sync_support_type(amdgpu_dm_connector->dc_link);
 
-	if (as_type == FREESYNC_TYPE_PCON_IN_WHITELIST) {
-		parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
-		if (vsdb_info.freesync_supported) {
-			amdgpu_dm_connector->pack_sdp_v1_3 = true;
-			amdgpu_dm_connector->as_type = as_type;
-			amdgpu_dm_connector->vsdb_info = vsdb_info;
+	if (as_type == FREESYNC_TYPE_PCON_IN_WHITELIST && vsdb_info.freesync_supported) {
+		amdgpu_dm_connector->pack_sdp_v1_3 = true;
+		amdgpu_dm_connector->as_type = as_type;
+		amdgpu_dm_connector->vsdb_info = vsdb_info;
 
-			parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
-			monitor_range_from_vsdb(&connector->display_info, &vsdb_info);
-			freesync_capable = copy_range_to_amdgpu_connector(connector);
-		}
+		parse_amd_vsdb_cea(amdgpu_dm_connector, edid, &vsdb_info);
+		monitor_range_from_vsdb(&connector->display_info, &vsdb_info);
+		freesync_capable = copy_range_to_amdgpu_connector(connector);
 	}
 
 update:
