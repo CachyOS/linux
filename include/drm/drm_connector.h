@@ -58,6 +58,12 @@ enum drm_connector_force {
 	DRM_FORCE_ON_DIGITAL, /* for DVI-I use digital connector */
 };
 
+enum drm_allm_mode {
+	DRM_ALLM_MODE_DISABLED,
+	DRM_ALLM_MODE_ENABLED_DYNAMIC,
+	DRM_ALLM_MODE_ENABLED_FORCED,
+};
+
 /**
  * enum drm_connector_status - status for a &drm_connector
  *
@@ -1208,6 +1214,13 @@ struct drm_connector_state {
 	unsigned int content_protection;
 
 	/**
+	 * @allm_mode: Connector property to control the
+	 * HDMI Auto Low Latency Mode trigger setting.
+	 * The %DRM_ALLM_MODE_\* values must match the values.
+	 */
+	enum drm_allm_mode allm_mode;
+
+	/**
 	 * @colorspace: State variable for Connector property to request
 	 * colorspace change on Sink. This is most commonly used to switch
 	 * to wider color gamuts like BT2020.
@@ -2207,6 +2220,26 @@ struct drm_connector {
 	struct drm_property *vrr_capable_property;
 
 	/**
+	 * @allm_capable_property: Optional property to help userspace
+	 * query hardware support for HDMI Auto Low Latency Mode on a connector.
+	 * Drivers can add the property to a connector by calling
+	 * drm_connector_attach_allm_capable_property().
+	 *
+	 * This should be updated only by calling
+	 * drm_connector_set_allm_capable_property().
+	 */
+	struct drm_property *allm_capable_property;
+
+	/**
+	 * @allm_mode_property:
+	 *
+	 * Indicates HDMI Auto Low Latency Mode triggering mode for connector.
+	 * Support for the requested state will depend on driver and hardware
+	 * capabiltiy - lacking support is not treated as failure.
+	 */
+	struct drm_property *allm_mode_property;
+
+	/**
 	 * @colorspace_property: Connector property to set the suitable
 	 * colorspace supported by the sink.
 	 */
@@ -2601,6 +2634,8 @@ int drm_connector_attach_scaling_mode_property(struct drm_connector *connector,
 int drm_connector_attach_vrr_capable_property(
 		struct drm_connector *connector);
 void drm_connector_attach_panel_type_property(struct drm_connector *connector);
+int drm_connector_attach_allm_capable_property(struct drm_connector *connector);
+int drm_connector_attach_allm_mode_property(struct drm_connector *connector);
 int drm_connector_attach_broadcast_rgb_property(struct drm_connector *connector);
 int drm_connector_attach_colorspace_property(struct drm_connector *connector);
 int drm_connector_attach_hdr_output_metadata_property(struct drm_connector *connector);
@@ -2622,6 +2657,8 @@ int drm_connector_update_edid_property(struct drm_connector *connector,
 void drm_connector_set_link_status_property(struct drm_connector *connector,
 					    uint64_t link_status);
 void drm_connector_set_vrr_capable_property(
+		struct drm_connector *connector, bool capable);
+void drm_connector_set_allm_capable_property(
 		struct drm_connector *connector, bool capable);
 int drm_connector_set_panel_orientation(
 	struct drm_connector *connector,
