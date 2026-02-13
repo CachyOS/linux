@@ -9,4 +9,6 @@ obj-$(CONFIG_ATP) += atp.o
 r8169-y += r8169_main.o r8169_firmware.o r8169_phy_config.o
 r8169-$(CONFIG_R8169_LEDS) += r8169_leds.o
 obj-$(CONFIG_R8169) += r8169.o
+r8125-y += r8125_n.o rtl_eeprom.o rtltool.o
+obj-$(CONFIG_R8125) += r8125.o
 obj-$(CONFIG_RTASE) += rtase/

@@ -95,6 +95,21 @@ config 8139_OLD_RX_RESET
 	  experience problems, you can enable this option to restore the
 	  old RX-reset behavior.  If unsure, say N.
 
+config R8125
+	tristate "Realtek 8125/8162 ethernet support"
+	depends on PCI
+	select FW_LOADER
+	select CRC32
+	select PHYLIB
+	select REALTEK_PHY
+	help
+	  Say Y here if you have a Realtek Ethernet adapter belonging to
+	  the following families:
+	  RTL8125 2.5GBit Ethernet
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called r8125.  This is recommended.
+
 config R8169
 	tristate "Realtek 8169/8168/8101/8125 ethernet support"
 	depends on PCI
