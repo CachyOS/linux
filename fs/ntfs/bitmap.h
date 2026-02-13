@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * bitmap.h - Defines for NTFS kernel bitmap handling.  Part of the Linux-NTFS
- *	      project.
+ * Defines for NTFS kernel bitmap handling.
  *
  * Copyright (c) 2004 Anton Altaparmakov
  */
@@ -9,16 +8,15 @@
 #ifndef _LINUX_NTFS_BITMAP_H
 #define _LINUX_NTFS_BITMAP_H
 
-#ifdef NTFS_RW
-
 #include <linux/fs.h>
 
-#include "types.h"
+#include "volume.h"
 
-extern int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
+int ntfs_trim_fs(struct ntfs_volume *vol, struct fstrim_range *range);
+int __ntfs_bitmap_set_bits_in_run(struct inode *vi, const s64 start_bit,
 		const s64 count, const u8 value, const bool is_rollback);
 
-/**
+/*
  * ntfs_bitmap_set_bits_in_run - set a run of bits in a bitmap to a value
  * @vi:			vfs inode describing the bitmap
  * @start_bit:		first bit to set
@@ -37,7 +35,7 @@ static inline int ntfs_bitmap_set_bits_in_run(struct inode *vi,
 			false);
 }
 
-/**
+/*
  * ntfs_bitmap_set_run - set a run of bits in a bitmap
  * @vi:		vfs inode describing the bitmap
  * @start_bit:	first bit to set
@@ -54,7 +52,7 @@ static inline int ntfs_bitmap_set_run(struct inode *vi, const s64 start_bit,
 	return ntfs_bitmap_set_bits_in_run(vi, start_bit, count, 1);
 }
 
-/**
+/*
  * ntfs_bitmap_clear_run - clear a run of bits in a bitmap
  * @vi:		vfs inode describing the bitmap
  * @start_bit:	first bit to clear
@@ -71,7 +69,7 @@ static inline int ntfs_bitmap_clear_run(struct inode *vi, const s64 start_bit,
 	return ntfs_bitmap_set_bits_in_run(vi, start_bit, count, 0);
 }
 
-/**
+/*
  * ntfs_bitmap_set_bit - set a bit in a bitmap
  * @vi:		vfs inode describing the bitmap
  * @bit:	bit to set
@@ -85,7 +83,7 @@ static inline int ntfs_bitmap_set_bit(struct inode *vi, const s64 bit)
 	return ntfs_bitmap_set_run(vi, bit, 1);
 }
 
-/**
+/*
  * ntfs_bitmap_clear_bit - clear a bit in a bitmap
  * @vi:		vfs inode describing the bitmap
  * @bit:	bit to clear
@@ -98,7 +96,5 @@ static inline int ntfs_bitmap_clear_bit(struct inode *vi, const s64 bit)
 {
 	return ntfs_bitmap_clear_run(vi, bit, 1);
 }
-
-#endif /* NTFS_RW */
 
 #endif /* defined _LINUX_NTFS_BITMAP_H */

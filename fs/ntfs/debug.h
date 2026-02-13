@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * debug.h - NTFS kernel debug support. Part of the Linux-NTFS project.
+ * NTFS kernel debug support.
  *
  * Copyright (c) 2001-2004 Anton Altaparmakov
  */
@@ -19,7 +19,7 @@ extern int debug_msgs;
 extern __printf(4, 5)
 void __ntfs_debug(const char *file, int line, const char *function,
 		  const char *format, ...);
-/**
+/*
  * ntfs_debug - write a debug level message to syslog
  * @f:		a printf format string containing the message
  * @...:	the variables to substitute into @f
@@ -30,7 +30,7 @@ void __ntfs_debug(const char *file, int line, const char *function,
 #define ntfs_debug(f, a...)						\
 	__ntfs_debug(__FILE__, __LINE__, __func__, f, ##a)
 
-extern void ntfs_debug_dump_runlist(const runlist_element *rl);
+void ntfs_debug_dump_runlist(const struct runlist_element *rl);
 
 #else	/* !DEBUG */
 
@@ -40,7 +40,11 @@ do {									\
 		no_printk(fmt, ##__VA_ARGS__);				\
 } while (0)
 
-#define ntfs_debug_dump_runlist(rl)	do {} while (0)
+#define ntfs_debug_dump_runlist(rl)					\
+do {									\
+	if (0)								\
+		(void)rl;						\
+} while (0)
 
 #endif	/* !DEBUG */
 
@@ -50,8 +54,10 @@ void __ntfs_warning(const char *function, const struct super_block *sb,
 #define ntfs_warning(sb, f, a...)	__ntfs_warning(__func__, sb, f, ##a)
 
 extern  __printf(3, 4)
-void __ntfs_error(const char *function, const struct super_block *sb,
+void __ntfs_error(const char *function, struct super_block *sb,
 		  const char *fmt, ...);
 #define ntfs_error(sb, f, a...)		__ntfs_error(__func__, sb, f, ##a)
+
+void ntfs_handle_error(struct super_block *sb);
 
 #endif /* _LINUX_NTFS_DEBUG_H */

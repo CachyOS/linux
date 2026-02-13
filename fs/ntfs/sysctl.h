@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * sysctl.h - Defines for sysctl handling in NTFS Linux kernel driver. Part of
- *	      the Linux-NTFS project. Adapted from the old NTFS driver,
- *	      Copyright (C) 1997 Martin von Löwis, Régis Duchesne
+ * Defines for sysctl handling in NTFS Linux kernel driver.
  *
+ * Copyright (C) 1997 Martin von Löwis, Régis Duchesne
  * Copyright (c) 2002-2004 Anton Altaparmakov
  */
 
@@ -13,7 +12,7 @@
 
 #if defined(DEBUG) && defined(CONFIG_SYSCTL)
 
-extern int ntfs_sysctl(int add);
+int ntfs_sysctl(int add);
 
 #else
 
