@@ -1383,6 +1383,7 @@ static bool dm_is_freesync_pcon_whitelist(const uint32_t branch_dev_id)
 	case DP_BRANCH_DEVICE_ID_0060AD:
 	case DP_BRANCH_DEVICE_ID_00E04C:
 	case DP_BRANCH_DEVICE_ID_90CC24:
+	case DP_BRANCH_DEVICE_ID_2B02F0:
 		ret_val = true;
 		break;
 	default:
