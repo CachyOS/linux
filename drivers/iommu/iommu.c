@@ -1218,6 +1218,11 @@ map_end:
 				ret = iommu_map(domain, addr - map_size,
 						addr - map_size, map_size,
 						entry->prot, GFP_KERNEL);
+				if (ret == -EADDRINUSE && addr - map_size == 0) {
+					dev_warn_once(dev,
+						"iommu: identity mapping at addr 0x0 already exists, skipping\n");
+					ret = 0;
+				}
 				if (ret)
 					goto out;
 				map_size = 0;
