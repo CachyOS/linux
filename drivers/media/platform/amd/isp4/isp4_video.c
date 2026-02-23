@@ -686,8 +686,6 @@ static void isp4vid_qops_buf_cleanup(struct vb2_buffer *vb)
 
 static const struct vb2_ops isp4vid_qops = {
 	.queue_setup = isp4vid_qops_queue_setup,
-	.wait_prepare = vb2_ops_wait_prepare,
-	.wait_finish = vb2_ops_wait_finish,
 	.buf_init = isp4vid_qops_buf_init,
 	.buf_cleanup = isp4vid_qops_buf_cleanup,
 	.start_streaming = isp4vid_qops_start_streaming,
