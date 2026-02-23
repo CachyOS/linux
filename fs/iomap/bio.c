@@ -20,10 +20,7 @@ static void iomap_read_end_io(struct bio *bio)
 
 static void iomap_bio_submit_read(struct iomap_read_folio_ctx *ctx)
 {
-	struct bio *bio = ctx->read_ctx;
-
-	if (bio)
-		submit_bio(bio);
+	submit_bio(ctx->read_ctx);
 }
 
 int iomap_bio_read_folio_range(const struct iomap_iter *iter,
