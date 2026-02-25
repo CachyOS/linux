@@ -684,7 +684,8 @@ out:
 	a->flags = new_aflags;
 	mark_mft_record_dirty(ctx->ntfs_ino);
 err_out:
-	ntfs_attr_put_search_ctx(ctx);
+	if (ctx)
+		ntfs_attr_put_search_ctx(ctx);
 	unmap_mft_record(ni);
 	return err;
 }
