@@ -1088,7 +1088,7 @@ static struct dentry *ntfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	}
 
 	d_instantiate_new(dentry, VFS_I(ni));
-	return ERR_PTR(err);
+	return NULL;
 }
 
 static int ntfs_rmdir(struct inode *dir, struct dentry *dentry)
