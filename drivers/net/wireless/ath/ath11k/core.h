@@ -1041,6 +1041,7 @@ struct ath11k_base {
 	struct ath11k_dbring_cap *db_caps;
 	u32 num_db_cap;
 	u64 last_frame_tx_error_jiffies;
+	bool simulate_lockup;
 
 	/* To synchronize 11d scan vdev id */
 	struct mutex vdev_id_11d_lock;
