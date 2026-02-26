@@ -1337,7 +1337,7 @@ read_partial_upcase_page:
 				addr, size);
 		kunmap_local(addr);
 		folio_put(folio);
-	};
+	}
 	if (size == PAGE_SIZE) {
 		size = i_size & ~PAGE_MASK;
 		if (size)
