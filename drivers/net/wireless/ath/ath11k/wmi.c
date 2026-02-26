@@ -345,9 +345,13 @@ int ath11k_wmi_cmd_send(struct ath11k_pdev_wmi *wmi, struct sk_buff *skb,
 
 		if (time_in_range64(ab->last_frame_tx_error_jiffies,
 				    range_start, jiffies_64) &&
-		    queue_work(ab->workqueue_aux, &ab->reset_work))
+		    queue_work(ab->workqueue_aux, &ab->reset_work)) {
 			ath11k_err(wmi_ab->ab,
 				   "Firmware lockup detected.  Resetting.");
+
+			/* Assume that reset gets us out of lockup. */
+			ab->simulate_lockup = false;
+		}
 	}
 
 	if (ret == -ENOBUFS)

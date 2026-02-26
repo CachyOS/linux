@@ -691,7 +691,7 @@ int ath11k_hal_srng_dst_num_free(struct ath11k_base *ab, struct hal_srng *srng,
 
 	tp = srng->u.dst_ring.tp;
 
-	if (sync_hw_ptr) {
+	if (sync_hw_ptr && !ab->simulate_lockup) {
 		hp = *srng->u.dst_ring.hp_addr;
 		srng->u.dst_ring.cached_hp = hp;
 	} else {
@@ -743,7 +743,7 @@ u32 *ath11k_hal_srng_src_get_next_entry(struct ath11k_base *ab,
 	 */
 	next_hp = (srng->u.src_ring.hp + srng->entry_size) % srng->ring_size;
 
-	if (next_hp == srng->u.src_ring.cached_tp)
+	if (next_hp == srng->u.src_ring.cached_tp || ab->simulate_lockup)
 		return NULL;
 
 	desc = srng->ring_base_vaddr + srng->u.src_ring.hp;
@@ -827,6 +827,9 @@ void ath11k_hal_srng_access_begin(struct ath11k_base *ab, struct hal_srng *srng)
 	u32 hp;
 
 	lockdep_assert_held(&srng->lock);
+
+	if (ab->simulate_lockup)
+		return;
 
 	if (srng->ring_dir == HAL_SRNG_DIR_SRC) {
 		srng->u.src_ring.cached_tp =

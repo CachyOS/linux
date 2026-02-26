@@ -208,7 +208,7 @@ static int ath11k_htc_process_trailer(struct ath11k_htc *htc,
 			break;
 		}
 
-		if (ab->hw_params.credit_flow) {
+		if (ab->hw_params.credit_flow && !ab->simulate_lockup) {
 			switch (record->hdr.id) {
 			case ATH11K_HTC_RECORD_CREDITS:
 				len = sizeof(struct ath11k_htc_credit_report);
