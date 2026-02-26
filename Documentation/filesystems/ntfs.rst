@@ -39,7 +39,7 @@ Supported mount options
 
 The NTFS driver supports the following mount options:
 
-======================= ===================================================
+======================= ====================================================
 iocharset=name          Character set to use for converting between
                         the encoding is used for user visible filename and
                         16 bit Unicode characters.
@@ -156,4 +156,4 @@ windows_names=<BOOL>    Refuse creation/rename of files with characters or
 discard=<BOOL>          Issue block device discard for clusters freed on
                         file deletion/truncation to inform underlying
                         storage.
-======================= ==================================================
+======================= ====================================================
