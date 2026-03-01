@@ -9799,6 +9799,10 @@ static void update_stream_irq_parameters(
 						     VRR_STATE_ACTIVE_VARIABLE :
 						     VRR_STATE_INACTIVE;
 		}
+
+		/* Enable freesync on desktop for HDMI */
+		if (dc_is_hdmi_signal(new_stream->signal))
+			new_stream->freesync_on_desktop = true;
 	} else {
 		config.state = VRR_STATE_UNSUPPORTED;
 	}
