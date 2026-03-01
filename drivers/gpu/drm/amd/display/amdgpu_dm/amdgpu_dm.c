@@ -13327,7 +13327,8 @@ static void extend_range_from_vsdb(struct drm_display_info *display,
 	 *
 	 * Work around that by not touching VRR min if it still supports LFC.
 	 */
-	if (vsdb->min_refresh_rate_hz < vrr_min && (vrr_min * 2 >= vrr_max))
+	if (vsdb->min_refresh_rate_hz > 0 &&
+	    vsdb->min_refresh_rate_hz < vrr_min && (vrr_min * 2 >= vrr_max))
 		vrr_min = vsdb->min_refresh_rate_hz;
 
 	display->monitor_range.min_vfreq = vrr_min;
@@ -13415,7 +13416,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 			monitor_range_from_vsdb(&connector->display_info, &vsdb_info);
 
 		/* Try extending range if found in AMD vsdb */
-		extend_range_from_vsdb(&connector->display_info, &vsdb_info);
+		if (vsdb_info.freesync_supported)
+			extend_range_from_vsdb(&connector->display_info, &vsdb_info);
 
 		if (dpcd_caps.allow_invalid_MSA_timing_param)
 			freesync_capable = copy_range_to_amdgpu_connector(connector);
