@@ -640,6 +640,7 @@ static int cgroup_mode = 1;
 static const char *cgroup_mode_str[] = {
 	"up",
 	"smp",
+	"concur",
 	"max",
 };
 
