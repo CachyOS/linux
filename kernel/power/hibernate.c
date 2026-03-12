@@ -672,13 +672,14 @@ int hibernation_platform_enter(void)
  * state corresponding to hibernation, or try to power it off or reboot,
  * depending on the value of hibernation_mode.
  */
-static void power_down(void)
+static int power_down(void)
 {
-	int error = -EAGAIN;
+	int error = 0;
 
 	if (pm_wakeup_pending()) {
 		pm_wakeup_clear(0);
 		pr_info("Wakeup event detected after image write, aborting power down.\n");
+		error = -EAGAIN;
 		goto exit;
 	}
 
@@ -724,9 +725,9 @@ static void power_down(void)
 
 exit:
 	/* Restore swap signature. */
-	error = swsusp_unmark();
-	if (error)
+	if (swsusp_unmark())
 		pr_err("Swap will be unusable! Try swapon -a.\n");
+	return error;
 }
 
 static int load_image_and_restore(void)
@@ -848,7 +849,11 @@ int hibernate(void)
 			if (hibernation_mode == HIBERNATION_TEST_RESUME)
 				snapshot_test = true;
 			else
-				power_down();
+				error = power_down();
+		}
+		if (error) {
+			/* recover any devices that refused to thaw */
+			dpm_resume_suspended_devices(PMSG_RECOVER);
 		}
 		in_suspend = 0;
 		pm_restore_gfp_mask();

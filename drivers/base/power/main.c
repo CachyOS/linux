@@ -1265,6 +1265,52 @@ void dpm_resume(pm_message_t state)
 	trace_suspend_resume(TPS("dpm_resume"), state.event, false);
 }
 
+void dpm_resume_suspended_devices(pm_message_t state)
+{
+	struct device *dev;
+	ktime_t starttime = ktime_get();
+
+	trace_suspend_resume(TPS("dpm_resume_suspended_devices"), state.event, true);
+
+	pm_transition = state;
+	async_error = 0;
+
+	mutex_lock(&dpm_list_mtx);
+
+	/*
+	 * Start processing "async" root devices upfront so they don't wait for
+	 * the "sync" devices they don't depend on.
+	 */
+	list_for_each_entry(dev, &dpm_list, power.entry) {
+		if (!dev->power.is_suspended)
+			continue;
+
+		dpm_clear_async_state(dev);
+		if (dpm_root_device(dev))
+			dpm_async_with_cleanup(dev, async_resume);
+
+		if (!dpm_async_fn(dev, async_resume)) {
+			get_device(dev);
+
+			mutex_unlock(&dpm_list_mtx);
+
+			device_resume(dev, state, false);
+
+			put_device(dev);
+
+			mutex_lock(&dpm_list_mtx);
+		}
+	}
+
+	mutex_unlock(&dpm_list_mtx);
+	async_synchronize_full();
+	dpm_show_time(starttime, state, 0, NULL);
+	if (READ_ONCE(async_error))
+		dpm_save_failed_step(SUSPEND_RESUME);
+
+	trace_suspend_resume(TPS("dpm_resume_suspended_devices"), state.event, false);
+}
+
 /**
  * device_complete - Complete a PM transition for given device.
  * @dev: Device to handle.
