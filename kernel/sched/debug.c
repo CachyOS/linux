@@ -633,6 +633,76 @@ static void debugfs_fair_server_init(void)
 	}
 }
 
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static int cgroup_mode = 0;
+
+static const char *cgroup_mode_str[] = {
+	"smp",
+};
+
+static int sched_cgroup_mode(const char *str)
+{
+	for (int i = 0; i < ARRAY_SIZE(cgroup_mode_str); i++) {
+		if (!strcmp(str, cgroup_mode_str[i]))
+			return i;
+	}
+	return -EINVAL;
+}
+
+static ssize_t sched_cgroup_write(struct file *filp, const char __user *ubuf,
+				   size_t cnt, loff_t *ppos)
+{
+	char buf[16];
+	int mode;
+
+	if (cnt > 15)
+		cnt = 15;
+
+	if (copy_from_user(buf, ubuf, cnt))
+		return -EFAULT;
+
+	buf[cnt] = 0;
+	mode = sched_cgroup_mode(strstrip(buf));
+	if (mode < 0)
+		return mode;
+
+	WRITE_ONCE(cgroup_mode, mode);
+
+	*ppos += cnt;
+	return cnt;
+}
+
+static int sched_cgroup_show(struct seq_file *m, void *v)
+{
+	int mode = READ_ONCE(cgroup_mode);
+
+	for (int i = 0; i < ARRAY_SIZE(cgroup_mode_str); i++) {
+		if (mode == i)
+			seq_puts(m, "(");
+		seq_puts(m, cgroup_mode_str[i]);
+		if (mode == i)
+			seq_puts(m, ")");
+
+		seq_puts(m, " ");
+	}
+	seq_puts(m, "\n");
+	return 0;
+}
+
+static int sched_cgroup_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, sched_cgroup_show, NULL);
+}
+
+static const struct file_operations sched_cgroup_fops = {
+	.open		= sched_cgroup_open,
+	.write		= sched_cgroup_write,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+#endif
+
 static __init int sched_init_debug(void)
 {
 	struct dentry __maybe_unused *numa, *llc;
@@ -685,6 +755,10 @@ static __init int sched_init_debug(void)
 #endif
 
 	debugfs_create_file("debug", 0444, debugfs_sched, NULL, &sched_debug_fops);
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	debugfs_create_file("cgroup_mode", 0644, debugfs_sched, NULL, &sched_cgroup_fops);
+#endif
 
 	debugfs_fair_server_init();
 #ifdef CONFIG_SCHED_CLASS_EXT
