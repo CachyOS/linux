@@ -38,6 +38,7 @@
 #include <linux/sched/isolation.h>
 #include <linux/sched/nohz.h>
 #include <linux/sched/prio.h>
+#include <linux/static_call.h>
 
 #include <linux/cpuidle.h>
 #include <linux/interrupt.h>
@@ -4800,7 +4801,7 @@ static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
  *
  * hence icky!
  */
-static long calc_group_shares(struct cfs_rq *cfs_rq)
+static long calc_smp_shares(struct cfs_rq *cfs_rq)
 {
 	long tg_weight, tg_shares, load, shares;
 	struct task_group *tg = cfs_rq->tg;
@@ -4835,6 +4836,32 @@ static long calc_group_shares(struct cfs_rq *cfs_rq)
 }
 
 /*
+ * Ignore this pesky SMP stuff, use (4).
+ */
+static long calc_up_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	return READ_ONCE(tg->shares);
+}
+
+DEFINE_STATIC_CALL(calc_group_shares, calc_smp_shares);
+
+void __sched_cgroup_mode_update(int mode)
+{
+	long (*func)(struct cfs_rq *);
+	switch (mode) {
+	case 0:
+		func = &calc_up_shares;
+		break;
+	case 1:
+	default:
+		func = &calc_smp_shares;
+		break;
+	}
+	static_call_update(calc_group_shares, func);
+}
+
+/*
  * Recomputes the group entity based on the current state of its group
  * runqueue.
  */
@@ -4850,7 +4877,7 @@ static void update_cfs_group(struct sched_entity *se)
 	if (!gcfs_rq || !gcfs_rq->load.weight)
 		return;
 
-	shares = calc_group_shares(gcfs_rq);
+	shares = static_call(calc_group_shares)(gcfs_rq);
 	if (unlikely(se->load.weight != shares))
 		reweight_entity(cfs_rq_of(se), se, shares);
 }

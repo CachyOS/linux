@@ -634,9 +634,11 @@ static void debugfs_fair_server_init(void)
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-static int cgroup_mode = 0;
+static int cgroup_mode = 1;
 
+/* See __sched_cgroup_mode_update(). */
 static const char *cgroup_mode_str[] = {
+	"up",
 	"smp",
 };
 
@@ -666,6 +668,7 @@ static ssize_t sched_cgroup_write(struct file *filp, const char __user *ubuf,
 	if (mode < 0)
 		return mode;
 
+	__sched_cgroup_mode_update(mode);
 	WRITE_ONCE(cgroup_mode, mode);
 
 	*ppos += cnt;
