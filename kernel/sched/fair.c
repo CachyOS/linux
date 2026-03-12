@@ -4248,6 +4248,11 @@ static int tg_cpus(struct task_group *tg)
 	return nr;
 }
 
+static inline int tg_tasks(struct task_group *tg)
+{
+	return max(1, atomic_long_read(&tg->runnable_avg) >> SCHED_CAPACITY_SHIFT);
+}
+
 /*
  * Func: min(fraction(nr_cpus * tg->shares), nice -20)
  *
@@ -4262,6 +4267,20 @@ static long calc_max_shares(struct cfs_rq *cfs_rq)
 	long tg_shares = READ_ONCE(tg->shares);
 	long max_shares = scale_load(sched_prio_to_weight[0]);
 	return __calc_smp_shares(cfs_rq, tg_shares * nr, max_shares);
+}
+
+/*
+ * Func: fraction(nr * tg->shares); nr = min(nr_tasks, nr_cpus)
+ *
+ * Scales between "smp" and "max" in a natural way. No longer needs clipping
+ * since there are no unnatural inflations like with "max".
+ */
+static long calc_concur_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	int nr = min(tg_tasks(tg), tg_cpus(tg));
+	long tg_shares = READ_ONCE(tg->shares);
+	return __calc_smp_shares(cfs_rq, nr * tg_shares, nr * tg_shares);
 }
 
 /*
@@ -4299,6 +4318,9 @@ void __sched_cgroup_mode_update(int mode)
 		func = &calc_smp_shares;
 		break;
 	case 2:
+		func = &calc_concur_shares;
+		break;
+	case 3:
 		func = &calc_max_shares;
 		break;
 	}
@@ -4445,7 +4467,7 @@ static inline bool cfs_rq_is_decayed(struct cfs_rq *cfs_rq)
  */
 static inline void update_tg_load_avg(struct cfs_rq *cfs_rq)
 {
-	long delta;
+	long dl, dr;
 	u64 now;
 
 	/*
@@ -4466,17 +4488,21 @@ static inline void update_tg_load_avg(struct cfs_rq *cfs_rq)
 	if (now - cfs_rq->last_update_tg_load_avg < NSEC_PER_MSEC)
 		return;
 
-	delta = cfs_rq->avg.load_avg - cfs_rq->tg_load_avg_contrib;
-	if (abs(delta) > cfs_rq->tg_load_avg_contrib / 64) {
-		atomic_long_add(delta, &cfs_rq->tg->load_avg);
+	dl = cfs_rq->avg.load_avg - cfs_rq->tg_load_avg_contrib;
+	dr = cfs_rq->avg.runnable_avg - cfs_rq->tg_runnable_avg_contrib;
+	if (abs(dl) > cfs_rq->tg_load_avg_contrib / 64 ||
+	    abs(dr) > cfs_rq->tg_runnable_avg_contrib / 64) {
+		atomic_long_add(dl, &cfs_rq->tg->load_avg);
+		atomic_long_add(dr, &cfs_rq->tg->runnable_avg);
 		cfs_rq->tg_load_avg_contrib = cfs_rq->avg.load_avg;
+		cfs_rq->tg_runnable_avg_contrib = cfs_rq->avg.runnable_avg;
 		cfs_rq->last_update_tg_load_avg = now;
 	}
 }
 
 static inline void clear_tg_load_avg(struct cfs_rq *cfs_rq)
 {
-	long delta;
+	long dl, dr;
 	u64 now;
 
 	/*
@@ -4485,10 +4511,13 @@ static inline void clear_tg_load_avg(struct cfs_rq *cfs_rq)
 	if (cfs_rq->tg == &root_task_group)
 		return;
 
-	now = sched_clock_cpu(cpu_of(rq_of(cfs_rq)));
-	delta = 0 - cfs_rq->tg_load_avg_contrib;
-	atomic_long_add(delta, &cfs_rq->tg->load_avg);
+	now = rq_clock(rq_of(cfs_rq));
+	dl = 0 - cfs_rq->tg_load_avg_contrib;
+	dr = 0 - cfs_rq->tg_runnable_avg_contrib;
+	atomic_long_add(dl, &cfs_rq->tg->load_avg);
+	atomic_long_add(dr, &cfs_rq->tg->runnable_avg);
 	cfs_rq->tg_load_avg_contrib = 0;
+	cfs_rq->tg_runnable_avg_contrib = 0;
 	cfs_rq->last_update_tg_load_avg = now;
 }
 
