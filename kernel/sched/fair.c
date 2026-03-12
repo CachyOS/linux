@@ -4801,12 +4801,10 @@ static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
  *
  * hence icky!
  */
-static long calc_smp_shares(struct cfs_rq *cfs_rq)
+static long __calc_smp_shares(struct cfs_rq *cfs_rq, long tg_shares, long shares_max)
 {
-	long tg_weight, tg_shares, load, shares;
 	struct task_group *tg = cfs_rq->tg;
-
-	tg_shares = READ_ONCE(tg->shares);
+	long tg_weight, load, shares;
 
 	load = max(scale_load_down(cfs_rq->load.weight), cfs_rq->avg.load_avg);
 
@@ -4832,7 +4830,48 @@ static long calc_smp_shares(struct cfs_rq *cfs_rq)
 	 * case no task is runnable on a CPU MIN_SHARES=2 should be returned
 	 * instead of 0.
 	 */
-	return clamp_t(long, shares, MIN_SHARES, tg_shares);
+	return clamp_t(long, shares, MIN_SHARES, shares_max);
+}
+
+static int tg_cpus(struct task_group *tg)
+{
+	int nr = num_online_cpus();
+
+	if (cpusets_enabled()) {
+		struct cgroup *cgrp = tg->css.cgroup;
+		if (cgrp)
+			nr = cpuset_num_cpus(cgrp);
+	}
+
+	return nr;
+}
+
+/*
+ * Func: min(fraction(nr_cpus * tg->shares), nice -20)
+ *
+ * Scale tg->shares by the maximal number of CPUs; but clip the max shares at
+ * nice -20, otherwise a single spinner on a 512 CPU machine would result in
+ * 512*NICE_0_LOAD, which is also crazy.
+ */
+static long calc_max_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	int nr = tg_cpus(tg);
+	long tg_shares = READ_ONCE(tg->shares);
+	long max_shares = scale_load(sched_prio_to_weight[0]);
+	return __calc_smp_shares(cfs_rq, tg_shares * nr, max_shares);
+}
+
+/*
+ * Func: fraction(tg->shares)
+ *
+ * This infamously results in tiny shares when you have many CPUs.
+ */
+static long calc_smp_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	long tg_shares = READ_ONCE(tg->shares);
+	return __calc_smp_shares(cfs_rq, tg_shares, tg_shares);
 }
 
 /*
@@ -4856,6 +4895,9 @@ void __sched_cgroup_mode_update(int mode)
 	case 1:
 	default:
 		func = &calc_smp_shares;
+		break;
+	case 2:
+		func = &calc_max_shares;
 		break;
 	}
 	static_call_update(calc_group_shares, func);
