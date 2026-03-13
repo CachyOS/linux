@@ -277,6 +277,11 @@ static void do_idle(void)
 	__current_set_polling();
 	tick_nohz_idle_enter();
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	/* POC Selector: mark CPU as idle */
+	set_cpu_idle_state_poc(cpu, 1);
+#endif /* CONFIG_SCHED_POC_SELECTOR */
+
 	while (!need_resched()) {
 
 		/*
@@ -333,6 +338,11 @@ static void do_idle(void)
 		}
 		arch_cpu_idle_exit();
 	}
+
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	/* POC Selector: mark CPU as busy */
+	set_cpu_idle_state_poc(cpu, 0);
+#endif /* CONFIG_SCHED_POC_SELECTOR */
 
 	/*
 	 * Since we fell out of the loop above, we know TIF_NEED_RESCHED must
