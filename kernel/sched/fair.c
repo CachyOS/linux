@@ -7712,6 +7712,11 @@ static inline bool test_idle_cores(int cpu)
 	return false;
 }
 
+static inline bool is_idle_core(int cpu)
+{
+	return available_idle_cpu(cpu);
+}
+
 static inline int select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu)
 {
 	return __select_idle_cpu(core, p);
@@ -7861,6 +7866,9 @@ static inline bool asym_fits_cpu(unsigned long util,
 	return true;
 }
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+#include "poc_selector.c"
+#endif
 /*
  * Try and locate an idle core/thread in the LLC cache domain.
  */
@@ -7903,23 +7911,20 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target, int 
 	 */
 	lockdep_assert_irqs_disabled();
 
-	if (sync && is_idle_core(target) &&
-	    asym_fits_cpu(task_util, util_min, util_max, target))
-		return target;
-
 	/*
-	 * If the previous CPU is cache affine and idle, don't be stupid:
+	 * Compute recent_used_cpu early so POC can use it.
+	 * Side effect: update p->recent_used_cpu to prev.
+	 * Only validate basic eligibility here (same LLC, in cpumask,
+	 * not duplicate of prev/target).  Idle check is deferred to
+	 * POC (bitmap) or CFS fallback (is_idle_core / available_idle_cpu).
 	 */
-	if (prev != target && cpus_share_cache(prev, target) &&
-	    (available_idle_cpu(prev) || sched_idle_cpu(prev)) &&
-	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
-
-		if (!static_branch_unlikely(&sched_cluster_active) ||
-		    cpus_share_resources(prev, target))
-			return prev;
-
-		prev_aff = prev;
-	}
+	recent_used_cpu = p->recent_used_cpu;
+	p->recent_used_cpu = prev;
+	if (recent_used_cpu == prev ||
+	    recent_used_cpu == target ||
+	    !cpus_share_cache(recent_used_cpu, target) ||
+	    !cpumask_test_cpu(recent_used_cpu, p->cpus_ptr))
+		recent_used_cpu = -1;
 
 	/*
 	 * Allow a per-cpu kthread to stack with the wakee if the
@@ -7961,6 +7966,69 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target, int 
 	if (!sd)
 		return target;
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	{
+		struct sched_domain_shared *sd_share =
+			rcu_dereference(per_cpu(sd_llc_shared, target));
+		if (static_branch_likely(&sched_poc_enabled)
+				&& !sched_asym_cpucap_active()
+				&& sd_share && likely(sd_share->poc_fast_eligible)) {
+			int poc_cpu = select_idle_cpu_poc(target, prev,
+					recent_used_cpu, sync,
+					sd_share, p->cpus_ptr);
+			if (poc_cpu >= 0) {
+				return poc_cpu;
+			}
+			/*
+			 * POC returns -2 when the SIS_UTIL overload gate fires
+			 * (smt_fallback=0 only). POC has already checked
+			 * prev's SMT sibling (Level 4) and decided broader
+			 * search is not worthwhile. CFS would reach the same
+			 * conclusion, so skip select_idle_smt/select_idle_cpu.
+			 *
+			 * POC returns -1 for Level 0 saturation (no idle CPUs
+			 * in bitmap), but CFS may still find sched_idle CPUs,
+			 * so we must NOT skip CFS in that case.
+			 */
+			if (poc_cpu == -2)
+				goto give_up;
+		}
+	}
+	poc_count(POC_FALLBACK);
+#endif /* CONFIG_SCHED_POC_SELECTOR */
+
+	/*
+	 * CFS fallback path: Gate 1/2/4 + linear search.
+	 * Reached when POC is disabled, ineligible, or saturated (-1).
+	 */
+
+	/* Gate 1 (target): sync wakeup + idle core */
+	if (sync && is_idle_core(target) &&
+	    asym_fits_cpu(task_util, util_min, util_max, target))
+		return target;
+
+	/*
+	 * If the previous CPU is cache affine and idle, don't be stupid:
+	 */
+	if (prev != target && cpus_share_cache(prev, target) &&
+	    (available_idle_cpu(prev) || sched_idle_cpu(prev)) &&
+	    asym_fits_cpu(task_util, util_min, util_max, prev)) {
+
+		if (!static_branch_unlikely(&sched_cluster_active) ||
+		    cpus_share_resources(prev, target))
+			return prev;
+
+		prev_aff = prev;
+	}
+
+	/* Gate 4 (recent): 6.18 uses is_idle_core for full-core check */
+	if ((unsigned int)recent_used_cpu < nr_cpumask_bits &&
+	    is_idle_core(recent_used_cpu)) {
+		return recent_used_cpu;
+	} else {
+		recent_used_cpu = -1;
+	}
+
 	if (sched_smt_active()) {
 		has_idle_core = test_idle_cores(target);
 
@@ -7981,11 +8049,19 @@ static int select_idle_sibling(struct task_struct *p, int prev, int target, int 
 	 * first. But prev_cpu or recent_used_cpu may also be a good candidate,
 	 * use them if possible when no idle CPU found in select_idle_cpu().
 	 */
+#ifdef CONFIG_SCHED_POC_SELECTOR
+give_up:
+#endif
 	if ((unsigned int)prev_aff < nr_cpumask_bits)
 		return prev_aff;
 	if ((unsigned int)recent_used_cpu < nr_cpumask_bits)
 		return recent_used_cpu;
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	/* Last resort: avoid enqueuing behind RT/DL tasks on target */
+	if (prev != target && rt_task(cpu_rq(target)->curr))
+		return prev;
+#endif
 	return target;
 }
 
