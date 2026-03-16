@@ -20,6 +20,7 @@
 
 #include <linux/acpi.h>
 #include <linux/debugfs.h>
+#include <linux/dmi.h>
 #include <linux/module.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_intel.h>
@@ -543,9 +544,34 @@ out:
 	return ret;
 }
 
+/*
+ * Some systems have DMICs but the BIOS doesn't expose them in NHLT.
+ * Use DMI quirks to force DMIC configuration on these systems.
+ */
+struct dmic_num_quirk {
+	int dmic_num;
+};
+
+static const struct dmic_num_quirk legion_dmic_quirk = {
+	.dmic_num = 2,
+};
+
+static const struct dmi_system_id dmic_num_dmiquirk_table[] = {
+	{
+		/* Lenovo Legion Pro 7 16IAX10H */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "83F5"),
+		},
+		.driver_data = (void *)&legion_dmic_quirk,
+	},
+	{}
+};
+
 static int check_dmic_num(struct snd_sof_dev *sdev)
 {
 	struct sof_intel_hda_dev *hdev = sdev->pdata->hw_pdata;
+	const struct dmi_system_id *dmi_id;
 	struct nhlt_acpi_table *nhlt;
 	int dmic_num = 0;
 
@@ -554,6 +580,21 @@ static int check_dmic_num(struct snd_sof_dev *sdev)
 		dmic_num = intel_nhlt_get_dmic_geo(sdev->dev, nhlt);
 
 	dev_info(sdev->dev, "DMICs detected in NHLT tables: %d\n", dmic_num);
+
+	/* Apply DMI quirk if NHLT reports no DMICs */
+	if (dmic_num == 0) {
+		dmi_id = dmi_first_match(dmic_num_dmiquirk_table);
+		if (dmi_id) {
+			const struct dmic_num_quirk *quirk = dmi_id->driver_data;
+
+			dev_info(sdev->dev,
+				 "DMI quirk: forcing %d DMICs for %s %s\n",
+				 quirk->dmic_num,
+				 dmi_get_system_info(DMI_SYS_VENDOR),
+				 dmi_get_system_info(DMI_PRODUCT_NAME));
+			dmic_num = quirk->dmic_num;
+		}
+	}
 
 	/* allow for module parameter override */
 	if (dmic_num_override != -1) {
