@@ -1405,12 +1405,6 @@ bool dm_helpers_is_vrr_pcon_allowed(const struct dc_link *link, const struct drm
 		return true;
 	}
 
-	if (link->dc->debug.override_pcon_vrr_id_check) {
-		drm_info(dev, "Overriding VRR PCON check for ID: 0x%06x\n",
-			 link->dpcd_caps.branch_dev_id);
-		return true;
-	}
-
 	return false;
 }
 
