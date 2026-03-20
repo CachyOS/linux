@@ -1478,22 +1478,13 @@ static void extract_crcs_for_object(const char *object, struct module *mod)
 	char cmd_file[PATH_MAX];
 	char *buf, *p;
 	const char *base;
-	int dirlen, baselen_without_suffix, ret;
+	int dirlen, ret;
 
 	base = get_basename(object);
 	dirlen = base - object;
 
-	baselen_without_suffix = strlen(object) - dirlen - strlen(".o");
-
-	/*
-	 * When CONFIG_LTO_CLANG_THIN_DIST=y, the ELF is *.thinlto-native.o
-	 * but the symbol CRCs are recorded in *.o.cmd file.
-	 */
-	if (strends(object, ".thinlto-native.o"))
-		baselen_without_suffix -= strlen(".thinlto-native");
-
-	ret = snprintf(cmd_file, sizeof(cmd_file), "%.*s.%.*s.o.cmd",
-		       dirlen, object, baselen_without_suffix, base);
+	ret = snprintf(cmd_file, sizeof(cmd_file), "%.*s.%s.cmd",
+		       dirlen, object, base);
 	if (ret >= sizeof(cmd_file)) {
 		error("%s: too long path was truncated\n", cmd_file);
 		return;
