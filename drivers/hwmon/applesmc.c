@@ -979,7 +979,7 @@ out_mem:
 	return ret;
 }
 
-static void applesmc_remove(struct acpi_device *dev)
+static int applesmc_remove(struct acpi_device *dev)
 {
 	struct applesmc_device *smc = dev_get_drvdata(&dev->dev);
 
@@ -990,7 +990,7 @@ static void applesmc_remove(struct acpi_device *dev)
 	mutex_destroy(&smc->reg.mutex);
 	kfree(smc);
 
-	return;
+	return 0;
 }
 
 static acpi_status applesmc_walk_resources(struct acpi_resource *res,
