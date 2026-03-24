@@ -218,7 +218,11 @@ static inline void prefetchw_next_lru_folio(struct folio *folio,
 /*
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
+#ifdef CONFIG_CACHY
+int vm_swappiness = 100;
+#else
 int vm_swappiness = 60;
+#endif
 
 static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
 {
