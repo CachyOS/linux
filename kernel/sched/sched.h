@@ -3139,7 +3139,7 @@ static inline void attach_one_task(struct rq *rq, struct task_struct *p)
 	attach_task(rq, p);
 }
 
-#ifdef CONFIG_PREEMPT_RT
+#if defined(CONFIG_PREEMPT_RT) || defined(CONFIG_CACHY)
 # define SCHED_NR_MIGRATE_BREAK 8
 #else
 # define SCHED_NR_MIGRATE_BREAK 32
