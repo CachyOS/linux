@@ -198,7 +198,11 @@ struct scan_control {
 /*
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
+#ifdef CONFIG_CACHY
+int vm_swappiness = 100;
+#else
 int vm_swappiness = 60;
+#endif
 
 static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
 {
