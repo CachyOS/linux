@@ -31,6 +31,7 @@
 #define pr_fmt(fmt) "vga_switcheroo: " fmt
 
 #include <linux/apple-gmux.h>
+#include <linux/cachy-t2.h>
 #include <linux/debugfs.h>
 #include <linux/fb.h>
 #include <linux/fs.h>
@@ -436,7 +437,8 @@ find_active_client(struct list_head *head)
 bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
 {
 	if (pci_is_display(pdev)) {
-		if (apple_gmux_present() && !vgasr_priv.handler_flags)
+		if (apple_gmux_present() && !vgasr_priv.handler_flags &&
+		    (pdev != vga_default_device() || apple_is_t2_mac()))
 			return true;
 	}
 
