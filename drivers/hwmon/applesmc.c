@@ -17,6 +17,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/cachy-t2.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
@@ -1311,7 +1312,7 @@ static int __init applesmc_init(void)
 {
 	int ret;
 
-	if (!dmi_check_system(applesmc_whitelist)) {
+	if (!dmi_check_system(applesmc_whitelist) || apple_is_t2_mac()) {
 		pr_warn("supported laptop not found!\n");
 		ret = -ENODEV;
 		goto out;
