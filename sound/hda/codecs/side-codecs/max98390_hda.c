@@ -87,7 +87,7 @@ static const struct component_ops max98390_hda_comp_ops = {
 static int max98390_hda_init(struct max98390_hda_priv *priv)
 {
 	int ret;
-	unsigned int reg, global_en, amp_en, pcm_rx;
+	unsigned int reg;
 
 	/* Check device ID */
 	ret = regmap_read(priv->regmap, MAX98390_R24FF_REV_ID, &reg);
