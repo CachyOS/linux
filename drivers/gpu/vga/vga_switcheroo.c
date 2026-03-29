@@ -440,7 +440,7 @@ bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
 {
 	if (pci_is_display(pdev)) {
 		if (apple_gmux_present() && !vgasr_priv.handler_flags &&
-		    (pdev != vga_default_device() || apple_is_t2_mac()))
+		    (pdev != vga_default_device() || dmi_check_system(t2_mac_tbl)))
 			return true;
 	}
 
