@@ -18,6 +18,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/cachy-t2.h>
 #include <linux/delay.h>
 #include <linux/acpi.h>
 #include <linux/input.h>
@@ -1811,42 +1812,6 @@ static void applesmc_release_key_backlight(struct applesmc_device *smc)
 	destroy_workqueue(smc->backlight_wq);
 }
 
-#ifndef T2_MAC
-#define T2_MAC(vendor, product) \
-		 .matches = { \
-			DMI_MATCH(DMI_BOARD_VENDOR, vendor), \
-			DMI_MATCH(DMI_PRODUCT_NAME, product), \
-		},
-#endif
-
-static const struct dmi_system_id t2_mac_tbl[] = {
-	{ T2_MAC("Apple Inc.", "MacBookPro15,1") },
-	{ T2_MAC("Apple Inc.", "MacBookPro15,2") },
-	{ T2_MAC("Apple Inc.", "MacBookPro15,3") },
-	{ T2_MAC("Apple Inc.", "MacBookPro15,4") },
-	{ T2_MAC("Apple Inc.", "MacBookPro16,1") },
-	{ T2_MAC("Apple Inc.", "MacBookPro16,2") },
-	{ T2_MAC("Apple Inc.", "MacBookPro16,3") },
-	{ T2_MAC("Apple Inc.", "MacBookPro16,4") },
-	{ T2_MAC("Apple Inc.", "MacBookAir8,1") },
-	{ T2_MAC("Apple Inc.", "MacBookAir8,2") },
-	{ T2_MAC("Apple Inc.", "MacBookAir9,1") },
-	{ T2_MAC("Apple Inc.", "Macmini8,1") },
-	{ T2_MAC("Apple Inc.", "MacPro7,1") },
-	{ T2_MAC("Apple Inc.", "iMac20,1") },
-	{ T2_MAC("Apple Inc.", "iMac20,2") },
-	{ T2_MAC("Apple Inc.", "iMacPro1,1") },
-	{ }
-};
-MODULE_DEVICE_TABLE(dmi, t2_mac_tbl);
-
-bool apple_is_t2_mac(void)
-{
-	return dmi_check_system(t2_mac_tbl);
-}
-EXPORT_SYMBOL_GPL(apple_is_t2_mac);
-
-
 static int applesmc_create_modules(struct applesmc_device *smc)
 {
 	int ret;
@@ -1920,7 +1885,7 @@ static int __init applesmc_init(void)
 {
 	int ret;
 
-	if (!apple_is_t2_mac()) {
+	if (!dmi_check_system(t2_mac_tbl)) {
 		pr_warn("supported laptop not found!\n");
 		ret = -ENODEV;
 		goto out;
@@ -1949,3 +1914,4 @@ MODULE_AUTHOR("Nicolas Boichat");
 MODULE_AUTHOR("Paul Pawlowski");
 MODULE_DESCRIPTION("Apple SMC");
 MODULE_LICENSE("GPL v2");
+MODULE_DEVICE_TABLE(dmi, t2_mac_tbl);
