@@ -1311,7 +1311,7 @@ static int __init applesmc_init(void)
 {
 	int ret;
 
-	if (!dmi_check_system(applesmc_whitelist) || apple_is_t2_mac()) {
+	if (!dmi_check_system(applesmc_whitelist) || dmi_check_system(t2_mac_tbl)) {
 		pr_warn("supported laptop not found!\n");
 		ret = -ENODEV;
 		goto out;
