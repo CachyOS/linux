@@ -1031,14 +1031,14 @@ enum dmub_status dmub_srv_wait_for_pending(struct dmub_srv *dmub,
 enum dmub_status dmub_srv_wait_for_idle(struct dmub_srv *dmub,
 					uint32_t timeout_us)
 {
+	const bool can_sleep = IS_ENABLED(CONFIG_PREEMPT_COUNT) && preemptible();
 	enum dmub_status status;
 	uint32_t i;
-	const uint32_t polling_interval_us = 1;
 
 	if (!dmub->hw_init)
 		return DMUB_STATUS_INVALID;
 
-	for (i = 0; i < timeout_us; i += polling_interval_us) {
+	for (i = 0; i < timeout_us;) {
 		status = dmub_srv_update_inbox_status(dmub);
 
 		if (status != DMUB_STATUS_OK)
@@ -1048,7 +1048,26 @@ enum dmub_status dmub_srv_wait_for_idle(struct dmub_srv *dmub,
 		if (dmub_rb_empty(&dmub->inbox1.rb) && !dmub->reg_inbox0.is_pending)
 			return DMUB_STATUS_OK;
 
-		udelay(polling_interval_us);
+		/*
+		 * Use progressively longer delays so the CPU doesn't get kicked
+		 * out of idle for very long and impact power consumption.
+		 */
+		if (i < 3) {
+			udelay(1);
+			i += 1;
+		} else if (i < 100) {
+			if (can_sleep)
+				usleep_range(8, 10);
+			else
+				udelay(10);
+			i += 10;
+		} else {
+			if (can_sleep)
+				usleep_range(90, 100);
+			else
+				udelay(100);
+			i += 100;
+		}
 	}
 
 	return DMUB_STATUS_TIMEOUT;

@@ -884,6 +884,9 @@ int i2c_dw_probe(struct dw_i2c_dev *dev)
 
 	device_set_node(&dev->adapter.dev, dev_fwnode(dev->dev));
 
+	/* Always poll since it's more energy efficient than the spammy IRQ */
+	dev->flags |= ACCESS_POLLING;
+
 	ret = i2c_dw_init_regmap(dev);
 	if (ret)
 		return ret;
