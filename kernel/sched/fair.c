@@ -1316,6 +1316,37 @@ static inline bool valid_llc_buf(struct sched_domain *sd,
 	return true;
 }
 
+static bool exceed_llc_capacity(struct mm_struct *mm, int cpu)
+{
+	struct cacheinfo *ci;
+	u64 rss, llc;
+
+	/*
+	 * get_cpu_cacheinfo_level() can not be used
+	 * because it requires the cpu_hotplug_lock
+	 * to be held. Use _get_cpu_cacheinfo_level()
+	 * directly because the 'cpu' can not be
+	 * offlined at the moment.
+	 */
+	ci = _get_cpu_cacheinfo_level(cpu, 3);
+	if (!ci) {
+		/*
+		 * On system without L3 but with shared L2,
+		 * L2 becomes the LLC.
+		 */
+		ci = _get_cpu_cacheinfo_level(cpu, 2);
+		if (!ci)
+			return true;
+	}
+
+	llc = ci->size;
+
+	rss = get_mm_counter(mm, MM_ANONPAGES) +
+		get_mm_counter(mm, MM_SHMEMPAGES);
+
+	return (llc < (rss * PAGE_SIZE));
+}
+
 static bool exceed_llc_nr(struct mm_struct *mm, int cpu)
 {
 	return !fits_capacity((mm->sc_stat.nr_running_avg * cpu_smt_num_threads),
@@ -1514,7 +1545,8 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 	if (time_after(epoch,
 		       READ_ONCE(mm->sc_stat.epoch) + EPOCH_LLC_AFFINITY_TIMEOUT) ||
 	    get_nr_threads(p) <= 1 ||
-	    exceed_llc_nr(mm, cpu_of(rq))) {
+	    exceed_llc_nr(mm, cpu_of(rq)) ||
+	    exceed_llc_capacity(mm, cpu_of(rq))) {
 		if (mm->sc_stat.cpu != -1)
 			mm->sc_stat.cpu = -1;
 	}
@@ -1619,8 +1651,8 @@ static inline void update_avg_scale(u64 *avg, u64 sample)
 
 static void task_cache_work(struct callback_head *work)
 {
+	int cpu, m_a_cpu = -1, nr_running = 0, curr_cpu;
 	struct task_struct *p = current, *cur;
-	int cpu, m_a_cpu = -1, nr_running = 0;
 	unsigned long curr_m_a_occ = 0;
 	struct mm_struct *mm = p->mm;
 	unsigned long m_a_occ = 0;
@@ -1633,7 +1665,9 @@ static void task_cache_work(struct callback_head *work)
 	if (p->flags & PF_EXITING)
 		return;
 
-	if (get_nr_threads(p) <= 1) {
+	curr_cpu = task_cpu(p);
+	if (get_nr_threads(p) <= 1 ||
+	    exceed_llc_capacity(mm, curr_cpu)) {
 		if (mm->sc_stat.cpu != -1)
 			mm->sc_stat.cpu = -1;
 
@@ -10144,8 +10178,12 @@ static enum llc_mig can_migrate_llc_task(int src_cpu, int dst_cpu,
 	if (cpu < 0 || cpus_share_cache(src_cpu, dst_cpu))
 		return mig_unrestricted;
 
-	/* skip cache aware load balance for single/too many threads */
-	if (get_nr_threads(p) <= 1 || exceed_llc_nr(mm, dst_cpu)) {
+	/*
+	 * Skip cache aware load balance for single/too many threads
+	 * or large memory RSS.
+	 */
+	if (get_nr_threads(p) <= 1 || exceed_llc_nr(mm, dst_cpu) ||
+	    exceed_llc_capacity(mm, dst_cpu)) {
 		if (mm->sc_stat.cpu != -1)
 			mm->sc_stat.cpu = -1;
 		return mig_unrestricted;

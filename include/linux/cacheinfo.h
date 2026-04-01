@@ -113,17 +113,10 @@ int acpi_get_cache_info(unsigned int cpu,
 
 const struct attribute_group *cache_get_priv_group(struct cacheinfo *this_leaf);
 
-/*
- * Get the cacheinfo structure for the cache associated with @cpu at
- * level @level.
- * cpuhp lock must be held.
- */
-static inline struct cacheinfo *get_cpu_cacheinfo_level(int cpu, int level)
+static inline struct cacheinfo *_get_cpu_cacheinfo_level(int cpu, int level)
 {
 	struct cpu_cacheinfo *ci = get_cpu_cacheinfo(cpu);
 	int i;
-
-	lockdep_assert_cpus_held();
 
 	for (i = 0; i < ci->num_leaves; i++) {
 		if (ci->info_list[i].level == level) {
@@ -134,6 +127,18 @@ static inline struct cacheinfo *get_cpu_cacheinfo_level(int cpu, int level)
 	}
 
 	return NULL;
+}
+
+/*
+ * Get the cacheinfo structure for the cache associated with @cpu at
+ * level @level.
+ * cpuhp lock must be held.
+ */
+static inline struct cacheinfo *get_cpu_cacheinfo_level(int cpu, int level)
+{
+	lockdep_assert_cpus_held();
+
+	return _get_cpu_cacheinfo_level(cpu, level);
 }
 
 /*
