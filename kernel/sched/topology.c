@@ -634,6 +634,11 @@ static void destroy_sched_domain(struct sched_domain *sd)
 
 	if (sd->shared && atomic_dec_and_test(&sd->shared->ref))
 		kfree(sd->shared);
+
+#ifdef CONFIG_SCHED_CACHE
+	/* only the bottom sd has llc_counts array */
+	kfree(sd->llc_counts);
+#endif
 	kfree(sd);
 }
 
@@ -753,10 +758,18 @@ cpu_attach_domain(struct sched_domain *sd, struct root_domain *rd, int cpu)
 	if (sd && sd_degenerate(sd)) {
 		tmp = sd;
 		sd = sd->parent;
-		destroy_sched_domain(tmp);
+
 		if (sd) {
 			struct sched_group *sg = sd->groups;
 
+#ifdef CONFIG_SCHED_CACHE
+			/* move buffer to parent as child is being destroyed */
+			sd->llc_counts = tmp->llc_counts;
+			sd->llc_max = tmp->llc_max;
+			/* make sure destroy_sched_domain() does not free it */
+			tmp->llc_counts = NULL;
+			tmp->llc_max = 0;
+#endif
 			/*
 			 * sched groups hold the flags of the child sched
 			 * domain for convenience. Clear such flags since
@@ -768,6 +781,8 @@ cpu_attach_domain(struct sched_domain *sd, struct root_domain *rd, int cpu)
 
 			sd->child = NULL;
 		}
+
+		destroy_sched_domain(tmp);
 	}
 
 	sched_domain_debug(sd, cpu);
@@ -792,6 +807,48 @@ enum s_alloc {
 	sa_sd_storage,
 	sa_none,
 };
+
+#ifdef CONFIG_SCHED_CACHE
+static bool alloc_sd_llc(const struct cpumask *cpu_map,
+			 struct s_data *d)
+{
+	struct sched_domain *sd;
+	unsigned int *p;
+	int i;
+
+	for_each_cpu(i, cpu_map) {
+		sd = *per_cpu_ptr(d->sd, i);
+		if (!sd)
+			goto err;
+
+		p = kcalloc(max_lid + 1, sizeof(unsigned int), GFP_KERNEL);
+		if (!p)
+			goto err;
+
+		sd->llc_counts = p;
+		sd->llc_max = max_lid;
+	}
+
+	return true;
+err:
+	for_each_cpu(i, cpu_map) {
+		sd = *per_cpu_ptr(d->sd, i);
+		if (sd) {
+			sd->llc_max = 0;
+			kfree(sd->llc_counts);
+			sd->llc_counts = NULL;
+		}
+	}
+
+	return false;
+}
+#else
+static bool alloc_sd_llc(const struct cpumask *cpu_map,
+			 struct s_data *d)
+{
+	return false;
+}
+#endif
 
 /*
  * Return the canonical balance CPU for this group, this is the first CPU
@@ -2758,6 +2815,8 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 			init_sched_groups_capacity(i, sd);
 		}
 	}
+
+	alloc_sd_llc(cpu_map, &d);
 
 	/* Attach the domains */
 	rcu_read_lock();
