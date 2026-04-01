@@ -1750,11 +1750,22 @@ sd_init(struct sched_domain_topology_level *tl,
 			 */
 			if (sd_id & 63)
 				static_branch_disable_cpuslocked(&sched_poc_aligned);
+			/*
+			 * Disable packed priority search if this LLC
+			 * has more than 32 CPUs.
+			 */
+			if (range > 32)
+				static_branch_disable_cpuslocked(&sched_poc_packed);
 		} else {
 			sd->shared->poc_fast_eligible = false;
+			static_branch_disable_cpuslocked(&sched_poc_packed);
 		}
+		memset(sd->shared->poc_idle_cpus, 0,
+		       sizeof(sd->shared->poc_idle_cpus));
 		atomic64_set(&sd->shared->poc_idle_cpus_mask, 0);
 #ifdef CONFIG_SCHED_SMT
+		memset(sd->shared->poc_idle_cores, 0,
+		       sizeof(sd->shared->poc_idle_cores));
 		atomic64_set(&sd->shared->poc_idle_cores_mask, 0);
 #endif
 
@@ -1802,22 +1813,34 @@ sd_init(struct sched_domain_topology_level *tl,
 		}
 
 		/*
-		 * Detect non-consecutive, non-2-way, or hybrid SMT.
-		 * poc_idle_core_mask() fast path assumes uniform 2-way SMT
-		 * with siblings at consecutive bit positions (e.g., 0,1 / 2,3).
+		 * Detect SMT topology and classify for poc_idle_core_mask():
 		 *
-		 * Disable if any LLC contains:
-		 *   - >2-way SMT (e.g., POWER with 4-way/8-way SMT)
-		 *   - 1-way (non-SMT cores in an otherwise SMT system,
-		 *     e.g., E-cores in Intel hybrid P/E topology)
-		 *   - 2-way SMT with non-consecutive sibling layout
-		 *     (e.g., Intel Xeon stride-N numbering)
+		 *   Tier 1 (consecutive): uniform 2-way SMT, siblings at
+		 *     consecutive bit positions (e.g., 0,1 / 2,3).
+		 *     Uses compile-time constants: shift=1, mask=0x5555...
 		 *
-		 * On pure non-SMT systems, the key value is irrelevant
+		 *   Tier 2 (uniform stride-N): uniform 2-way SMT with
+		 *     constant stride between siblings (e.g., Intel Xeon
+		 *     stride-8: CPU 0,8 / 1,9 / ...).  Uses precomputed
+		 *     poc_smt_shift and poc_primary_mask for read-time
+		 *     derivation without write-path overhead.
+		 *
+		 *   Tier 3 (exotic): >2-way SMT, non-uniform topology,
+		 *     or mixed SMT ways.  Falls back to write-time
+		 *     maintenance of poc_idle_cores_mask atomic64_t.
+		 *
+		 * On pure non-SMT systems, the key values are irrelevant
 		 * because sched_smt_active() gates all SMT paths.
 		 */
+		sd->shared->poc_smt_shift = 1;
+		sd->shared->poc_primary_mask = 0;
+
 		if (sd->shared->poc_fast_eligible) {
 			int cpu_iter;
+			bool all_2way = true;
+			bool all_consecutive = true;
+			int uniform_stride = -1;
+			u64 primary_mask = 0;
 
 			for_each_cpu(cpu_iter, sd_span) {
 				int bit = cpu_iter - sd_id;
@@ -1828,22 +1851,42 @@ sd_init(struct sched_domain_topology_level *tl,
 				int ways = hweight64(mask);
 
 				if (ways != 2) {
-					static_branch_disable_cpuslocked(
-						&sched_poc_smt_consecutive);
+					all_2way = false;
+					all_consecutive = false;
 					break;
 				}
-				/*
-				 * 2-way: check consecutive.  Valid patterns are
-				 * exactly 0b11 << (even_bit), i.e., two set bits
-				 * starting at an even position.
-				 */
-				int lo = __ffs(mask);
 
-				if ((lo & 1) || mask != (3ULL << lo)) {
-					static_branch_disable_cpuslocked(
-						&sched_poc_smt_consecutive);
-					break;
-				}
+				int lo = __ffs(mask);
+				int hi = __fls(mask);
+				int stride = hi - lo;
+
+				/* Track primary (lowest-numbered sibling) */
+				primary_mask |= 1ULL << lo;
+
+				/* Check consecutive: 0b11 at even position */
+				if ((lo & 1) || mask != (3ULL << lo))
+					all_consecutive = false;
+
+				/* Check uniform stride */
+				if (uniform_stride < 0)
+					uniform_stride = stride;
+				else if (stride != uniform_stride)
+					all_2way = false;
+			}
+
+			if (!all_consecutive)
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_consecutive);
+
+			if (all_2way && uniform_stride > 0) {
+				sd->shared->poc_smt_shift =
+					(u8)uniform_stride;
+				sd->shared->poc_primary_mask = primary_mask;
+			} else {
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_consecutive);
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_uniform);
 			}
 		}
 #endif /* CONFIG_SCHED_SMT */

@@ -77,11 +77,28 @@ struct sched_domain_shared {
 	u8		poc_affinity_shift;	/* bit shift for cpumask alignment */
 	bool	poc_fast_eligible;	/* true when LLC CPU count <= 64 */
 	bool	poc_cluster_valid;	/* true when cluster mask is usable */
+#ifdef CONFIG_SCHED_SMT
+	u8		poc_smt_shift;		/* bit distance between SMT siblings */
+	u64		poc_primary_mask;	/* bitmask of core representative CPUs */
+#endif
 
 	/*
-	 * Hot read/write path: idle state bitmaps.
+	 * Hot write path: idle state flag arrays (lock-free mode).
+	 * Each array = exactly 1 cache line (64B).
+	 * Writers: WRITE_ONCE (plain MOV, no LOCK prefix).
+	 * Readers: snapshot to stack, then multiply-and-shift aggregation.
+	 * Active only when sched_poc_atomic_bitmap=0.
+	 */
+	u8		poc_idle_cpus[64] ____cacheline_aligned;
+#ifdef CONFIG_SCHED_SMT
+	u8		poc_idle_cores[64] ____cacheline_aligned;
+#endif /* CONFIG_SCHED_SMT */
+
+	/*
+	 * Hot read/write path: idle state bitmaps (bitmap mode, default).
 	 * Readers: single atomic64_read (MOV on x86).
 	 * Writers: atomic64_or / atomic64_andnot (LOCK'd on x86).
+	 * Active only when sched_poc_atomic_bitmap=1.
 	 */
 	atomic64_t	poc_idle_cpus_mask ____cacheline_aligned;
 #ifdef CONFIG_SCHED_SMT
