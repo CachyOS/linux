@@ -10,6 +10,146 @@
 #include <linux/tracepoint.h>
 #include <linux/binfmts.h>
 
+#ifdef CONFIG_SCHED_CACHE
+TRACE_EVENT(sched_llc_mig,
+	TP_PROTO(unsigned long dst_util, unsigned long dst_cap,
+		unsigned long src_util, unsigned long src_cap,
+		int to_pref, int mig_hint),
+
+	TP_ARGS(dst_util, dst_cap, src_util, src_cap, to_pref, mig_hint),
+
+	TP_STRUCT__entry(
+		__field(unsigned long,	dst_util)
+		__field(unsigned long,	dst_cap)
+		__field(unsigned long,	src_util)
+		__field(unsigned long,	src_cap)
+		__field(int,		to_pref)
+		__field(int,		mig_hint)
+	),
+
+	TP_fast_assign(
+		__entry->dst_util		= dst_util;
+		__entry->dst_cap		= dst_cap;
+		__entry->src_util		= src_util;
+		__entry->src_cap		= src_cap;
+		__entry->to_pref		= to_pref;
+		__entry->mig_hint		= mig_hint;
+	),
+
+	TP_printk("dst_util=%lu dst_cap=%lu src_util=%lu src_cap=%lu to_pref=%d mig_hint=%d",
+		  __entry->dst_util, __entry->dst_cap, __entry->src_util,
+		  __entry->src_cap, __entry->to_pref, __entry->mig_hint)
+);
+
+TRACE_EVENT(sched_llc_scan,
+
+	TP_PROTO(struct task_struct *t, unsigned long cost),
+
+	TP_ARGS(t, cost),
+
+	TP_STRUCT__entry(
+		__array(char,	comm,	TASK_COMM_LEN)
+		__field(pid_t,	pid)
+		__field(unsigned long,	cost)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, t->comm, TASK_COMM_LEN);
+		__entry->pid		= t->pid;
+		__entry->cost		= cost;
+	),
+
+	TP_printk("comm=%s pid=%d scan_cost=%lu",
+			__entry->comm, __entry->pid,
+			__entry->cost)
+);
+
+TRACE_EVENT(sched_exceed_llc_cap,
+
+	TP_PROTO(struct task_struct *t, int exceeded, int  scale,
+		unsigned long llc,  unsigned long  rss),
+
+	TP_ARGS(t, exceeded, scale, llc,  rss),
+
+	TP_STRUCT__entry(
+		__array(char,	comm,	TASK_COMM_LEN)
+		__field(pid_t,	pid)
+		__field(int,	exceeded)
+		__field(int,	scale)
+		__field(unsigned  long,	llc)
+		__field(unsigned long,	rss)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, t->comm, TASK_COMM_LEN);
+		__entry->pid		= t->pid;
+		__entry->exceeded	= exceeded;
+		__entry->scale	= scale;
+		__entry->llc	= llc;
+		__entry->rss	= rss;
+	),
+
+	TP_printk("comm=%s pid=%d exceed_cap=%d scale=%d llc=%lu  rss=%lu",
+			__entry->comm, __entry->pid,
+			__entry->exceeded, __entry->scale,
+			__entry->llc, __entry->rss)
+);
+
+TRACE_EVENT(sched_exceed_llc_nr,
+
+	TP_PROTO(struct task_struct *t, int exceeded),
+
+	TP_ARGS(t, exceeded),
+
+	TP_STRUCT__entry(
+		__array(char,	comm,	TASK_COMM_LEN)
+		__field(pid_t,	pid)
+		__field(int,	exceeded)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, t->comm, TASK_COMM_LEN);
+		__entry->pid		= t->pid;
+		__entry->exceeded	= exceeded;
+	),
+
+	TP_printk("comm=%s pid=%d exceed_nr=%d",
+			__entry->comm, __entry->pid,
+			__entry->exceeded)
+);
+
+TRACE_EVENT(sched_attach_task,
+
+	TP_PROTO(struct task_struct *t, int pref_cpu, int pref_llc,
+		 int attach_cpu, int attach_llc),
+
+	TP_ARGS(t, pref_cpu, pref_llc, attach_cpu, attach_llc),
+
+	TP_STRUCT__entry(
+		__array(char,	comm,	TASK_COMM_LEN)
+		__field(pid_t,	pid)
+		__field(int,	pref_cpu)
+		__field(int,	pref_llc)
+		__field(int,	attach_cpu)
+		__field(int,	attach_llc)
+	),
+
+	TP_fast_assign(
+		memcpy(__entry->comm, t->comm, TASK_COMM_LEN);
+		__entry->pid		= t->pid;
+		__entry->pref_cpu	= pref_cpu;
+		__entry->pref_llc	= pref_llc;
+		__entry->attach_cpu	= attach_cpu;
+		__entry->attach_llc	= attach_llc;
+	),
+
+	TP_printk("comm=%s pid=%d pref_cpu=%d pref_llc=%d attach_cpu=%d attach_llc=%d",
+			__entry->comm, __entry->pid,
+			__entry->pref_cpu, __entry->pref_llc,
+			__entry->attach_cpu, __entry->attach_llc)
+);
+#endif
+
 /*
  * Tracepoint for calling kthread_stop, performed to end a kthread:
  */
