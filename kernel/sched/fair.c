@@ -1431,6 +1431,50 @@ static void task_tick_cache(struct rq *rq, struct task_struct *p)
 	}
 }
 
+static void get_scan_cpumasks(cpumask_var_t cpus, struct task_struct *p)
+{
+#ifdef CONFIG_NUMA_BALANCING
+	int cpu, curr_cpu, pref_nid;
+
+	if (!static_branch_likely(&sched_numa_balancing))
+		goto out;
+
+	cpu = p->mm->sc_stat.cpu;
+	curr_cpu = task_cpu(p);
+
+	/*
+	 * Scanning in the preferred NUMA node is ideal. However, the NUMA
+	 * preferred node is per-task rather than per-process. It is possible
+	 * for different threads of the process to have distinct preferred
+	 * nodes; consequently, the process-wide preferred LLC may bounce
+	 * between different nodes. As a workaround, maintain the scan
+	 * CPU mask to also cover the process's current preferred LLC and the
+	 * current running node to mitigate the bouncing risk.
+	 * TBD: numa_group should be considered during task aggregation.
+	 */
+	pref_nid = p->numa_preferred_nid;
+	/* honor the task's preferred node */
+	if (pref_nid == NUMA_NO_NODE)
+		goto out;
+
+	cpumask_or(cpus, cpus, cpumask_of_node(pref_nid));
+
+	/* honor the task's preferred LLC CPU */
+	if (cpu != -1 && !cpumask_test_cpu(cpu, cpus))
+		cpumask_or(cpus, cpus,
+			   cpumask_of_node(cpu_to_node(cpu)));
+
+	/* make sure the task's current running node is included */
+	if (!cpumask_test_cpu(curr_cpu, cpus))
+		cpumask_or(cpus, cpus, cpumask_of_node(cpu_to_node(curr_cpu)));
+
+	return;
+
+out:
+#endif
+	cpumask_copy(cpus, cpu_online_mask);
+}
+
 static void task_cache_work(struct callback_head *work)
 {
 	struct task_struct *p = current;
@@ -1451,7 +1495,7 @@ static void task_cache_work(struct callback_head *work)
 		return;
 
 	scoped_guard (cpus_read_lock) {
-		cpumask_copy(cpus, cpu_online_mask);
+		get_scan_cpumasks(cpus, p);
 
 		for_each_cpu(cpu, cpus) {
 			/* XXX sched_cluster_active */
