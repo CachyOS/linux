@@ -1316,6 +1316,12 @@ static inline bool valid_llc_buf(struct sched_domain *sd,
 	return true;
 }
 
+static bool exceed_llc_nr(struct mm_struct *mm, int cpu)
+{
+	return !fits_capacity((mm->sc_stat.nr_running_avg * cpu_smt_num_threads),
+			per_cpu(sd_llc_size, cpu));
+}
+
 static void account_llc_enqueue(struct rq *rq, struct task_struct *p)
 {
 	struct sched_domain *sd;
@@ -1507,7 +1513,8 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 	 */
 	if (time_after(epoch,
 		       READ_ONCE(mm->sc_stat.epoch) + EPOCH_LLC_AFFINITY_TIMEOUT) ||
-	    get_nr_threads(p) <= 1) {
+	    get_nr_threads(p) <= 1 ||
+	    exceed_llc_nr(mm, cpu_of(rq))) {
 		if (mm->sc_stat.cpu != -1)
 			mm->sc_stat.cpu = -1;
 	}
@@ -1592,13 +1599,31 @@ out:
 	cpumask_copy(cpus, cpu_online_mask);
 }
 
+static inline void update_avg_scale(u64 *avg, u64 sample)
+{
+	int factor = per_cpu(sd_llc_size, raw_smp_processor_id());
+	s64 diff = sample - *avg;
+	u32 divisor;
+
+	/*
+	 * Scale the divisor based on the number of CPUs contained
+	 * in the LLC. This scaling ensures smaller LLC domains use
+	 * a smaller divisor to achieve more precise sensitivity to
+	 * changes in nr_running, while larger LLC domains are capped
+	 * at a maximum divisor of 8 which is the default smoothing
+	 * factor of EWMA in update_avg().
+	 */
+	divisor = clamp_t(u32, (factor >> 2), 2, 8);
+	*avg += div64_s64(diff, divisor);
+}
+
 static void task_cache_work(struct callback_head *work)
 {
-	struct task_struct *p = current;
+	struct task_struct *p = current, *cur;
+	int cpu, m_a_cpu = -1, nr_running = 0;
+	unsigned long curr_m_a_occ = 0;
 	struct mm_struct *mm = p->mm;
 	unsigned long m_a_occ = 0;
-	unsigned long curr_m_a_occ = 0;
-	int cpu, m_a_cpu = -1;
 	cpumask_var_t cpus;
 
 	WARN_ON_ONCE(work != &p->cache_work);
@@ -1607,6 +1632,13 @@ static void task_cache_work(struct callback_head *work)
 
 	if (p->flags & PF_EXITING)
 		return;
+
+	if (get_nr_threads(p) <= 1) {
+		if (mm->sc_stat.cpu != -1)
+			mm->sc_stat.cpu = -1;
+
+		return;
+	}
 
 	if (!zalloc_cpumask_var(&cpus, GFP_KERNEL))
 		return;
@@ -1630,6 +1662,12 @@ static void task_cache_work(struct callback_head *work)
 				if (occ > m_occ) {
 					m_occ = occ;
 					m_cpu = i;
+				}
+				scoped_guard (rcu) {
+					cur = rcu_dereference_all(cpu_rq(i)->curr);
+					if (cur && !(cur->flags & (PF_EXITING | PF_KTHREAD)) &&
+					    cur->mm == mm)
+						nr_running++;
 				}
 			}
 
@@ -1674,6 +1712,7 @@ static void task_cache_work(struct callback_head *work)
 		mm->sc_stat.cpu = m_a_cpu;
 	}
 
+	update_avg_scale(&mm->sc_stat.nr_running_avg, nr_running);
 	free_cpumask_var(cpus);
 }
 
@@ -10104,6 +10143,13 @@ static enum llc_mig can_migrate_llc_task(int src_cpu, int dst_cpu,
 	cpu = mm->sc_stat.cpu;
 	if (cpu < 0 || cpus_share_cache(src_cpu, dst_cpu))
 		return mig_unrestricted;
+
+	/* skip cache aware load balance for single/too many threads */
+	if (get_nr_threads(p) <= 1 || exceed_llc_nr(mm, dst_cpu)) {
+		if (mm->sc_stat.cpu != -1)
+			mm->sc_stat.cpu = -1;
+		return mig_unrestricted;
+	}
 
 	if (cpus_share_cache(dst_cpu, cpu))
 		to_pref = true;

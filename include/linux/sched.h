@@ -2390,6 +2390,7 @@ struct sched_cache_stat {
 	struct sched_cache_time __percpu *pcpu_sched;
 	raw_spinlock_t lock;
 	unsigned long epoch;
+	u64 nr_running_avg;
 	int cpu;
 } ____cacheline_aligned_in_smp;
 
