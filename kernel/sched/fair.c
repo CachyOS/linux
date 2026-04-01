@@ -1291,8 +1291,34 @@ static int llc_id(int cpu)
 	return per_cpu(sd_llc_id, cpu);
 }
 
+static inline bool valid_llc_buf(struct sched_domain *sd,
+				 int id)
+{
+	/*
+	 * These checks are used to avoid the following
+	 * race causing out-of-range access to llc_counts:
+	 *
+	 * CPU0                                CPU1
+	 * :
+	 * ...
+	 * build_sched_domains          update_sg_lb_stats
+	 *                                for_each_cpu_and(i, sg)
+	 *                                  sd=rq[i]->sd
+	 *   per_cpu(sd_llc_id,i)=new_llc
+	 *                                  llc=llc_id(i)
+	 *                                  !!!sd->llc_counts[llc]!!!
+	 *   sd->llc_counts=kzalloc()
+	 *   sd->llc_max=max_llc
+	 */
+	if (unlikely(id < 0 || !sd || !sd->llc_counts || id > sd->llc_max))
+		return false;
+
+	return true;
+}
+
 static void account_llc_enqueue(struct rq *rq, struct task_struct *p)
 {
+	struct sched_domain *sd;
 	int pref_llc;
 
 	pref_llc = p->preferred_llc;
@@ -1301,10 +1327,15 @@ static void account_llc_enqueue(struct rq *rq, struct task_struct *p)
 
 	rq->nr_llc_running++;
 	rq->nr_pref_llc_running += (pref_llc == task_llc(p));
+
+	sd = rcu_dereference_all(rq->sd);
+	if (valid_llc_buf(sd, pref_llc))
+		sd->llc_counts[pref_llc]++;
 }
 
 static void account_llc_dequeue(struct rq *rq, struct task_struct *p)
 {
+	struct sched_domain *sd;
 	int pref_llc;
 
 	pref_llc = p->preferred_llc;
@@ -1313,6 +1344,24 @@ static void account_llc_dequeue(struct rq *rq, struct task_struct *p)
 
 	rq->nr_llc_running--;
 	rq->nr_pref_llc_running -= (pref_llc == task_llc(p));
+
+	sd = rcu_dereference_all(rq->sd);
+	if (valid_llc_buf(sd, pref_llc)) {
+		/*
+		 * There is a race condition between dequeue
+		 * and CPU hotplug. After a task has been enqueued
+		 * on CPUx, a CPU hotplug event occurs, and all online
+		 * CPUs (including CPUx) rebuild their sched_domains
+		 * and reset statistics to zero(including sd->llc_counts).
+		 * This can cause temporary undercount and we have to
+		 * check for such underflow in sd->llc_counts.
+		 *
+		 * This undercount is temporary and accurate accounting
+		 * will resume once the rq has a chance to be idle.
+		 */
+		if (sd->llc_counts[pref_llc])
+			sd->llc_counts[pref_llc]--;
+	}
 }
 
 void mm_init_sched(struct mm_struct *mm,
