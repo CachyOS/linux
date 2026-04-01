@@ -1288,7 +1288,12 @@ __read_mostly unsigned int llc_epoch_affinity_timeout = EPOCH_LLC_AFFINITY_TIMEO
 __read_mostly unsigned int llc_imb_pct		= 20;
 __read_mostly unsigned int llc_overaggr_pct	= 50;
 
-static int llc_id(int cpu)
+bool sched_cache_inuse(void)
+{
+	return sched_cache_enabled();
+}
+
+int llc_id(int cpu)
 {
 	if (cpu < 0)
 		return -1;
@@ -1448,18 +1453,21 @@ static void account_llc_dequeue(struct rq *rq, struct task_struct *p)
 }
 
 void mm_init_sched(struct mm_struct *mm,
-		   struct sched_cache_time __percpu *_pcpu_sched)
+		   struct sched_cache_time __percpu *_pcpu_sched,
+		   struct sched_cache_time __percpu *_pcpu_time)
 {
 	unsigned long epoch = 0;
 	int i;
 
 	for_each_possible_cpu(i) {
 		struct sched_cache_time *pcpu_sched = per_cpu_ptr(_pcpu_sched, i);
+		struct sched_cache_time *pcpu_time = per_cpu_ptr(_pcpu_time, i);
 		struct rq *rq = cpu_rq(i);
 
 		pcpu_sched->runtime = 0;
 		/* a slightly stale cpu epoch is acceptible */
 		pcpu_sched->epoch = rq->cpu_epoch;
+		pcpu_time->runtime = 0;
 		epoch = rq->cpu_epoch;
 	}
 
@@ -1473,6 +1481,8 @@ void mm_init_sched(struct mm_struct *mm,
 	 * the readers may get invalid mm_sched_epoch, etc.
 	 */
 	smp_store_release(&mm->sc_stat.pcpu_sched, _pcpu_sched);
+	/* barrier */
+	smp_store_release(&mm->sc_stat.pcpu_time, _pcpu_time);
 }
 
 /* because why would C be fully specified */
@@ -1558,7 +1568,8 @@ static unsigned int task_running_on_cpu(int cpu, struct task_struct *p);
 static inline
 void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 {
-	struct sched_cache_time *pcpu_sched;
+	struct sched_cache_time *pcpu_sched,
+		*pcpu_time;
 	struct mm_struct *mm = p->mm;
 	int mm_sched_llc = -1;
 	unsigned long epoch;
@@ -1572,14 +1583,18 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 	 * init_task, kthreads and user thread created
 	 * by user_mode_thread() don't have mm.
 	 */
-	if (!mm || !mm->sc_stat.pcpu_sched)
+	if (!mm || !mm->sc_stat.pcpu_sched ||
+	    !mm->sc_stat.pcpu_time)
 		return;
 
 	pcpu_sched = per_cpu_ptr(p->mm->sc_stat.pcpu_sched, cpu_of(rq));
+	pcpu_time = per_cpu_ptr(p->mm->sc_stat.pcpu_time, cpu_of(rq));
 
 	scoped_guard (raw_spinlock, &rq->cpu_epoch_lock) {
 		__update_mm_sched(rq, pcpu_sched);
 		pcpu_sched->runtime += delta_exec;
+		/* pure runtime without decay */
+		pcpu_time->runtime += delta_exec;
 		rq->cpu_runtime += delta_exec;
 		epoch = rq->cpu_epoch;
 	}
@@ -10326,6 +10341,33 @@ static bool migrate_degrades_llc(struct task_struct *p, struct lb_env *env)
 		return false;
 
 	return true;
+}
+
+/* p->pi_lock is hold */
+int get_mm_per_llc_runtime(struct task_struct *p, u64 *buf)
+{
+	struct sched_cache_time *pcpu_time;
+	struct mm_struct *mm = p->mm;
+	int cpu;
+
+	if (!mm)
+		return -EINVAL;
+
+	rcu_read_lock();
+	for_each_online_cpu(cpu) {
+		int llc = llc_id(cpu);
+		u64 runtime_ms;
+
+		if (llc < 0 || llc > max_lid)
+			continue;
+
+		pcpu_time = per_cpu_ptr(mm->sc_stat.pcpu_time, cpu);
+		runtime_ms = div_u64(pcpu_time->runtime, NSEC_PER_MSEC);
+		buf[llc] += runtime_ms;
+	}
+	rcu_read_unlock();
+
+	return 0;
 }
 
 #else

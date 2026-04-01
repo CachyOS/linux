@@ -2388,11 +2388,17 @@ struct sched_cache_time {
 
 struct sched_cache_stat {
 	struct sched_cache_time __percpu *pcpu_sched;
+	struct sched_cache_time __percpu *pcpu_time;
 	raw_spinlock_t lock;
 	unsigned long epoch;
 	u64 nr_running_avg;
 	int cpu;
 } ____cacheline_aligned_in_smp;
+
+int get_mm_per_llc_runtime(struct task_struct *p, u64 *buf);
+bool sched_cache_inuse(void);
+extern int max_lid;
+int llc_id(int cpu);
 
 #else
 
