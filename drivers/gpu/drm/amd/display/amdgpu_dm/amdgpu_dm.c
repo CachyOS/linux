@@ -13483,6 +13483,11 @@ update:
 	if (dm_con_state)
 		dm_con_state->freesync_capable = freesync_capable;
 
+	if (freesync_capable) {
+		connector->display_info.monitor_range.min_vfreq = amdgpu_dm_connector->min_vfreq;
+		connector->display_info.monitor_range.max_vfreq = amdgpu_dm_connector->max_vfreq;
+	}
+
 	if (connector->state && amdgpu_dm_connector->dc_link && !freesync_capable &&
 	    amdgpu_dm_connector->dc_link->replay_settings.config.replay_supported) {
 		amdgpu_dm_connector->dc_link->replay_settings.config.replay_supported = false;
