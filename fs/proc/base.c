@@ -518,37 +518,6 @@ static int proc_pid_schedstat(struct seq_file *m, struct pid_namespace *ns,
 		   (unsigned long long)task->se.sum_exec_runtime,
 		   (unsigned long long)task->sched_info.run_delay,
 		   task->sched_info.pcount);
-#ifdef CONFIG_SCHED_CACHE
-	if (sched_cache_inuse()) {
-		struct mm_struct *mm = task->mm;
-		u64 *llc_runtime;
-		int mm_sched_llc;
-
-		if (!mm)
-			return 0;
-
-		llc_runtime = kcalloc(max_lid + 1, sizeof(u64), GFP_KERNEL);
-		if (!llc_runtime)
-			return 0;
-
-		if (get_mm_per_llc_runtime(task, llc_runtime))
-			goto out;
-
-		if (mm->sc_stat.cpu == -1)
-			mm_sched_llc = -1;
-		else
-			mm_sched_llc = llc_id(mm->sc_stat.cpu);
-
-		for (int i = 0; i <= max_lid; i++)
-			seq_printf(m, "%s%s%llu ",
-				   i == task->preferred_llc ? "*" : "",
-				   i == mm_sched_llc ? "?" : "",
-				   llc_runtime[i]);
-		seq_puts(m, "\n");
-out:
-		kfree(llc_runtime);
-	}
-#endif
 
 	return 0;
 }
