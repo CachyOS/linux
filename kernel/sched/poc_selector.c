@@ -37,7 +37,7 @@
 #define SCHED_POC_SELECTOR_AUTHOR   "Masahito Suzuki"
 #define SCHED_POC_SELECTOR_PROGNAME "Piece-Of-Cake (POC) CPU Selector"
 
-#define SCHED_POC_SELECTOR_VERSION  "2.5.0"
+#define SCHED_POC_SELECTOR_VERSION  "2.5.1"
 
 /**************************************************************
  * Static keys:
@@ -799,8 +799,13 @@ static __always_inline void poc_commit_selection(int cpu,
 			cpu_rq(cpu)->nr_running <= 2) {
 		int bit = cpu - sd_share->poc_cpu_base;
 
-		atomic64_andnot(1ULL << bit, &sd_share->poc_idle_cpus_mask);
-		smp_mb__after_atomic();
+		if (static_branch_unlikely(&sched_poc_lockless_bitmap)) {
+			WRITE_ONCE(sd_share->poc_idle_cpus[bit], 0);
+			smp_wmb();
+		} else {
+			atomic64_andnot(1ULL << bit, &sd_share->poc_idle_cpus_mask);
+			smp_mb__after_atomic();
+		}
 	}
 }
 
