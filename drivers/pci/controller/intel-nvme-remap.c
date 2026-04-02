@@ -359,6 +359,9 @@ static int nvme_remap_probe(struct pci_dev *dev,
 	struct pci_dev *child;
 
 	nrdev = devm_kzalloc(&dev->dev, sizeof(*nrdev), GFP_KERNEL);
+	if (!nrdev)
+		return -ENOMEM;
+
 	nrdev->sysdata.domain = find_free_domain();
 	nrdev->sysdata.nvme_remap_dev = dev;
 	nrdev->dev = dev;
