@@ -37,7 +37,7 @@
 #define SCHED_POC_SELECTOR_AUTHOR   "Masahito Suzuki"
 #define SCHED_POC_SELECTOR_PROGNAME "Piece-Of-Cake (POC) CPU Selector"
 
-#define SCHED_POC_SELECTOR_VERSION  "2.5.1"
+#define SCHED_POC_SELECTOR_VERSION  "2.5.3"
 
 /**************************************************************
  * Static keys:
@@ -138,9 +138,9 @@ DEFINE_STATIC_KEY_TRUE(sched_poc_smt_uniform);
  * it ran on last, keeping warm TLB/L1/L2 state.
  *
  * Checked after Level 0 (saturation) and before core_mask derivation.
- * Default: enabled.
+ * Default: disabled.
  */
-DEFINE_STATIC_KEY_TRUE(sched_poc_target_sticky);
+DEFINE_STATIC_KEY_FALSE(sched_poc_target_sticky);
 
 /*
  * Early select: sched_poc_early_select
@@ -158,9 +158,9 @@ DEFINE_STATIC_KEY_TRUE(sched_poc_target_sticky);
  * one would let the pre-POC path return a lower-priority result
  * before POC can evaluate the higher-priority candidate.
  *
- * Default: disabled (POC Level 1r/1t handle this via bitmap).
+ * Default: enabled.
  */
-DEFINE_STATIC_KEY_FALSE(sched_poc_early_select);
+DEFINE_STATIC_KEY_TRUE(sched_poc_early_select);
 
 /*
  * Greedy search: sched_poc_greedy_search
@@ -579,9 +579,19 @@ void __set_cpu_idle_state_poc(int cpu, int state)
 
 	if (static_branch_unlikely(&sched_poc_lockless_bitmap)) {
 		WRITE_ONCE(sd_share->poc_idle_cpus[bit], state > 0 ? 1 : 0);
+	} else if (state > 0) {
+		/* Entering idle: clear any stale committed flag */
+		WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 0);
+		atomic64_or(bit_mask, &sd_share->poc_idle_cpus_mask);
 	} else {
-		if (state > 0)
-			atomic64_or(bit_mask, &sd_share->poc_idle_cpus_mask);
+		/*
+		 * Exiting idle: if a waker already committed (cleared the
+		 * bitmap bit), skip the redundant atomic on the shared
+		 * cacheline.  The flag lives in rq's first cacheline —
+		 * same line the waker already dirtied via ttwu_pending.
+		 */
+		if (READ_ONCE(cpu_rq(cpu)->poc_idle_committed))
+			WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 0);
 		else
 			atomic64_andnot(bit_mask, &sd_share->poc_idle_cpus_mask);
 	}
@@ -805,6 +815,8 @@ static __always_inline void poc_commit_selection(int cpu,
 		} else {
 			atomic64_andnot(1ULL << bit, &sd_share->poc_idle_cpus_mask);
 			smp_mb__after_atomic();
+			/* Mark committed so target skips redundant andnot on wakeup */
+			WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 1);
 		}
 	}
 }
@@ -941,12 +953,12 @@ static __always_inline int select_idle_cpu_poc(int target, int prev,
 		core_mask = poc_idle_core_mask(cpu_mask, sd_share);
 
 		/* Level 1r: recent's core is idle (warm cache) */
-		if (!static_branch_unlikely(&sched_poc_early_select) &&
+		if (!static_branch_likely(&sched_poc_early_select) &&
 				core_mask && POC_CPU_IN_LLC(rct_bit) && POC_IDLE_CORE(rct_bit))
 			POC_RETURN(recent, POC_LV1R);
 
 		/* Level 1s: target CPU sticky — L1/TLB affinity shortcut */
-		if (static_branch_likely(&sched_poc_target_sticky) && POC_IDLE_CPU(tgt_bit))
+		if (static_branch_unlikely(&sched_poc_target_sticky) && POC_IDLE_CPU(tgt_bit))
 			POC_RETURN(target, POC_LV1S);
 
 		if (core_mask) {
@@ -957,7 +969,7 @@ static __always_inline int select_idle_cpu_poc(int target, int prev,
 			 */
 
 			/* Level 1t: target CPU's core is idle → return it */
-			if (!static_branch_unlikely(&sched_poc_early_select) &&
+			if (!static_branch_likely(&sched_poc_early_select) &&
 					POC_IDLE_CORE(tgt_bit))
 				POC_RETURN(target, POC_LV1T);
 
@@ -1009,7 +1021,7 @@ static __always_inline int select_idle_cpu_poc(int target, int prev,
 #endif
 	{
 		/* Level 1r: recent CPU is idle (non-SMT) */
-		if (!static_branch_unlikely(&sched_poc_early_select) &&
+		if (!static_branch_likely(&sched_poc_early_select) &&
 				POC_CPU_IN_LLC(rct_bit) && POC_IDLE_CPU(rct_bit))
 			POC_RETURN(recent, POC_LV1R);
 		/* Level 1t: target CPU is idle → return (non-SMT) */
@@ -1239,7 +1251,7 @@ static int sched_poc_target_sticky_sysctl_handler(const struct ctl_table *table,
 					       int write, void *buffer,
 					       size_t *lenp, loff_t *ppos)
 {
-	unsigned int val = static_branch_likely(&sched_poc_target_sticky) ? 1 : 0;
+	unsigned int val = static_branch_unlikely(&sched_poc_target_sticky) ? 1 : 0;
 	struct ctl_table tmp = {
 		.data    = &val,
 		.maxlen  = sizeof(val),
@@ -1261,7 +1273,7 @@ static int sched_poc_early_select_handler(const struct ctl_table *table,
 					  int write, void *buffer,
 					  size_t *lenp, loff_t *ppos)
 {
-	unsigned int val = static_branch_unlikely(&sched_poc_early_select) ? 1 : 0;
+	unsigned int val = static_branch_likely(&sched_poc_early_select) ? 1 : 0;
 	struct ctl_table tmp = {
 		.data    = &val,
 		.maxlen  = sizeof(val),

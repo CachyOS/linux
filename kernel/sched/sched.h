@@ -1163,6 +1163,10 @@ struct rq {
 	call_single_data_t	nohz_csd;
 #endif /* CONFIG_NO_HZ_COMMON */
 
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	unsigned int		poc_idle_committed;
+#endif
+
 #ifdef CONFIG_UCLAMP_TASK
 	/* Utilization clamp values based on CPU's RUNNABLE tasks */
 	struct uclamp_rq	uclamp[UCLAMP_CNT] ____cacheline_aligned;
@@ -3376,7 +3380,7 @@ static inline void poc_check_skip_fallback(void) {}
 extern struct static_key_true sched_poc_aligned;
 extern struct static_key_true sched_poc_smt_consecutive;
 extern struct static_key_true sched_poc_smt_uniform;
-extern struct static_key_true sched_poc_target_sticky;
+extern struct static_key_false sched_poc_target_sticky;
 extern struct static_key_true sched_poc_packed;
 extern struct static_key_false sched_poc_lockless_bitmap;
 extern void __set_cpu_idle_state_poc(int cpu, int state);
