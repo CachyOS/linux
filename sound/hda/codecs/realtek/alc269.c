@@ -6688,6 +6688,7 @@ static const struct hda_fixup alc269_fixups[] = {
 			{ 0x12, 0x90a60160 }, /* use as internal mic */
 			{ }
 		},
+	},
 	[ALC287_FIXUP_AW88399_I2C_2] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = aw88399_fixup_i2c_two,
