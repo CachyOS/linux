@@ -405,8 +405,8 @@ static int iomem_read_smc(struct applesmc_device *smc, u8 cmd, const char *key,
 
 	iomem_clear_status(smc);
 	iowrite32(key_int, smc->iomem_base + APPLESMC_IOMEM_KEY_NAME);
-	iowrite32(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
-	iowrite32(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
+	iowrite8(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
+	iowrite8(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
 
 	if (iomem_wait_read(smc))
 		return -EIO;
@@ -448,8 +448,8 @@ static int iomem_get_smc_key_type(struct applesmc_device *smc, const char *key,
 
 	iomem_clear_status(smc);
 	iowrite32(key_int, smc->iomem_base + APPLESMC_IOMEM_KEY_NAME);
-	iowrite32(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
-	iowrite32(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
+	iowrite8(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
+	iowrite8(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
 
 	if (iomem_wait_read(smc))
 		return -EIO;
@@ -479,9 +479,9 @@ static int iomem_write_smc(struct applesmc_device *smc, u8 cmd, const char *key,
 	iomem_clear_status(smc);
 	iowrite32(key_int, smc->iomem_base + APPLESMC_IOMEM_KEY_NAME);
 	memcpy_toio(smc->iomem_base + APPLESMC_IOMEM_KEY_DATA, buffer, len);
-	iowrite32(len, smc->iomem_base + APPLESMC_IOMEM_KEY_DATA_LEN);
-	iowrite32(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
-	iowrite32(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
+	iowrite8(len, smc->iomem_base + APPLESMC_IOMEM_KEY_DATA_LEN);
+	iowrite8(0, smc->iomem_base + APPLESMC_IOMEM_KEY_SMC_ID);
+	iowrite8(cmd, smc->iomem_base + APPLESMC_IOMEM_KEY_CMD);
 
 	if (iomem_wait_read(smc))
 		return -EIO;
