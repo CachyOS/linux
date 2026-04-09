@@ -1137,6 +1137,9 @@ struct rq {
 #endif /* CONFIG_NO_HZ_COMMON */
 
 	unsigned int		ttwu_pending;
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	unsigned int		poc_idle_committed;
+#endif
 	u64			nr_switches;
 
 #ifdef CONFIG_UCLAMP_TASK
@@ -3277,13 +3280,23 @@ static inline void nohz_run_idle_balance(int cpu) { }
 #endif
 
 #ifdef CONFIG_SCHED_POC_SELECTOR
-extern struct static_key_true sched_poc_enabled;
+extern struct static_key_true poc_selector_active;
+#ifdef CONFIG_SCHED_CLASS_EXT
+extern void poc_notify_scx(bool scx_active);
+extern void poc_check_skip_fallback(void);
+#else
+static inline void poc_check_skip_fallback(void) {}
+#endif
 extern struct static_key_true sched_poc_aligned;
 extern struct static_key_true sched_poc_smt_consecutive;
+extern struct static_key_true sched_poc_smt_uniform;
+extern struct static_key_false sched_poc_target_sticky;
+extern struct static_key_true sched_poc_packed;
+extern struct static_key_false sched_poc_lockless_bitmap;
 extern void __set_cpu_idle_state_poc(int cpu, int state);
 static __always_inline void set_cpu_idle_state_poc(int cpu, int state)
 {
-	if (static_branch_likely(&sched_poc_enabled) &&
+	if (static_branch_likely(&poc_selector_active) &&
 	    !sched_asym_cpucap_active())
 		__set_cpu_idle_state_poc(cpu, state);
 }
