@@ -1266,6 +1266,13 @@ void __init rcu_init_nohz(void)
 	const struct cpumask *cpumask = NULL;
 	struct shrinker * __maybe_unused lazy_rcu_shrinker;
 
+#if defined(CONFIG_RCU_NOCB_CPU_DEFAULT_ALL)
+	if (!rcu_state.nocb_is_setup) {
+		need_rcu_nocb_mask = true;
+		offload_all = true;
+	}
+#endif /* #if defined(CONFIG_RCU_NOCB_CPU_DEFAULT_ALL) */
+
 #if defined(CONFIG_NO_HZ_FULL)
 	if (tick_nohz_full_running && !cpumask_empty(tick_nohz_full_mask))
 		cpumask = tick_nohz_full_mask;
@@ -1301,6 +1308,9 @@ void __init rcu_init_nohz(void)
 		shrinker_register(lazy_rcu_shrinker);
 	}
 #endif // #ifdef CONFIG_RCU_LAZY
+
+	if (offload_all)
+		cpumask_setall(rcu_nocb_mask);
 
 	if (!cpumask_subset(rcu_nocb_mask, cpu_possible_mask)) {
 		pr_info("\tNote: kernel parameter 'rcu_nocbs=', 'nohz_full', or 'isolcpus=' contains nonexistent CPUs.\n");
